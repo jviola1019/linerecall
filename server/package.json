@@ -16,7 +16,7 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "tsx --test tests/**/*.test.ts",
-    "test:coverage": "c8 --all --src src --exclude tests/** --exclude **/*.test.ts --exclude src/index.ts --exclude src/jobs/dispatcher.ts --exclude src/jobs/lichess-sync-worker.ts --reports-dir coverage/critical --reporter=text --reporter=json --check-coverage --branches 90 --functions 90 --lines 80 --statements 80 tsx --test tests/**/*.test.ts"
+    "test:coverage": "c8 --all --src src --exclude \"tests/**\" --exclude \"**/*.test.ts\" --exclude src/index.ts --exclude src/jobs/dispatcher.ts --exclude src/jobs/lichess-sync-worker.ts --reports-dir coverage/critical --reporter=text --reporter=json --check-coverage --branches 90 --functions 90 --lines 80 --statements 80 tsx --test \"tests/**/*.test.ts\""
   },
   "dependencies": {
     "@aws-sdk/client-batch": "3.1086.0",
