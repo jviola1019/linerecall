@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 2,
+  "id": "accessibility-manual",
+  "status": "not_run",
+  "completedAt": null,
+  "reviewer": null,
+  "artifactSha256": null,
+  "summary": "Required manual assistive-technology and accessibility review has not been completed.",
+  "evidence": [],
+  "limitations": [
+    "Automated accessibility checks cannot satisfy this gate or establish legal conformance."
+  ],
+  "requiredEnvironments": [
+    "NVDA with Chrome and Firefox on Windows",
+    "VoiceOver with Safari on a physical iPhone",
+    "TalkBack with Chrome on a physical Android device"
+  ],
+  "requiredChecks": [
+    "WCAG 2.2 AA and Section 508 manual test matrix",
+    "Keyboard, zoom, forced-colors, reduced-motion, focus, and announcement review"
+  ]
+}

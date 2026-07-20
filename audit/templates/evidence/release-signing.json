@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 2,
+  "id": "release-signing",
+  "status": "not_run",
+  "completedAt": null,
+  "reviewer": null,
+  "artifactSha256": null,
+  "sourceSnapshotSha256": null,
+  "summary": "No trusted release signer has signed the immutable release-input attestation.",
+  "evidence": [],
+  "limitations": [
+    "The repository intentionally contains no private signing key and no trusted public key is enrolled yet."
+  ],
+  "requiredChecks": [
+    "Enroll a reviewed Ed25519 public key and retain the detached, content-addressed attestation",
+    "Never commit or expose the private signing key"
+  ]
+}

@@ -1,0 +1,57 @@
+services:
+  api:
+    build: .
+    environment:
+      NODE_ENV: development
+      HOST: 0.0.0.0
+      PORT: 4100
+      PUBLIC_ORIGIN: http://127.0.0.1:5173
+      SERVICE_ORIGIN: http://127.0.0.1:4100
+      AUTH_MODE: dev-header
+      ALLOW_INSECURE_DEV_AUTH: "true"
+      TRUST_PROXY: "false"
+    ports:
+      - "127.0.0.1:4100:4100"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4100/health/live').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  postgres:
+    image: postgres:18.0-bookworm
+    profiles: ["dependencies"]
+    environment:
+      POSTGRES_DB: linerecall
+      POSTGRES_USER: linerecall_app
+      POSTGRES_PASSWORD: local-only-change-me
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U linerecall_app -d linerecall"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:8.2.3-bookworm
+    profiles: ["dependencies"]
+    command: ["redis-server", "--appendonly", "no", "--save", ""]
+    ports:
+      - "127.0.0.1:56379:6379"
+    read_only: true
+    tmpfs:
+      - /data:size=64m
+    cap_drop: ["ALL"]
+
+volumes:
+  pgdata: {}

@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 2,
+  "id": "editorial-human",
+  "status": "not_run",
+  "completedAt": null,
+  "reviewer": null,
+  "artifactSha256": null,
+  "sourceSnapshotSha256": null,
+  "summary": "Named human editorial review of interface and documentation copy has not been completed.",
+  "evidence": [],
+  "limitations": [
+    "Style lint and automated inventories cannot make a human-reviewed claim."
+  ],
+  "requiredReview": [
+    "Learner-facing copy, grammar, terminology, errors, empty states, and audit documentation",
+    "Unsupported performance, legal, causal, and accessibility claims"
+  ]
+}

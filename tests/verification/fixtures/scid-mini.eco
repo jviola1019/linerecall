@@ -1,0 +1,13 @@
+#############################
+# Minimal synthetic fixture; not copied from the Scid database.
+A00a "Start position"  *
+A04a "Reti Opening"  1.Nf3 d5 2.g3 *
+B00a "King's Pawn Opening"
+  1.e4 *
+B20a "Sicilian Defense"
+  1.e4 c5 *
+C20a "Open Game"  1.e4 e5 *
+D00a "Queen's Pawn Game"  1.d4 d5 *
+E00a "Catalan setup"
+  1.d4 Nf6 2.c4 e6
+  3.g3 *

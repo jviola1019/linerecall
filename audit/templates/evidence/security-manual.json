@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 2,
+  "id": "security-manual",
+  "status": "not_run",
+  "completedAt": null,
+  "reviewer": null,
+  "artifactSha256": null,
+  "sourceSnapshotSha256": null,
+  "summary": "Independent security review of the exact candidate and source snapshot has not been completed.",
+  "evidence": [],
+  "limitations": [
+    "Automated scans are inputs to, not substitutes for, the required security review."
+  ],
+  "requiredReview": [
+    "Client, API, authentication, authorization, cryptography, deployment, and recovery surfaces",
+    "No unresolved high or critical production finding"
+  ]
+}

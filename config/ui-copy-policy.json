@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "maximumHeadingCharacters": 72,
+  "maximumControlCharacters": 96,
+  "maximumBodyCharacters": 320,
+  "maximumBodyWords": 56,
+  "duplicateMinimumCharacters": 36,
+  "duplicateMaximumOccurrences": 2,
+  "prohibitedPatterns": [
+    { "id": "ai-coach", "pattern": "\\bAI (?:coach|assistant|mentor)\\b" },
+    { "id": "inflated-revolutionary", "pattern": "\\b(?:revolutionary|game[- ]changing|cutting[- ]edge|next[- ]generation)\\b" },
+    { "id": "inflated-unlock", "pattern": "\\bunlock (?:your|the) (?:potential|power|secrets?)\\b" },
+    { "id": "instant-mastery", "pattern": "\\bmaster (?:chess|openings?) (?:instantly|overnight)\\b" },
+    { "id": "unsupported-causality", "pattern": "\\bthis move (?:causes|guarantees|ensures) (?:a )?(?:win|victory)\\b" },
+    { "id": "legal-certification", "pattern": "\\b(?:ADA|WCAG|Section 508)[- ](?:certified|compliant)\\b" },
+    { "id": "unsupported-human-review", "pattern": "\\bhuman[- ]reviewed\\b" },
+    { "id": "assistant-filler", "pattern": "\\b(?:delve into|seamlessly|effortlessly|elevate your|journey)\\b" }
+  ]
+}

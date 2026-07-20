@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 2,
+  "id": "connected-staging",
+  "status": "not_run",
+  "completedAt": null,
+  "reviewer": null,
+  "artifactSha256": null,
+  "sourceSnapshotSha256": null,
+  "summary": "Real connected staging, recovery, and account lifecycle testing has not been completed.",
+  "evidence": [],
+  "limitations": [
+    "Accounts and cloud sync must remain disabled in the static build until this gate passes."
+  ],
+  "requiredChecks": [
+    "Magic link, passkey, RLS, provider, quota, migration, export, deletion, backup, and restore exercises"
+  ]
+}

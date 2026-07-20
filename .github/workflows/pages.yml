@@ -1,0 +1,76 @@
+name: Verify committed production handoff (deployment disabled)
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_id:
+        description: Run this workflow at the audited release ref; enter the release ID recorded in committed SHIPPABLE.json
+        required: true
+        type: string
+      artifact_sha256:
+        description: Expected SHA-256 of committed dist/linerecall.html at that exact audited ref
+        required: true
+        type: string
+
+concurrency:
+  group: linerecall-pages-review
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify production gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Require independently promoted production files
+        shell: bash
+        env:
+          EXPECTED_RELEASE_ID: ${{ inputs.release_id }}
+          EXPECTED_ARTIFACT_SHA256: ${{ inputs.artifact_sha256 }}
+        run: |
+          # A normal development checkout intentionally has none of these
+          # ignored files. This workflow can pass only when manually run at an
+          # independently audited release ref that explicitly carries the
+          # production handoff bundle.
+          test -f dist/linerecall.html
+          test -f dist/SHIPPABLE.json
+          test -f audit/generated/release-gate.json
+          npm run release:verify-pages -- --release-id "$EXPECTED_RELEASE_ID" --sha256 "$EXPECTED_ARTIFACT_SHA256"
+
+      - name: Stage immutable review bundle
+        shell: bash
+        run: |
+          mkdir -p _site/audit/generated
+          cp dist/linerecall.html _site/index.html
+          cp dist/linerecall.html _site/linerecall.html
+          cp dist/SHIPPABLE.json _site/SHIPPABLE.json
+          cp audit/generated/release-gate.json _site/audit/generated/release-gate.json
+
+      - name: Upload non-deploying review bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: linerecall-pages-review-${{ github.run_id }}
+          path: _site
+          retention-days: 1
+
+      - name: Keep GitHub Pages deployment disabled
+        shell: bash
+        run: |
+          test ! -e _site/.nojekyll
+          echo "Review bundle only: GitHub Pages cannot apply LineRecall's required response-header manifest."

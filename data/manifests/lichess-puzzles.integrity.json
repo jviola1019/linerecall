@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "sourceId": "lichess-puzzle-database",
+  "sourceUrl": "https://database.lichess.org/lichess_db_puzzle.csv.zst",
+  "bytes": 302111223,
+  "sha256": "5503bfaf5534518ffe3c4c3bb0ac1ae82350d117ad1a52947796096b75e6247e",
+  "computedAt": "2026-07-14T05:13:22.457Z",
+  "observedEtag": "\"6a44d6af-1201d9f7\"",
+  "observedLastModified": "Wed, 01 Jul 2026 08:58:23 GMT",
+  "approval": {
+    "status": "approved",
+    "approvedOn": "2026-07-15",
+    "approvedBy": "workspace-owner"
+  }
+}

@@ -1,0 +1,66 @@
+.hosted-sync-strip {
+  position: fixed;
+  z-index: 45;
+  right: 0.75rem;
+  bottom: 0.75rem;
+  max-width: min(28rem, calc(100vw - 1.5rem));
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  box-shadow: var(--shadow);
+  font-size: 0.78rem;
+}
+
+.hosted-sync-strip[data-status="offline"],
+.hosted-sync-strip[data-status="rate-limited"] { border-style: dashed; border-color: var(--warning); }
+.hosted-sync-strip[data-status="error"],
+.hosted-sync-strip[data-status="signed-out"] { border-color: var(--danger); }
+
+.hosted-dialog-backdrop {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  overflow: auto;
+  background: rgb(12 12 11 / 76%);
+}
+
+.hosted-account-dialog {
+  width: min(100%, 46rem);
+  max-height: min(90vh, 56rem);
+  padding: clamp(1rem, 3vw, 1.75rem);
+  overflow: auto;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  box-shadow: 0 24px 80px rgb(0 0 0 / 45%);
+}
+
+.hosted-dialog-heading { display: flex; align-items: start; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--border); }
+.hosted-dialog-heading h2 { font-size: clamp(1.7rem, 5vw, 2.5rem); font-weight: 650; letter-spacing: -0.035em; }
+.hosted-account-sections { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-top: 1px solid var(--border); border-left: 1px solid var(--border); }
+.hosted-account-sections > form,
+.hosted-account-sections > section { display: grid; align-content: start; gap: 0.65rem; min-width: 0; padding: 1rem; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.hosted-account-sections h3 { margin: 0; }
+.hosted-account-sections p { margin: 0; color: var(--muted); }
+.hosted-account-error, .hosted-account-notice { padding: 0.75rem; border-left: 4px solid var(--danger); background: var(--danger-soft); }
+.hosted-account-notice { border-color: var(--book); background: var(--book-soft); }
+.danger-button { border-color: var(--danger); background: var(--danger-soft); color: var(--text); }
+.button-link { display: inline-flex; min-height: 44px; align-items: center; justify-content: center; padding: 0.65rem 1rem; border: 1px solid var(--border-strong); background: var(--surface-raised); color: var(--text); font-weight: 750; text-decoration: none; }
+
+@media (max-width: 640px) {
+  .hosted-account-sections { grid-template-columns: 1fr; }
+  .hosted-dialog-backdrop { padding: 0; place-items: end stretch; }
+  .hosted-account-dialog { width: 100%; max-height: 92vh; border-inline: 0; border-bottom: 0; }
+  .hosted-sync-strip { right: 0.35rem; bottom: calc(4.2rem + env(safe-area-inset-bottom)); left: 0.35rem; max-width: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hosted-dialog-backdrop, .hosted-account-dialog { animation: none !important; }
+}
+
+@media (forced-colors: active) {
+  .hosted-sync-strip, .hosted-account-dialog, .hosted-account-sections, .hosted-account-sections > * { border-color: CanvasText; background: Canvas; color: CanvasText; }
+}

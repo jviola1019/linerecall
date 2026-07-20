@@ -1,0 +1,15 @@
+# AWS/OpenTofu reference stack
+
+This root module is the paid, production-grade AWS reference. It is not applied under the project's zero-spend constraint. The separately gated [OCI reference](./oci-zero-spend/README.md) describes a much smaller Always Free-only compute/storage experiment; it is also unapplied and currently blocked by Chicago A1 capacity, quota-policy, and account-recovery issues. Neither module is a deployed production environment.
+
+This stack provisions the private service tier: Multi-AZ PostgreSQL with 35-day PITR, encrypted Redis, a short-retention private-import bucket, an Object-Lock/versioned release catalog, KMS, two Fargate API tasks, two non-addressable pg-boss dispatchers, Fargate Batch workers, least-privilege roles, logs, health rollback, and task-count alarms. User PGNs are not Object-Locked and can be deleted immediately after derivation or account deletion.
+
+API tasks and each worker workload have separate IAM roles. The API can submit only this stack's reviewed queue/job definitions, send only from the configured SES address, stage private imports, read approved catalog objects, and use KMS only through the expected encryption contexts. Import workers can read and dispose only submitted import objects. Stockfish, Scid, and refresh workers can write candidate evidence only under `staging/`; they cannot promote `public/` manifests, send email, or recursively submit jobs.
+
+It intentionally consumes an organization-managed ALB target group/security group and alert topic. The public CDN, restrictive WAF, ACM certificate, DNS, cross-account backup vault, GitHub OIDC deployment role, and centralized telemetry destination are organization-level controls and must be attached before production. This avoids creating a second, inconsistent internet perimeter in an application module.
+
+The module does not contain credentials. Supply sensitive values through encrypted CI variables/Secrets Manager, use a remote encrypted state backend with locking, and pin provider checksums. Run `tofu fmt -check`, `tofu validate`, a policy scan, and a reviewed plan in staging. OpenTofu was not available in the current workstation, so this configuration is implemented but not locally validated or applied.
+
+Database URLs must reference separate `linerecall_app` and Better Auth roles. The secret JSON includes `DATABASE_SSL_CA_PEM`; production startup fails without verified PostgreSQL CA material. The API atomically inserts pg-boss work using its existing PostgreSQL transaction, but has no Batch permission. Batch definition ARNs and submit permission exist only on the dispatcher tasks.
+
+The current `/health/ready` implementation reports process readiness rather than live PostgreSQL, Redis, object-store, and catalog checks. ECS therefore continues to use `/health/live`; changing the infrastructure probe alone would create false confidence. Until the service exposes dependency-aware readiness, deployment automation must run authenticated dependency preflights and refuse traffic promotion when any required dependency fails. This remains a staging release blocker, not a health claim.

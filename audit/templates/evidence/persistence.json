@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 2,
+  "id": "persistence",
+  "status": "not_run",
+  "completedAt": null,
+  "reviewer": null,
+  "artifactSha256": null,
+  "summary": "Offline, export, import, and supported persistence testing has not been recorded.",
+  "evidence": [],
+  "limitations": [
+    "An untested storage adapter cannot be enabled in production."
+  ]
+}

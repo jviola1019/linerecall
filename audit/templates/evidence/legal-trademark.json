@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 2,
+  "id": "legal-trademark",
+  "status": "not_run",
+  "completedAt": null,
+  "reviewer": null,
+  "artifactSha256": null,
+  "summary": "Qualified legal review has not been completed.",
+  "evidence": [],
+  "limitations": [
+    "Engineering evidence is not legal advice or certification."
+  ],
+  "requiredReview": [
+    "Trademark, accessibility representations, privacy, terms, age handling, sharing, licenses, and subprocessors"
+  ]
+}

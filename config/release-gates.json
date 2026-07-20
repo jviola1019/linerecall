@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "candidate": "build/candidate/linerecall.html",
+  "artifact": "dist/linerecall.html",
+  "marker": "dist/SHIPPABLE.json",
+  "report": "audit/generated/release-gate.json",
+  "automated": [
+    { "id": "candidate-build", "command": "npm", "args": ["run", "build:candidate"] },
+    { "id": "typecheck", "command": "npm", "args": ["run", "typecheck"] },
+    { "id": "critical-domain-tests-with-coverage", "command": "npm", "args": ["run", "test:coverage:domain"] },
+    { "id": "unit-component-tests-with-coverage", "command": "npm", "args": ["run", "test:coverage"] },
+    { "id": "data-tests", "command": "npm", "args": ["run", "test:data"] },
+    { "id": "connected-data-foundation", "command": "npm", "args": ["run", "data:foundation-gate"] },
+    { "id": "evidence-complete-v3-production-data", "command": "npm", "args": ["run", "release:production-data"] },
+    { "id": "domain-tests", "command": "npm", "args": ["run", "test:domain"] },
+    { "id": "security-tests", "command": "npm", "args": ["run", "test:security"] },
+    { "id": "connected-source-snapshot", "command": "npm", "args": ["run", "security:source-snapshot"] },
+    { "id": "hosted-client-typecheck", "command": "npm", "args": ["run", "hosted:typecheck"] },
+    { "id": "hosted-client-tests", "command": "npm", "args": ["run", "hosted:test"] },
+    { "id": "hosted-client-build", "command": "npm", "args": ["run", "hosted:build"] },
+    { "id": "hosted-client-production-audit", "command": "npm", "args": ["run", "hosted:audit"] },
+    { "id": "connected-server-typecheck", "command": "npm", "args": ["run", "server:typecheck"] },
+    { "id": "connected-server-coverage", "command": "npm", "args": ["run", "server:coverage"] },
+    { "id": "connected-server-critical-per-file-coverage", "command": "npm", "args": ["run", "server:critical-coverage"] },
+    { "id": "connected-server-build", "command": "npm", "args": ["run", "server:build"] },
+    { "id": "connected-server-production-audit", "command": "npm", "args": ["run", "server:audit"] },
+    { "id": "verbose-snapshot-validation", "command": "npm", "args": ["run", "data:verify"] },
+    { "id": "compact-snapshot-validation", "command": "npm", "args": ["run", "data:app-verify"] },
+    { "id": "csp-hardening", "command": "npm", "args": ["run", "artifact:harden"] },
+    { "id": "hosted-deployment-manifest", "command": "npm", "args": ["run", "hosting:manifest"] },
+    { "id": "hosted-deployment-policy", "command": "npm", "args": ["run", "hosting:audit"] },
+    { "id": "browser-e2e-automated", "command": "npm", "args": ["run", "test:e2e"] },
+    { "id": "static-source-policy", "command": "npm", "args": ["run", "security:static"] },
+    { "id": "interface-copy-policy", "command": "npm", "args": ["run", "editorial:copy"] },
+    { "id": "locale-catalog-policy", "command": "npm", "args": ["run", "localization:audit"] },
+    { "id": "secret-scan", "command": "npm", "args": ["run", "security:secrets"] },
+    { "id": "production-dependency-audit", "command": "npm", "args": ["run", "security:dependencies"] },
+    { "id": "license-audit", "command": "npm", "args": ["run", "security:licenses"] },
+    { "id": "sbom", "command": "npm", "args": ["run", "security:sbom"] },
+    { "id": "coverage-thresholds", "command": "npm", "args": ["run", "release:coverage"] },
+    { "id": "artifact-offline-security", "command": "npm", "args": ["run", "artifact:audit"] }
+  ],
+  "evidence": [
+    { "id": "browser-e2e", "path": "audit/evidence/browser-e2e.json", "template": "audit/templates/evidence/browser-e2e.json" },
+    { "id": "accessibility-manual", "path": "audit/evidence/manual-accessibility.json", "template": "audit/templates/evidence/accessibility-manual.json" },
+    { "id": "performance", "path": "audit/evidence/performance.json", "template": "audit/templates/evidence/performance.json" },
+    { "id": "persistence", "path": "audit/evidence/persistence.json", "template": "audit/templates/evidence/persistence.json" },
+    { "id": "security-manual", "path": "audit/evidence/security-review.json", "template": "audit/templates/evidence/security-manual.json", "sourceSnapshot": "audit/generated/connected-source-snapshot.json" },
+    { "id": "editorial-human", "path": "audit/evidence/editorial-human.json", "template": "audit/templates/evidence/editorial-human.json", "sourceSnapshot": "audit/generated/connected-source-snapshot.json" },
+    { "id": "localization-human", "path": "audit/evidence/localization-human.json", "template": "audit/templates/evidence/localization-human.json", "sourceSnapshot": "audit/generated/connected-source-snapshot.json" },
+    { "id": "visual-human", "path": "audit/evidence/visual-human.json", "template": "audit/templates/evidence/visual-human.json", "sourceSnapshot": "audit/generated/connected-source-snapshot.json" },
+    { "id": "legal-trademark", "path": "audit/evidence/legal-trademark.json", "template": "audit/templates/evidence/legal-trademark.json" },
+    { "id": "connected-staging", "path": "audit/evidence/connected-staging.json", "template": "audit/templates/evidence/connected-staging.json", "sourceSnapshot": "audit/generated/connected-source-snapshot.json" },
+    { "id": "release-signing", "path": "audit/evidence/release-signing.json", "template": "audit/templates/evidence/release-signing.json", "sourceSnapshot": "audit/generated/connected-source-snapshot.json" }
+  ],
+  "releaseBindings": {
+    "sourceSnapshot": "audit/generated/connected-source-snapshot.json",
+    "productionReadiness": "data/generated/v3/production-data-readiness.json",
+    "appSnapshotManifest": "data/generated/app-snapshot/manifest.json"
+  },
+  "signing": {
+    "evidenceId": "release-signing",
+    "trustedKeys": "config/release-signing-keys.json",
+    "attestationSourcePath": "audit/generated/release-signing-attestation.json"
+  },
+  "limitations": [
+    "Automated and manual evidence supports release decisions but is not legal certification.",
+    "The downloaded HTML is the guaranteed offline form; first hosted navigation still needs the host.",
+    "Broadcast data is biased toward stronger official-event players, so lower rating bands can be sparse."
+  ]
+}

@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "id": "lichess-puzzle-database",
+    "name": "Lichess puzzle database",
+    "databaseUrl": "https://database.lichess.org/#puzzles",
+    "artifactUrl": "https://database.lichess.org/lichess_db_puzzle.csv.zst",
+    "asOf": "2026-07-05",
+    "publishedPuzzleTotal": 6057356,
+    "format": {
+      "mediaType": "text/csv compressed with Zstandard",
+      "columns": [
+        "PuzzleId",
+        "FEN",
+        "Moves",
+        "Rating",
+        "RatingDeviation",
+        "Popularity",
+        "NbPlays",
+        "Themes",
+        "GameUrl",
+        "OpeningTags"
+      ]
+    }
+  },
+  "license": {
+    "spdxId": "CC0-1.0",
+    "name": "Creative Commons Zero v1.0 Universal",
+    "termsUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "sourceStatementUrl": "https://database.lichess.org/",
+    "permissions": {
+      "download": true,
+      "transform": true,
+      "redistribute": true,
+      "attributionRequired": false,
+      "shareAlikeRequired": false
+    }
+  },
+  "approval": {
+    "status": "approved",
+    "approvedOn": "2026-07-14",
+    "scope": "Download and inspect the identified puzzle export, then derive an opening-linked subset. No puzzle may enter a release until a separately reviewed local SHA-256 integrity receipt and engine sanity checks are approved.",
+    "basis": "The official Lichess database page releases exports under CC0 and publishes the puzzle format and total. The publisher does not publish a puzzle-file SHA-256.",
+    "reviewRequiredWhen": "The artifact URL, byte length, ETag, Last-Modified value, published total, schema, filters, license, or locally computed digest changes."
+  },
+  "artifact": {
+    "bytes": 302111223,
+    "etagObserved": "\"6a44d6af-1201d9f7\"",
+    "lastModifiedObserved": "Wed, 01 Jul 2026 08:58:23 GMT",
+    "sha256": null,
+    "integrityStatus": "pending-local-digest",
+    "integrityReason": "No official SHA-256 is published and the puzzle archive is not present in this workspace. A computed digest must be recorded in a separately approved receipt before ingestion."
+  },
+  "selection": {
+    "openingTagsRequired": true,
+    "minimumPlays": 100,
+    "minimumPopularity": 80,
+    "maximumRatingDeviation": 100,
+    "minimumLearnerDecisions": 1,
+    "maximumLearnerDecisions": 5,
+    "legalStandardChessRequired": true,
+    "engineSanityCheckRequired": true,
+    "sourceGameBulkFetchProhibited": true
+  },
+  "integrity": {
+    "algorithm": "SHA-256",
+    "localDigestApprovalRequired": true,
+    "verifyByteLengthBeforeParse": true,
+    "verifyDigestBeforeParse": true,
+    "failClosed": true
+  }
+}

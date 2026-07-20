@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "name": "Stockfish",
+  "version": "18",
+  "releaseTag": "sf_18",
+  "releaseCommit": "cb3d4ee9b47d0c5aae855b12379378ea1439675c",
+  "releasedAt": "2026-01-31T14:33:53Z",
+  "sourceUrl": "https://github.com/official-stockfish/Stockfish/tree/cb3d4ee9b47d0c5aae855b12379378ea1439675c",
+  "releaseUrl": "https://github.com/official-stockfish/Stockfish/releases/tag/sf_18",
+  "approval": {
+    "status": "approved",
+    "approvedOn": "2026-07-11",
+    "scope": "Download and run a checksum-verified Stockfish 18 executable and its embedded NNUE networks for offline build-time audits only.",
+    "basis": "GPL-3.0 permits use and analysis; no executable, NNUE file, or copied engine code is redistributed in LineRecall.",
+    "reviewRequiredWhen": "The engine version, release commit, artifact checksums, analysis settings, license, or distribution policy changes."
+  },
+  "license": {
+    "spdx": "GPL-3.0-only",
+    "name": "GNU General Public License v3.0 only",
+    "url": "https://github.com/official-stockfish/Stockfish/blob/cb3d4ee9b47d0c5aae855b12379378ea1439675c/Copying.txt",
+    "distributionPolicy": "Build-time audit dependency only. Do not bundle the executable or NNUE files in the LineRecall artifact."
+  },
+  "analysisConfiguration": {
+    "threads": 1,
+    "hashMb": 128,
+    "multiPv": 5,
+    "nodes": 250000
+  },
+  "artifacts": [
+    {
+      "platform": "win32",
+      "arch": "x64",
+      "fileName": "stockfish-windows-x86-64.zip",
+      "url": "https://github.com/official-stockfish/Stockfish/releases/download/sf_18/stockfish-windows-x86-64.zip",
+      "size": 76949606,
+      "sha256": "40cc975817e7eee270b03f354810d20956df565420d320f6dd37d454dc81a139"
+    },
+    {
+      "platform": "win32",
+      "arch": "arm64",
+      "fileName": "stockfish-windows-armv8.zip",
+      "url": "https://github.com/official-stockfish/Stockfish/releases/download/sf_18/stockfish-windows-armv8.zip",
+      "size": 76855612,
+      "sha256": "7bc5880c11a58b2fdc4fcd606bf5cb593230026eb501a5a8865dc79fda5ea5fd"
+    },
+    {
+      "platform": "linux",
+      "arch": "x64",
+      "fileName": "stockfish-ubuntu-x86-64.tar",
+      "url": "https://github.com/official-stockfish/Stockfish/releases/download/sf_18/stockfish-ubuntu-x86-64.tar",
+      "size": 114391040,
+      "sha256": "5c6f38b02a4da5f3ffe763f27da6c3e743eebefd92b50cb3661623b96696adff"
+    },
+    {
+      "platform": "darwin",
+      "arch": "x64",
+      "fileName": "stockfish-macos-x86-64.tar",
+      "url": "https://github.com/official-stockfish/Stockfish/releases/download/sf_18/stockfish-macos-x86-64.tar",
+      "size": 114452480,
+      "sha256": "e7d7a2bca13915419d41ac6cb8cedb123dd2ba1c39a22c574df7a2aa3f526592"
+    },
+    {
+      "platform": "darwin",
+      "arch": "arm64",
+      "fileName": "stockfish-macos-m1-apple-silicon.tar",
+      "url": "https://github.com/official-stockfish/Stockfish/releases/download/sf_18/stockfish-macos-m1-apple-silicon.tar",
+      "size": 115322880,
+      "sha256": "4d77c4aa3ad9bd1ea8111f2ac5a4620fe7ebf998d6893bf828d49ccd579c8cb0"
+    }
+  ]
+}

@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en-US" dir="ltr" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#0b100e" />
+    <meta name="description" content="LineRecall is an offline-first chess opening study app under release-gated development, with auditable game and engine evidence." />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='5' y='5' width='54' height='54' rx='8' fill='%23191917' stroke='%23db8d6d' stroke-width='4'/%3E%3Cpath d='M14 48 27 34l11 6 13-25M19 17h30M17 30h11M34 17v15' fill='none' stroke='%23db8d6d' stroke-width='4' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='14' cy='48' r='4' fill='%23db8d6d'/%3E%3C/svg%3E" />
+    <link rel="mask-icon" color="#99492f" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cpath d='M5 5h54v54H5zM14 52a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm1-3 13-14 10 6 14-25-4-2-12 21-9-5-15 16 3 3z'/%3E%3C/svg%3E" />
+    <title>LineRecall — Chess Opening Study Review Candidate</title>
+  </head>
+  <body>
+    <div id="root">
+      <div class="app-shell" id="preboot-shell">
+        <a class="skip-link" href="#main-content">Skip to main content</a>
+        <header class="app-header">
+          <span class="brand-button" aria-label="LineRecall">
+            <span class="brand-mark" aria-hidden="true">
+              <svg viewBox="0 0 44 44" focusable="false">
+                <path class="brand-grid" d="M4 14.5h36M4 29.5h36M14.5 4v36M29.5 4v36" />
+                <path class="brand-route" d="M8.5 33.5 17 24l8 4.5L35.5 10" />
+                <circle cx="8.5" cy="33.5" r="2.5" />
+                <circle cx="17" cy="24" r="2.5" />
+                <path class="brand-arrow" d="m30.5 10 5 0 0 5" />
+              </svg>
+            </span>
+            <span class="brand-copy"><strong>LineRecall</strong><small>Opening study</small></span>
+          </span>
+          <nav class="primary-nav" aria-label="Primary navigation loading">
+            <button type="button" disabled><span class="nav-glyph" aria-hidden="true">&#9633;</span><span>Today</span></button>
+            <button type="button" disabled><span class="nav-glyph" aria-hidden="true">&#9783;</span><span>Repertoire</span></button>
+            <button type="button" disabled><span class="nav-glyph" aria-hidden="true">&#10022;</span><span>Puzzles</span></button>
+            <button type="button" disabled><span class="nav-glyph" aria-hidden="true">&#9906;</span><span>Explore</span></button>
+            <button type="button" disabled><span class="nav-glyph" aria-hidden="true">&#8942;</span><span>Progress</span></button>
+          </nav>
+          <div class="header-actions">
+            <span class="offline-badge"><span aria-hidden="true">●</span> Verifying data</span>
+            <button
+              type="button"
+              class="theme-toggle"
+              id="preboot-theme"
+              aria-label="Switch to light mode"
+              aria-pressed="false"
+            ><span aria-hidden="true">☾</span><span class="theme-label">Light mode</span></button>
+            <div class="account-control" role="group" aria-label="Account and sync">
+              <button type="button" class="utility-button" disabled>Sign in</button>
+            </div>
+            <button type="button" class="utility-button" disabled>Data &amp; licenses</button>
+          </div>
+        </header>
+        <div class="global-storage-warning storage-status-bar" role="status">
+          <span class="storage-message"><strong>Storage:</strong> Checking progress storage…</span>
+          <span class="storage-status-spacer" aria-hidden="true"></span>
+        </div>
+        <main id="main-content" class="startup-state">
+          <div class="resource-state loading-state" role="status" aria-live="polite">
+            <span class="spinner" aria-hidden="true"></span>
+            <p>Validating the embedded review data…</p>
+          </div>
+        </main>
+      </div>
+    </div>
+    <script>
+      (() => {
+        const button = document.getElementById('preboot-theme')
+        if (!(button instanceof HTMLButtonElement)) return
+        button.addEventListener('click', () => {
+          const light = document.documentElement.dataset.theme !== 'light'
+          document.documentElement.dataset.theme = light ? 'light' : 'dark'
+          button.setAttribute('aria-pressed', String(light))
+          button.setAttribute('aria-label', `Switch to ${light ? 'dark' : 'light'} mode`)
+          const icon = button.firstElementChild
+          const label = button.lastElementChild
+          if (icon) icon.textContent = light ? '☀' : '☾'
+          if (label) label.textContent = light ? 'Dark mode' : 'Light mode'
+        })
+        // Release measurements read this buffered mark after full startup. It
+        // captures the exact instant the first enabled shell control becomes
+        // operable, independently of the deferred application bundle.
+        performance.mark('linerecall-shell-interactive')
+      })()
+    </script>
+    <!-- linerecall-embedded-snapshot -->
+    <noscript>
+      <main>
+        <h1>LineRecall needs JavaScript</h1>
+        <p>The chessboard, legal-move validation, checksum verification, and training scheduler require JavaScript. No external scripts, analytics, or network data APIs are used by the downloaded app.</p>
+      </main>
+    </noscript>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

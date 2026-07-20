@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 2,
+  "id": "browser-e2e",
+  "status": "not_run",
+  "completedAt": null,
+  "reviewer": null,
+  "artifactSha256": null,
+  "summary": "The exact-candidate browser matrix has not been recorded.",
+  "evidence": [],
+  "limitations": [
+    "This template is a hard release blocker and is not test evidence."
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 2,
+  "id": "performance",
+  "status": "not_run",
+  "completedAt": null,
+  "reviewer": null,
+  "artifactSha256": null,
+  "summary": "Exact-candidate performance measurements have not been recorded.",
+  "evidence": [],
+  "limitations": [
+    "Development measurements or measurements from different bytes do not satisfy this gate."
+  ]
+}

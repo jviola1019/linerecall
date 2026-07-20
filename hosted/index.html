@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#0b100e" />
+    <meta name="description" content="LineRecall is an evidence-backed chess opening trainer with optional private cloud sync." />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'none'; object-src 'none'; frame-src 'none'; img-src 'self' data:; font-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; form-action 'self'; upgrade-insecure-requests" />
+    <title>LineRecall — Connected Opening Study</title>
+  </head>
+  <body>
+    <div id="root">
+      <main id="main-content" class="startup-state">
+        <div class="resource-state loading-state" role="status" aria-live="polite">
+          <span class="spinner" aria-hidden="true"></span>
+          <p>Preparing your study desk…</p>
+        </div>
+      </main>
+    </div>
+    <noscript><p>LineRecall requires JavaScript for legal chess moves and encrypted session-based account access.</p></noscript>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

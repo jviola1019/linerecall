@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "id": "lichess-chessnut-pieces",
+    "name": "Chessnut SVG chess pieces distributed with Lichess",
+    "repositoryUrl": "https://github.com/lichess-org/lila",
+    "commit": "3b7f2811bfb0682932f40688fcfb5d5caf7aece3",
+    "commitUrl": "https://github.com/lichess-org/lila/tree/3b7f2811bfb0682932f40688fcfb5d5caf7aece3/public/piece/chessnut",
+    "author": "Alexis Luengas"
+  },
+  "license": {
+    "spdxId": "Apache-2.0",
+    "name": "Apache License 2.0",
+    "termsUrl": "https://www.apache.org/licenses/LICENSE-2.0",
+    "sourceExceptionUrl": "https://github.com/lichess-org/lila/blob/3b7f2811bfb0682932f40688fcfb5d5caf7aece3/COPYING.md#exceptions-free",
+    "notice": "Lichess COPYING.md lists public/piece/chessnut by Alexis Luengas as an Apache-2.0 exception. No lila application code or differently licensed artwork is approved by this manifest."
+  },
+  "approval": {
+    "status": "approved",
+    "approvedOn": "2026-07-14",
+    "scope": "Bundle and redistribute only the twelve pinned, static-scanned Chessnut SVG files listed below, with author attribution and the Apache-2.0 notice. No other lila code or artwork is approved.",
+    "basis": "The pinned Lichess COPYING.md identifies public/piece/chessnut by Alexis Luengas as Apache-2.0. All twelve receipt files matched the expected SVG-only set, were XML-parseable, and contained no script, event handler, foreignObject, image, use, anchor, or javascript reference.",
+    "reviewRequiredWhen": "The commit, path, file bytes, license declaration, author attribution, intended use, or redistribution model changes."
+  },
+  "format": {
+    "mediaType": "image/svg+xml",
+    "expectedFiles": 12,
+    "allowScripts": false,
+    "allowExternalReferences": false,
+    "allowForeignObject": false
+  },
+  "files": [
+    { "path": "public/piece/chessnut/bB.svg", "bytes": 3458, "sha256": "1660d01f51eea3bd4a7677920b8f261481e5d5758b372ce062a508c8a1026175" },
+    { "path": "public/piece/chessnut/bK.svg", "bytes": 2277, "sha256": "b0fd61530fb2ea35f10ff59456b18b845a306110d9ba3220ce7d0b7f68167eab" },
+    { "path": "public/piece/chessnut/bN.svg", "bytes": 889, "sha256": "078ef9a73782e35deea380a11e9918ee1bc38f1302c384bab9354bbe89a9e338" },
+    { "path": "public/piece/chessnut/bP.svg", "bytes": 732, "sha256": "b3a9c2a3d949c74a5dbe0882631086fdcf02309ed8ba941718b91d550ca35c8e" },
+    { "path": "public/piece/chessnut/bQ.svg", "bytes": 5058, "sha256": "c3973c41730ae03038501329b84d061040fc8c72b0ce24940ada07a3e8379c18" },
+    { "path": "public/piece/chessnut/bR.svg", "bytes": 2019, "sha256": "c40f0c10b21635703b050d2996d4cbfe3b443e2573304ee91ed29fd7be61caa1" },
+    { "path": "public/piece/chessnut/wB.svg", "bytes": 3687, "sha256": "fdac5e5848b67aed513416d347c6b6479dbf86a2be3f6fdd44555d724ae1b7a7" },
+    { "path": "public/piece/chessnut/wK.svg", "bytes": 3708, "sha256": "31bffcebab6aedc808680824571641625ecd263804bd6a6963be78d5962a7935" },
+    { "path": "public/piece/chessnut/wN.svg", "bytes": 849, "sha256": "73a4860e4f73034ca1579e952240e8cce57affec677e87b7e1dd8cf9c3dbcdd1" },
+    { "path": "public/piece/chessnut/wP.svg", "bytes": 626, "sha256": "423f9a04ff6a18ed129d90269e15b7a0d5390ac775e8d3468d09feb33f92ea0e" },
+    { "path": "public/piece/chessnut/wQ.svg", "bytes": 2078, "sha256": "21d84a10b2d0f7ebeff93bc452a12e66dd6928b35d7db21d20b59fcc520584fb" },
+    { "path": "public/piece/chessnut/wR.svg", "bytes": 2203, "sha256": "0bb5bc1be4100f5f3158cc568df44ae16b5f9110a342c4186aba007729a65052" }
+  ],
+  "integrity": {
+    "algorithm": "SHA-256",
+    "verifyBeforeUse": true,
+    "failClosed": true
+  }
+}

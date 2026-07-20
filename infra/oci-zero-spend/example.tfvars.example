@@ -1,0 +1,27 @@
+# REVIEW EXAMPLE ONLY. OpenTofu does not auto-load this filename.
+# Keep deployment_enabled and both service switches false until every README
+# gate has been completed and a reviewed plan shows only Always Free resources.
+deployment_enabled    = false
+enable_compute        = false
+enable_object_storage = false
+
+region             = "us-chicago-1"
+oci_config_profile = "LINERECALL"
+
+# Deliberately empty. Do not copy credentials or a private SSH key here.
+compartment_ocid    = ""
+availability_domain = ""
+ubuntu_image_ocid   = ""
+ssh_public_key      = ""
+
+# Fail-closed usage values. Replace only with fresh Console readings immediately
+# before a reviewed plan. Existing boot volumes count toward block storage.
+verified_existing_a1_ocpus             = 2
+verified_existing_a1_memory_gb         = 12
+verified_existing_block_storage_gb     = 200
+verified_existing_object_storage_bytes = 20000000000
+object_storage_reserved_bytes          = 0
+
+assign_public_ipv4  = false
+enable_public_https = false
+ssh_ingress_cidrs   = []

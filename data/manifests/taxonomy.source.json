@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "id": "lichess-chess-openings",
+    "name": "Lichess chess-openings",
+    "repositoryUrl": "https://github.com/lichess-org/chess-openings",
+    "commit": "17ee660257de02870636f36248e919f2e01d8e85",
+    "commitUrl": "https://github.com/lichess-org/chess-openings/tree/17ee660257de02870636f36248e919f2e01d8e85"
+  },
+  "license": {
+    "spdxId": "CC0-1.0",
+    "name": "Creative Commons Zero v1.0 Universal",
+    "termsUrl": "https://github.com/lichess-org/chess-openings/blob/17ee660257de02870636f36248e919f2e01d8e85/COPYING.txt",
+    "sourceFile": {
+      "path": "COPYING.txt",
+      "url": "https://raw.githubusercontent.com/lichess-org/chess-openings/17ee660257de02870636f36248e919f2e01d8e85/COPYING.txt",
+      "bytes": 7048,
+      "sha256": "a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499"
+    },
+    "permissions": {
+      "download": true,
+      "transform": true,
+      "redistribute": true,
+      "attributionRequired": false,
+      "shareAlikeRequired": false
+    },
+    "notice": "The repository README dedicates the factual collection to the public domain under CC0. Keep this provenance even though attribution is not required. This approval does not apply to Lichess broadcast-derived statistics, Scid, or Stockfish outputs."
+  },
+  "approval": {
+    "status": "approved",
+    "approvedOn": "2026-07-10",
+    "scope": "Download, normalize, bundle, and redistribute only the pinned opening taxonomy files listed in this manifest.",
+    "basis": "CC0-1.0 permits copying, modification, and redistribution without attribution or share-alike conditions.",
+    "reviewRequiredWhen": "The commit, source files, license text, intended use, or redistribution model changes."
+  },
+  "format": {
+    "mediaType": "text/tab-separated-values; charset=utf-8",
+    "header": ["eco", "name", "pgn"],
+    "lineEnding": "LF",
+    "expectedRows": 3790,
+    "expectedEcoCodes": 500,
+    "ecoPattern": "^[A-E][0-9]{2}$"
+  },
+  "files": [
+    {
+      "volume": "A",
+      "path": "a.tsv",
+      "url": "https://raw.githubusercontent.com/lichess-org/chess-openings/17ee660257de02870636f36248e919f2e01d8e85/a.tsv",
+      "bytes": 66338,
+      "rows": 817,
+      "sha256": "41722fa3d44f294357326fe2ca1b956d9e56490b30efcfa68db61114c9df7e10"
+    },
+    {
+      "volume": "B",
+      "path": "b.tsv",
+      "url": "https://raw.githubusercontent.com/lichess-org/chess-openings/17ee660257de02870636f36248e919f2e01d8e85/b.tsv",
+      "bytes": 77005,
+      "rows": 769,
+      "sha256": "28d5c2dfc3329d70e85be2a149d001a59e47c2176c9d2c6594eb3be88128a3fc"
+    },
+    {
+      "volume": "C",
+      "path": "c.tsv",
+      "url": "https://raw.githubusercontent.com/lichess-org/chess-openings/17ee660257de02870636f36248e919f2e01d8e85/c.tsv",
+      "bytes": 131820,
+      "rows": 1246,
+      "sha256": "e90f063b3a04f5fbb24425682b13f574141a266a1ba877974cdd9c6595a3d942"
+    },
+    {
+      "volume": "D",
+      "path": "d.tsv",
+      "url": "https://raw.githubusercontent.com/lichess-org/chess-openings/17ee660257de02870636f36248e919f2e01d8e85/d.tsv",
+      "bytes": 67414,
+      "rows": 602,
+      "sha256": "842f4b9e883d52a4b6ac51de45c336d6322852f0488fc307f1ac00dbde269906"
+    },
+    {
+      "volume": "E",
+      "path": "e.tsv",
+      "url": "https://raw.githubusercontent.com/lichess-org/chess-openings/17ee660257de02870636f36248e919f2e01d8e85/e.tsv",
+      "bytes": 42664,
+      "rows": 356,
+      "sha256": "b392f3b04bc7c7f0c028e601daea613007f26edce4fcdfd7ccda70d8cf078cf5"
+    }
+  ],
+  "integrity": {
+    "algorithm": "SHA-256",
+    "verifyBeforeParse": true,
+    "failClosed": true
+  }
+}
