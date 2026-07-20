@@ -20,6 +20,11 @@ import {
 } from '../../src/data/wire.ts'
 import { DataManifestSchema, OpeningPartitionSchema } from '../../src/domain/opening-data.ts'
 
+// Canonical JSON bytes are stable across operating systems; gzip output is not
+// guaranteed to be identical across zlib versions. This digest was recorded
+// from the independently verified A30 release partition named by audit.catalog.
+const AUDITED_A30_JSON_SHA256 = '5d75bb4c238f7c0effc8f874b3c9591550fdc562cdefae770f62c4c31dd4576f'
+
 function option(name: string, fallback: string): string {
   const index = process.argv.indexOf(name)
   const value = index < 0 ? fallback : process.argv[index + 1]
@@ -185,10 +190,10 @@ async function materializeReviewFixture(options: { outputRoot: string }): Promis
   const releaseA30 = gzipSync(releaseA30Json, { level: 9 })
   if (
     releaseA30Json.byteLength !== auditedA30.uncompressedBytes ||
-    releaseA30.byteLength !== auditedA30.compressedBytes ||
-    sha256(releaseA30) !== auditedA30.sha256
+    sha256(releaseA30Json) !== AUDITED_A30_JSON_SHA256 ||
+    hydratedA30.lines.length !== auditedA30.lineCount
   ) {
-    throw new Error('Hydrated A30 differs from its independently audited release receipt')
+    throw new Error('Hydrated A30 differs from its independently audited canonical JSON receipt')
   }
   await writeAtomic(resolve(releaseRoot, 'partitions', 'A30.json.gz'), releaseA30)
 
