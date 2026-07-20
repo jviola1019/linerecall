@@ -52,6 +52,7 @@ jobs:
 
       - name: Verify browser components and connected service
         run: |
+          npm run test:security
           npm test
           npm run hosted:test
           npm run server:test
