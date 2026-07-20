@@ -198,7 +198,7 @@ for (const dependency of infrastructureToolchain.dependencies) {
 const dataComponents = [
   { name: 'Lichess chess-openings taxonomy', version: '17ee660257de02870636f36248e919f2e01d8e85', license: 'CC0-1.0', manifest: 'data/manifests/taxonomy.source.json', scope: 'required' },
   { name: 'Lichess official broadcast-derived statistics', version: '2020-01..2026-06', license: 'CC-BY-SA-4.0', manifest: 'data/manifests/broadcasts.source.json', scope: 'required' },
-  { name: 'LineRecall compact audited opening snapshot', version: 'linerecall-app-wire-v1', license: 'CC-BY-SA-4.0', manifest: 'data/generated/app-snapshot/manifest.json', scope: 'required' },
+  { name: 'LineRecall embedded audited opening snapshot', version: 'linerecall-app-wire-v2', license: 'CC-BY-SA-4.0', manifest: 'src/generated/embedded-snapshot.json', scope: 'required' },
   { name: 'Chessnut SVG chess pieces by Alexis Luengas', version: '3b7f2811bfb0682932f40688fcfb5d5caf7aece3', license: 'Apache-2.0', manifest: 'data/manifests/chessnut-pieces.source.json', scope: 'required', componentType: 'file' },
   { name: 'Lichess Standard rated Q2 2026 source corpus', version: '2026-04..2026-06', license: 'CC0-1.0', manifest: 'data/manifests/lichess-standard-q2-2026.source.json', scope: 'excluded' },
   { name: 'Lichess puzzle source corpus', version: '2026-07-05', license: 'CC0-1.0', manifest: 'data/manifests/lichess-puzzles.source.json', scope: 'excluded' },
