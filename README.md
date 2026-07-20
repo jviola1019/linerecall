@@ -67,6 +67,12 @@ produces only a review candidate. `npm run test:e2e` defaults to Chromium;
 Firefox and WebKit require `LINERECALL_E2E_BROWSER` and separate ports, so one
 invocation is not the complete browser matrix.
 
+`npm test`, `npm run test:data`, and `npm run test:coverage` first materialize
+checksum-verified review fixtures under `build/review-data` from the committed
+embedded snapshot. This makes a clean checkout reproducible without a corpus
+download. The fixture is schema-v2 review evidence and cannot satisfy the
+schema-v3 production-data gate.
+
 The repository retains a bounded schema-v2 embedded snapshot strictly so a
 fresh checkout can run UI tests and build the review application without
 downloading a corpus:

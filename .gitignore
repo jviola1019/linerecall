@@ -3,7 +3,7 @@ node_modules/
 .cache/
 coverage/
 dist/
-build/
+/build/
 data/raw/
 data/generated/
 audit/generated/

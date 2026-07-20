@@ -5,6 +5,7 @@ import { Blob as NodeBlob } from 'node:buffer'
 import { DecompressionStream as NodeDecompressionStream } from 'node:stream/web'
 import { gunzipSync } from 'node:zlib'
 import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { afterEach, beforeAll, describe, expect, test, vi } from 'vitest'
 import embeddedSnapshot from '../../src/generated/embedded-snapshot.json' with { type: 'json' }
 import {
@@ -30,6 +31,7 @@ Object.defineProperty(globalThis, 'Blob', { value: NodeBlob, configurable: true 
 Object.defineProperty(globalThis, 'DecompressionStream', { value: NodeDecompressionStream, configurable: true })
 
 const payload = embeddedSnapshot as EmbeddedSnapshotPayload
+const generatedRoot = process.env.LINERECALL_REVIEW_FIXTURE_ROOT ?? 'build/review-data'
 
 function inflateJson<T>(base64: string): T {
   return JSON.parse(gunzipSync(Buffer.from(base64, 'base64')).toString('utf8')) as T
@@ -177,7 +179,7 @@ describe('wire schema audit branches', () => {
   })
 
   test('reconciles the real app manifest and rejects combined receipt inconsistencies', () => {
-    const manifest = JSON.parse(readFileSync('data/generated/app-snapshot/manifest.json', 'utf8')) as unknown
+    const manifest = JSON.parse(readFileSync(join(generatedRoot, 'app-snapshot', 'manifest.json'), 'utf8')) as unknown
     expect(WireAppManifestSchema.parse(manifest)).toBeTruthy()
     const invalid = structuredClone(manifest) as Record<string, unknown> & {
       blobs: Record<string, { path: string }>

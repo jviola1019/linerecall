@@ -46,7 +46,7 @@ export async function scanSecrets(): Promise<CheckResult> {
   ]
   const files = await collectFiles(roots, {
     extensions: scanExtensions,
-    ignoredDirectories: new Set(['.git', 'node_modules', '.cache', 'coverage', 'data/generated', 'dist', 'build']),
+    ignoredDirectories: new Set(['.git', 'node_modules', '.cache', 'coverage', 'data/generated', 'dist']),
     // The release artifact is capped at 10 MiB and must never be silently
     // skipped if it grows beyond the current development size.
     maxBytes: 10 * 1024 * 1024,

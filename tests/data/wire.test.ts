@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import test from 'node:test'
 import { gunzipSync } from 'node:zlib'
 import { DataManifestSchema, OpeningPartitionSchema } from '../../src/domain/opening-data.ts'
@@ -15,15 +16,18 @@ async function gzipJson(path: string): Promise<unknown> {
   return JSON.parse(gunzipSync(await readFile(path)).toString('utf8')) as unknown
 }
 
+const generatedRoot = process.env.LINERECALL_REVIEW_FIXTURE_ROOT ?? 'build/review-data'
+const generatedPath = (...parts: string[]): string => join(generatedRoot, ...parts)
+
 async function a30Fixture() {
   const [search, audit, partition, auditedPartition] = await Promise.all([
-    gzipJson('data/generated/app-snapshot/search.json.gz').then((value) => WireSearchSnapshotSchema.parse(value)),
-    gzipJson('data/generated/app-snapshot/audit.json.gz').then((value) => DataManifestSchema.parse(value)),
-    gzipJson('data/generated/app-snapshot/partitions/A30.json.gz').then((value) => WirePartitionSchema.parse(value)),
-    gzipJson('data/generated/release/partitions/A30.json.gz').then((value) => OpeningPartitionSchema.parse(value)),
+    gzipJson(generatedPath('app-snapshot', 'search.json.gz')).then((value) => WireSearchSnapshotSchema.parse(value)),
+    gzipJson(generatedPath('app-snapshot', 'audit.json.gz')).then((value) => DataManifestSchema.parse(value)),
+    gzipJson(generatedPath('app-snapshot', 'partitions', 'A30.json.gz')).then((value) => WirePartitionSchema.parse(value)),
+    gzipJson(generatedPath('release', 'partitions', 'A30.json.gz')).then((value) => OpeningPartitionSchema.parse(value)),
   ])
   const shards = await Promise.all(partition.s.map((shardId) =>
-    gzipJson(`data/generated/app-snapshot/shards/${shardId}.json.gz`)
+    gzipJson(generatedPath('app-snapshot', 'shards', `${shardId}.json.gz`))
       .then((value) => WireEvidenceShardSchema.parse(value))))
   const evidence = {
     positions: new Map(shards.flatMap((shard) => shard.p)),
@@ -130,7 +134,7 @@ test('search card metadata exactly covers drillable variants and rejects corrupt
 
 test('app manifest receipts are unique canonical relative POSIX paths', async () => {
   const manifest = WireAppManifestSchema.parse(
-    JSON.parse(await readFile('data/generated/app-snapshot/manifest.json', 'utf8')) as unknown,
+    JSON.parse(await readFile(generatedPath('app-snapshot', 'manifest.json'), 'utf8')) as unknown,
   )
   const paths = [
     ...Object.values(manifest.blobs),
