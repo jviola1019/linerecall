@@ -11,6 +11,7 @@ audit/evidence/
 audit/screenshots/
 src/generated/*
 !src/generated/embedded-snapshot.json
+!src/generated/review-family-catalog.json
 playwright-report/
 test-results/
 *.log

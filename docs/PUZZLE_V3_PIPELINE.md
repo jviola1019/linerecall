@@ -1,6 +1,7 @@
 # Puzzle v3 pipeline
 
-Status: foundation implemented; release data not produced.
+Status: ingestion, runtime-resource, replay, and progress foundations are
+implemented in the current source tree; release data has not been produced.
 
 LineRecall treats the Lichess puzzle export as a separate CC0 source. The pinned
 source manifest is `data/manifests/lichess-puzzles.source.json`. The publisher
@@ -51,6 +52,41 @@ out of band. On a mate-in-one node, any legal mating move is accepted. Puzzle
 attempts use the versioned `PuzzleProgress` namespace and cannot update opening
 recall cards or mastery.
 
+## Runtime product boundary
+
+The Puzzles route is reserved for promoted tactical records. The former
+one-move repertoire recall activity is not used as a fallback.
+`TacticalPuzzleResource` has nine explicit states:
+
+- `disabled`
+- `loading`
+- `ready`
+- `empty`
+- `stale`
+- `offline`
+- `rate-limited`
+- `corrupt`
+- `error`
+
+Only `ready`, or previously verified records carried by the permitted stale
+and offline states, can start a puzzle. Corrupt records are never retained in a
+fallback state. Every list is schema-validated as a whole, every record is
+validated individually, and a repeated puzzle ID is rejected.
+
+The runtime applies a learner move and each forced opponent reply as separate
+board transitions. This preserves legal replay and lets the visual layer finish
+one 140–180 ms move before starting the next. Reduced-motion mode applies each
+state immediately. Setup moves, promotions, castling, en passant, multiple
+forced nodes, and alternative mate-in-one moves remain part of the release test
+matrix.
+
+`PuzzleAttemptEventV1` records solved or abandoned outcome, incorrect move
+count, hint use, elapsed time, and occurrence time. Application is idempotent
+by event ID. `PuzzleProgressV1` tracks attempts, solves, abandonment, clean
+solves, hints, incorrect moves, and elapsed time in its own repository. Opening
+cards, SM-2 intervals, family coverage, and opening mastery are not modified by
+puzzle events.
+
 ## Commands
 
 ```text
@@ -64,11 +100,11 @@ creation. Do not replace the approved receipt without review.
 
 ## Open hard gates
 
-As of 2026-07-16, the approved 302,111,223-byte archive is present and its local
+As of 2026-07-28, the approved 302,111,223-byte archive is present and its local
 SHA-256 receipt is recorded. No release subset exists because the complete
 compact v3 evidence graph (full broadcast plus April–June 2026 standard corpus)
 has not been produced, and no Stockfish 18 per-learner-node campaign has run.
 Fixtures test contracts only; their hashes and engine fields are deliberately
-synthetic and never constitute release evidence. The Puzzles screen must remain
-clearly identified as legacy opening recall until it consumes a promoted,
-content-addressed tactical shard. These blockers prohibit a production artifact.
+synthetic and never constitute release evidence. The current Puzzles screen
+therefore shows an explicit unavailable state instead of legacy opening recall
+or fabricated tactics. These blockers prohibit a production artifact.

@@ -176,7 +176,8 @@ describe('Fastify API boundary', () => {
       deviceId: DEVICE_ID,
       attempts: [{
         attemptId: '0198a5c0-4000-7000-8000-000000000005', deviceId: DEVICE_ID,
-        puzzleId: 'puzzle-001', solved: true, occurredAt: '2026-07-14T11:58:00.000Z',
+        puzzleId: 'puzzle-001', outcome: 'solved', incorrectAttempts: 1, usedHint: true,
+        elapsedMs: 12_345, occurredAt: '2026-07-14T11:58:00.000Z',
         snapshotVersion: 'release-2026q2',
       }],
     }
@@ -184,7 +185,19 @@ describe('Fastify API boundary', () => {
     const retry = await app.inject({ method: 'POST', url: '/v1/puzzles/attempts', headers, payload })
     assert.equal(first.statusCode, 200, first.body)
     assert.equal(first.json().progress[0].attempts, 1)
+    assert.equal(first.json().progress[0].hintsUsed, 1)
+    assert.equal(first.json().progress[0].incorrectMoves, 1)
+    assert.equal(first.json().progress[0].totalElapsedMs, 12_345)
     assert.equal(retry.json().progress[0].attempts, 1)
+    const bootstrap = await app.inject({
+      method: 'GET',
+      url: '/v1/puzzles/progress?cursor=0&limit=250',
+      headers,
+    })
+    assert.equal(bootstrap.statusCode, 200, bootstrap.body)
+    assert.equal(bootstrap.json().progress[0].puzzleId, 'puzzle-001')
+    assert.equal(bootstrap.json().progress[0].attempts, 1)
+    assert.equal(bootstrap.headers['ratelimit-limit'], '60')
   })
 
   it('rejects structurally adversarial PGN before it reaches object storage', async () => {

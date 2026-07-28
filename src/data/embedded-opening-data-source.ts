@@ -4,7 +4,17 @@ import {
   type OpeningCatalogEntry,
   type OpeningPartition,
 } from '../domain/opening-data.ts'
+import type {
+  ContentAddressedRefV1,
+  FamilyPackRefV1,
+  OpeningFamilyCatalogV1,
+  OpeningFamilyManifestV1,
+  TacticalPuzzleShardV1,
+} from '../domain/opening-family.ts'
+import type { RepertoireGraphDocument } from '../domain/repertoire.ts'
 import type { OpeningSearchEntry } from '../domain/input-validation.ts'
+import reviewFamilyCatalogInput from '../generated/review-family-catalog.json' with { type: 'json' }
+import { validateReviewOpeningFamilyCatalog } from './review-family-catalog.ts'
 import {
   EmbeddedSnapshotPayloadSchema,
   MAX_EMBEDDED_COMPRESSED_BLOB_BYTES,
@@ -297,11 +307,22 @@ export class EmbeddedOpeningDataSource implements OpeningDataSource {
     }
     const coreBuildersStart = 'linerecall-core-builders-start'
     performanceMark(coreBuildersStart)
+    const reviewFamilyCatalog = validateReviewOpeningFamilyCatalog(reviewFamilyCatalogInput)
+    const searchTaxonomyIds = new Set(search.l.map((line) => line[0]))
+    const familyTaxonomyIds = reviewFamilyCatalog.families.flatMap(({ taxonomyLineIds }) => taxonomyLineIds)
+    if (
+      reviewFamilyCatalog.generatedAt !== search.g
+      || familyTaxonomyIds.length !== searchTaxonomyIds.size
+      || familyTaxonomyIds.some((lineId) => !searchTaxonomyIds.has(lineId))
+    ) {
+      throw new SnapshotDataError('corrupt', 'Opening family browse catalog does not match the embedded taxonomy')
+    }
     const core = {
       search,
       catalog: buildCatalog(search, payload),
       searchEntries: buildSearchEntries(search),
       variantSummaries: buildVariantSummaries(search),
+      reviewFamilyCatalog,
     }
     performanceMeasure('linerecall-core-builders', coreBuildersStart)
     performanceMeasure('linerecall-data-startup', startupStart)
@@ -366,6 +387,47 @@ export class EmbeddedOpeningDataSource implements OpeningDataSource {
       }
       throw error
     }
+  }
+
+  async loadFamilyCatalog(signal?: AbortSignal): Promise<OpeningFamilyCatalogV1> {
+    abortIfRequested(signal)
+    throw new SnapshotDataError(
+      'missing',
+      'This legacy opening snapshot has no audited opening-family catalog',
+    )
+  }
+
+  async loadFamilyManifest(familyId: string, signal?: AbortSignal): Promise<OpeningFamilyManifestV1> {
+    abortIfRequested(signal)
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(familyId)) {
+      throw new SnapshotDataError('missing', 'The requested opening-family identifier is invalid')
+    }
+    throw new SnapshotDataError(
+      'missing',
+      `Opening family ${familyId} is unavailable in this legacy snapshot`,
+    )
+  }
+
+  async loadRepertoirePack(
+    _packRef: FamilyPackRefV1,
+    signal?: AbortSignal,
+  ): Promise<RepertoireGraphDocument> {
+    abortIfRequested(signal)
+    throw new SnapshotDataError(
+      'missing',
+      'This legacy opening snapshot has no audited family repertoire graphs',
+    )
+  }
+
+  async loadPuzzleShard(
+    _shardRef: ContentAddressedRefV1,
+    signal?: AbortSignal,
+  ): Promise<TacticalPuzzleShardV1> {
+    abortIfRequested(signal)
+    throw new SnapshotDataError(
+      'missing',
+      'This legacy opening snapshot has no promoted tactical puzzle shards',
+    )
   }
 
   async #loadPartition(eco: string, receipt: EmbeddedBlobReceipt): Promise<OpeningPartition> {

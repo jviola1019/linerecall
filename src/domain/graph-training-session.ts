@@ -2,6 +2,10 @@ import { Chess, type PieceSymbol, type Square } from 'chess.js'
 import { z } from 'zod'
 import { defaultReviewGrade, type ReviewGrade } from './progress.ts'
 import {
+  FamilyTrainingCursorV1Schema,
+  type FamilyTrainingCursorV1,
+} from './opening-family.ts'
+import {
   REPERTOIRE_SCHEMA_VERSION,
   SessionPathSelectionSchema,
   selectSessionPaths,
@@ -106,6 +110,12 @@ export interface GraphTrainingSessionState {
   releaseId: string
   packId: string
   selection: SessionPathSelection
+  /**
+   * Validated paths admitted to this session. This begins with the bounded
+   * selection and grows only when a legal audited move transfers the learner
+   * to another path in the same graph.
+   */
+  sessionPathIds: string[]
   activePathId: string
   activePathNodeIndex: number
   currentNodeId: string
@@ -139,6 +149,14 @@ export interface AutonomousGraphTrainingPlan {
   coverageCycleOrdinal: number
   totalPathIds: string[]
   pathIdBatches: string[][]
+}
+
+export interface RestoredGraphTrainingCycle {
+  plan: AutonomousGraphTrainingPlan
+  session: GraphTrainingSessionState
+  activeBatchIndex: number
+  completedBeforeBatch: string[]
+  authoritativeDueCardIds: string[]
 }
 
 export interface GraphTrainingFamilyProgress {
@@ -181,8 +199,8 @@ export function createGraphTrainingPathCompletion(options: {
     throw new Error('A path completion record requires a completed session path')
   }
   const path = options.adapter.pathsById.get(options.pathId)
-  if (!path || !options.state.selection.includedPathIds.includes(path.id)) {
-    throw new Error('A path completion record must belong to the active validated selection')
+  if (!path || !options.state.sessionPathIds.includes(path.id)) {
+    throw new Error('A path completion record must belong to the active validated session membership')
   }
   return GraphTrainingPathCompletionV1Schema.parse({
     contractId: 'linerecall.graph-path-completion.v1',
@@ -311,6 +329,252 @@ export function createAutonomousGraphTrainingPlan(options: {
   }
 }
 
+export function coverageCycleOrdinalFromId(packId: string, coverageCycleId: string): number {
+  const prefix = `${packId}::coverage:`
+  if (!coverageCycleId.startsWith(prefix)) {
+    throw new Error('Coverage cursor belongs to another graph pack')
+  }
+  const value = Number(coverageCycleId.slice(prefix.length))
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error('Coverage cursor has an invalid cycle ordinal')
+  }
+  return value
+}
+
+/**
+ * An alternate path may be selected from a later bounded batch. The live
+ * session owns that transferred path immediately, so it must be removed from
+ * every future batch or it would be traversed a second time.
+ */
+export function removeTransferredPathFromFutureBatches(options: {
+  plan: AutonomousGraphTrainingPlan
+  activeBatchIndex: number
+  transferredPathId: string
+}): AutonomousGraphTrainingPlan {
+  if (!Number.isSafeInteger(options.activeBatchIndex) || options.activeBatchIndex < 0) {
+    throw new Error('Active graph batch index must be a nonnegative integer')
+  }
+  if (!/^path_[a-f0-9]{20}$/u.test(options.transferredPathId)) {
+    throw new Error('Transferred path has an invalid audited path identity')
+  }
+  const totalPathIds = options.plan.totalPathIds.includes(options.transferredPathId)
+    ? options.plan.totalPathIds
+    : [...options.plan.totalPathIds, options.transferredPathId]
+  let removed = false
+  const pathIdBatches = options.plan.pathIdBatches.map((pathIds, batchIndex) => {
+    if (batchIndex <= options.activeBatchIndex) return [...pathIds]
+    const filtered = pathIds.filter((pathId) => pathId !== options.transferredPathId)
+    if (filtered.length !== pathIds.length) removed = true
+    return filtered
+  })
+  return removed || totalPathIds !== options.plan.totalPathIds
+    ? { ...options.plan, totalPathIds: [...totalPathIds], pathIdBatches }
+    : options.plan
+}
+
+export function nextNonemptyGraphTrainingBatch(
+  plan: AutonomousGraphTrainingPlan,
+  activeBatchIndex: number,
+): { batchIndex: number; pathIds: string[] } | null {
+  for (let index = activeBatchIndex + 1; index < plan.pathIdBatches.length; index += 1) {
+    const pathIds = plan.pathIdBatches[index]
+    if (pathIds && pathIds.length > 0) return { batchIndex: index, pathIds: [...pathIds] }
+  }
+  return null
+}
+
+function uniqueInOrder(values: readonly string[]): string[] {
+  return [...new Set(values)]
+}
+
+function assertAuthoritativeGraphCards(
+  adapter: GraphTrainingAdapter,
+  cardIds: readonly string[],
+): void {
+  for (const cardId of cardIds) {
+    if (!cardId.startsWith(`${adapter.graph.pack.id}::`)) {
+      throw new Error('Authoritative due cards must belong to the selected graph pack')
+    }
+    const node = adapter.nodesById.get(cardNodeId(cardId))
+    if (!node || !node.learnerTurn || node.cardId !== cardId) {
+      throw new Error(`Authoritative due card ${cardId} is not a learner card in this graph`)
+    }
+  }
+}
+
+function chunkPathIds(pathIds: readonly string[], maximumPaths = GRAPH_TRAINING_BATCH_PATH_LIMIT): string[][] {
+  const chunks: string[][] = []
+  for (let index = 0; index < pathIds.length; index += maximumPaths) {
+    chunks.push(pathIds.slice(index, index + maximumPaths))
+  }
+  return chunks
+}
+
+export function createFamilyTrainingCursorSnapshot(options: {
+  adapter: GraphTrainingAdapter
+  familyId: string
+  plan: AutonomousGraphTrainingPlan
+  activeBatchIndex: number
+  completedBeforeBatch: readonly string[]
+  session: GraphTrainingSessionState
+  authoritativeDueCardIds: readonly string[]
+}): FamilyTrainingCursorV1 {
+  assertCurrentState(options.adapter, options.session)
+  if (
+    options.plan.releaseId !== options.adapter.graph.releaseId
+    || options.plan.packId !== options.adapter.graph.pack.id
+    || options.plan.coverageCycleOrdinal !== coverageCycleOrdinalFromId(
+      options.adapter.graph.pack.id,
+      options.session.selection.coverageCycleId,
+    )
+  ) {
+    throw new Error('Autonomous coverage plan is inconsistent with the active graph session')
+  }
+  if (!Number.isSafeInteger(options.activeBatchIndex) || options.activeBatchIndex < 0) {
+    throw new Error('Active graph batch index must be a nonnegative integer')
+  }
+  const planPathIds = new Set(options.plan.totalPathIds)
+  const completedPathIds = uniqueInOrder([
+    ...options.completedBeforeBatch,
+    ...options.session.completedPathIds,
+  ])
+  const completed = new Set(completedPathIds)
+  const activePending = options.session.phase !== 'path_complete'
+    && options.session.phase !== 'session_complete'
+    && !completed.has(options.session.activePathId)
+    ? [options.session.activePathId]
+    : []
+  const futureBatchPathIds = options.plan.pathIdBatches
+    .slice(options.activeBatchIndex + 1)
+    .flat()
+  const pendingPathIds = uniqueInOrder([
+    ...activePending,
+    ...options.session.pendingPathIds,
+    ...futureBatchPathIds,
+  ]).filter((pathId) => !completed.has(pathId))
+  for (const pathId of [...completedPathIds, ...pendingPathIds]) {
+    if (!planPathIds.has(pathId) || !options.adapter.pathsById.has(pathId)) {
+      throw new Error('Family cursor references a path outside the active coverage plan')
+    }
+  }
+  const represented = new Set([...completedPathIds, ...pendingPathIds])
+  if (
+    represented.size !== planPathIds.size
+    || [...planPathIds].some((pathId) => !represented.has(pathId))
+  ) {
+    throw new Error('Family cursor must represent every selected path exactly once')
+  }
+  const authoritativeDueCardIds = uniqueInOrder(options.authoritativeDueCardIds)
+  assertAuthoritativeGraphCards(options.adapter, authoritativeDueCardIds)
+  const remainingDue = new Set(options.session.dueCardIds)
+  const reviewedCardIds = authoritativeDueCardIds.filter((cardId) => !remainingDue.has(cardId))
+  return FamilyTrainingCursorV1Schema.parse({
+    schemaVersion: 1,
+    releaseId: options.adapter.graph.releaseId,
+    familyId: options.familyId,
+    side: options.adapter.graph.pack.side,
+    coverageCycleId: options.session.selection.coverageCycleId,
+    authoritativeDueCardIds,
+    reviewedCardIds,
+    completedPathIds,
+    pendingPathIds,
+    batchIndex: options.activeBatchIndex,
+  })
+}
+
+/**
+ * Cursor restoration intentionally resumes at the root of the first unfinished
+ * audited path. The cursor preserves authoritative due work, exact path
+ * completion, pending order, and bounded-batch position without pretending to
+ * persist an uncommitted board gesture.
+ */
+export function restoreGraphTrainingCycleFromCursor(options: {
+  adapter: GraphTrainingAdapter
+  familyId: string
+  cursor: FamilyTrainingCursorV1
+}): RestoredGraphTrainingCycle {
+  const cursor = FamilyTrainingCursorV1Schema.parse(options.cursor)
+  if (
+    cursor.releaseId !== options.adapter.graph.releaseId
+    || cursor.familyId !== options.familyId
+    || cursor.side !== options.adapter.graph.pack.side
+  ) {
+    throw new Error('Saved family training cursor belongs to another release, family, or side')
+  }
+  const ordinal = coverageCycleOrdinalFromId(options.adapter.graph.pack.id, cursor.coverageCycleId)
+  assertAuthoritativeGraphCards(options.adapter, cursor.authoritativeDueCardIds)
+  const totalPathIds = uniqueInOrder([...cursor.completedPathIds, ...cursor.pendingPathIds])
+  if (totalPathIds.length === 0) throw new Error('Saved family training cursor contains no paths')
+  for (const pathId of totalPathIds) {
+    if (!options.adapter.pathsById.has(pathId)) {
+      throw new Error(`Saved family training cursor references unavailable path ${pathId}`)
+    }
+  }
+  const remainingDueCardIds = cursor.authoritativeDueCardIds.filter(
+    (cardId) => !cursor.reviewedCardIds.includes(cardId),
+  )
+  const pendingBatches = chunkPathIds(cursor.pendingPathIds)
+  const prefixBatches = Array.from({ length: cursor.batchIndex }, () => [] as string[])
+
+  if (pendingBatches.length > 0) {
+    const selection = createExplicitGraphSessionSelection({
+      adapter: options.adapter,
+      pathIds: pendingBatches[0]!,
+      dueCardIds: remainingDueCardIds,
+      coverageCycleOrdinal: ordinal,
+    })
+    return {
+      plan: {
+        releaseId: options.adapter.graph.releaseId,
+        packId: options.adapter.graph.pack.id,
+        coverageCycleOrdinal: ordinal,
+        totalPathIds,
+        pathIdBatches: [...prefixBatches, ...pendingBatches],
+      },
+      session: createGraphTrainingSession({
+        adapter: options.adapter,
+        selection,
+        preferredPathId: cursor.pendingPathIds[0]!,
+      }),
+      activeBatchIndex: cursor.batchIndex,
+      completedBeforeBatch: [...cursor.completedPathIds],
+      authoritativeDueCardIds: [...cursor.authoritativeDueCardIds],
+    }
+  }
+
+  const finalBatch = cursor.completedPathIds.slice(-GRAPH_TRAINING_BATCH_PATH_LIMIT)
+  if (finalBatch.length === 0) throw new Error('Completed family cursor contains no auditable path')
+  const selection = createExplicitGraphSessionSelection({
+    adapter: options.adapter,
+    pathIds: finalBatch,
+    dueCardIds: remainingDueCardIds,
+    coverageCycleOrdinal: ordinal,
+  })
+  const baseSession = createGraphTrainingSession({
+    adapter: options.adapter,
+    selection,
+    preferredPathId: finalBatch[0]!,
+  })
+  return {
+    plan: {
+      releaseId: options.adapter.graph.releaseId,
+      packId: options.adapter.graph.pack.id,
+      coverageCycleOrdinal: ordinal,
+      totalPathIds,
+      pathIdBatches: [...prefixBatches, finalBatch],
+    },
+    session: {
+      ...baseSession,
+      completedPathIds: [...finalBatch],
+      pendingPathIds: [],
+      phase: 'session_complete',
+    },
+    activeBatchIndex: cursor.batchIndex,
+    completedBeforeBatch: cursor.completedPathIds.slice(0, -finalBatch.length),
+    authoritativeDueCardIds: [...cursor.authoritativeDueCardIds],
+  }
+}
+
 export function summarizeGraphTrainingCoverage(options: {
   adapter: GraphTrainingAdapter
   includedPathIds: readonly string[]
@@ -371,15 +635,21 @@ export function createExplicitGraphSessionSelection(options: {
     return path
   })
   const selectedNodeIds = new Set(paths.flatMap(({ nodeIds }) => nodeIds))
-  const dueCardIds = [...new Set(options.dueCardIds)].filter((cardId) => {
+  /*
+   * Keep the full authoritative due set in every bounded selection. A session
+   * consumes only cards it reaches, then passes the unconsumed set to the next
+   * autonomous batch. Narrowing here would silently turn later-batch due cards
+   * into warm-ups.
+   */
+  const dueCardIds = [...new Set(options.dueCardIds)]
+  for (const cardId of dueCardIds) {
     if (!cardId.startsWith(`${options.adapter.graph.pack.id}::`)) {
       throw new Error('Due cards must belong to the selected graph pack')
     }
     const node = options.adapter.nodesById.get(cardNodeId(cardId))
     if (!node || !node.learnerTurn || node.cardId !== cardId) throw new Error(`Due card ${cardId} is not a learner card in this graph`)
-    return selectedNodeIds.has(node.id)
-  })
-  const dueNodeIds = new Set(dueCardIds.map(cardNodeId))
+  }
+  const dueNodeIds = new Set(dueCardIds.map(cardNodeId).filter((nodeId) => selectedNodeIds.has(nodeId)))
   const warmupNodeIds: string[] = []
   const warmupSeen = new Set<string>()
   for (const path of paths) {
@@ -434,6 +704,7 @@ export function createGraphTrainingSession(options: {
     releaseId: options.adapter.graph.releaseId,
     packId: options.adapter.graph.pack.id,
     selection,
+    sessionPathIds: [...selection.includedPathIds],
     activePathId,
     activePathNodeIndex: 0,
     currentNodeId: activePath.nodeIds[0]!,
@@ -454,6 +725,17 @@ export function createGraphTrainingSession(options: {
 function assertCurrentState(adapter: GraphTrainingAdapter, state: GraphTrainingSessionState): { path: RepertoirePath; node: RepertoireNode } {
   if (state.packId !== adapter.graph.pack.id || state.releaseId !== adapter.graph.releaseId) {
     throw new Error('Training state belongs to another validated graph release')
+  }
+  if (
+    new Set(state.sessionPathIds).size !== state.sessionPathIds.length
+    || !state.sessionPathIds.includes(state.activePathId)
+    || state.sessionPathIds.some((pathId) => !adapter.pathsById.has(pathId))
+    || new Set(state.pendingPathIds).size !== state.pendingPathIds.length
+    || new Set(state.completedPathIds).size !== state.completedPathIds.length
+    || state.pendingPathIds.some((pathId) => !state.sessionPathIds.includes(pathId))
+    || state.completedPathIds.some((pathId) => !state.sessionPathIds.includes(pathId))
+  ) {
+    throw new Error('Training state is stale or inconsistent with validated session membership')
   }
   const path = adapter.pathsById.get(state.activePathId)
   const node = adapter.nodesById.get(state.currentNodeId)
@@ -514,6 +796,9 @@ function rankPathCandidates<T extends PathOccurrence | NodeOccurrence>(
     const leftActive = Number(left.pathId === state.activePathId)
     const rightActive = Number(right.pathId === state.activePathId)
     if (leftActive !== rightActive) return rightActive - leftActive
+    const leftCompleted = Number(state.completedPathIds.includes(left.pathId))
+    const rightCompleted = Number(state.completedPathIds.includes(right.pathId))
+    if (leftCompleted !== rightCompleted) return leftCompleted - rightCompleted
     const leftPending = pendingRank.get(left.pathId)
     const rightPending = pendingRank.get(right.pathId)
     if (leftPending !== undefined || rightPending !== undefined) {
@@ -550,10 +835,28 @@ function continuationForEdge(
     : null
 }
 
-function pendingAfterPathSwitch(state: GraphTrainingSessionState, nextPathId: string): string[] {
-  if (nextPathId === state.activePathId) return state.pendingPathIds
-  const withoutNext = state.pendingPathIds.filter((pathId) => pathId !== nextPathId && pathId !== state.activePathId)
-  return [...withoutNext, state.activePathId]
+function membershipAfterPathSwitch(
+  state: GraphTrainingSessionState,
+  nextPathId: string,
+): { pendingPathIds: string[]; sessionPathIds: string[] } {
+  if (nextPathId === state.activePathId) {
+    return {
+      pendingPathIds: state.pendingPathIds,
+      sessionPathIds: state.sessionPathIds,
+    }
+  }
+  const completed = new Set(state.completedPathIds)
+  const withoutNext = state.pendingPathIds.filter(
+    (pathId) => pathId !== nextPathId && pathId !== state.activePathId && !completed.has(pathId),
+  )
+  return {
+    pendingPathIds: completed.has(state.activePathId)
+      ? withoutNext
+      : [...withoutNext, state.activePathId],
+    sessionPathIds: state.sessionPathIds.includes(nextPathId)
+      ? state.sessionPathIds
+      : [...state.sessionPathIds, nextPathId],
+  }
 }
 
 function appendUniqueAtEnd(values: readonly string[], value: string): string[] {
@@ -571,6 +874,7 @@ function settleAfterTransition(options: {
   dueCardIds?: string[]
   repeatCardIds?: string[]
   pendingPathIds?: string[]
+  sessionPathIds?: string[]
 }): GraphTrainingSessionState {
   const currentNodeId = options.path.nodeIds[options.nodeIndex]
   if (!currentNodeId || currentNodeId !== options.edge.toNodeId) {
@@ -583,6 +887,7 @@ function settleAfterTransition(options: {
     activePathNodeIndex: options.nodeIndex,
     currentNodeId,
     pendingPathIds: options.pendingPathIds ?? options.state.pendingPathIds,
+    sessionPathIds: options.sessionPathIds ?? options.state.sessionPathIds,
     completedPathIds: phase === 'path_complete' && !options.state.completedPathIds.includes(options.path.id)
       ? [...options.state.completedPathIds, options.path.id]
       : options.state.completedPathIds,
@@ -704,6 +1009,7 @@ export function submitGraphTrainingMove(options: {
     warmup,
     review,
   }
+  const membership = membershipAfterPathSwitch(state, continuation.path.id)
   return settleAfterTransition({
     adapter,
     state,
@@ -714,7 +1020,8 @@ export function submitGraphTrainingMove(options: {
     feedback,
     dueCardIds,
     repeatCardIds,
-    pendingPathIds: pendingAfterPathSwitch(state, continuation.path.id),
+    pendingPathIds: membership.pendingPathIds,
+    sessionPathIds: membership.sessionPathIds,
   })
 }
 
@@ -773,7 +1080,9 @@ export function continueGraphTrainingSession(
 ): GraphTrainingSessionState {
   assertCurrentState(adapter, state)
   if (state.phase !== 'path_complete') throw new Error('The current graph path is not complete')
-  const pendingPathId = state.pendingPathIds[0]
+  const completed = new Set(state.completedPathIds)
+  const unfinishedPendingPathIds = state.pendingPathIds.filter((pathId) => !completed.has(pathId))
+  const pendingPathId = unfinishedPendingPathIds[0]
   const repeatPath = pendingPathId ? null : pathForRepeatCard(adapter, state.repeatCardIds[0] ?? '')
   const nextPath = pendingPathId ? adapter.pathsById.get(pendingPathId) : repeatPath
   if (!nextPath) {
@@ -785,7 +1094,46 @@ export function continueGraphTrainingSession(
     activePathId: nextPath.id,
     activePathNodeIndex: 0,
     currentNodeId: nextPath.nodeIds[0]!,
-    pendingPathIds: pendingPathId ? state.pendingPathIds.slice(1) : state.pendingPathIds,
+    pendingPathIds: pendingPathId ? unfinishedPendingPathIds.slice(1) : unfinishedPendingPathIds,
+    phase: phaseForNode(adapter, nextPath, 0),
+    usedHint: false,
+    incorrectAttempts: 0,
+    lastFeedback: null,
+    lastTransition: null,
+    pathBoundaryCount: state.pathBoundaryCount + 1,
+  }
+}
+
+/**
+ * Move an unfinished path to the back of the active queue. Skipping is an
+ * explicit path boundary: it may reset the board to the next audited root, but
+ * it never completes, grades, or removes due/repeat work from the skipped path.
+ */
+export function skipCurrentGraphTrainingPath(
+  adapter: GraphTrainingAdapter,
+  state: GraphTrainingSessionState,
+): GraphTrainingSessionState {
+  assertCurrentState(adapter, state)
+  if (
+    state.phase === 'path_complete'
+    || state.phase === 'session_complete'
+    || state.completedPathIds.includes(state.activePathId)
+  ) {
+    throw new Error('Only an unfinished graph path can be skipped')
+  }
+  const completed = new Set(state.completedPathIds)
+  const unfinishedPendingPathIds = state.pendingPathIds.filter(
+    (pathId) => pathId !== state.activePathId && !completed.has(pathId),
+  )
+  const nextPathId = unfinishedPendingPathIds[0]
+  const nextPath = nextPathId ? adapter.pathsById.get(nextPathId) : undefined
+  if (!nextPath) throw new Error('No other unfinished graph path is available')
+  return {
+    ...state,
+    activePathId: nextPath.id,
+    activePathNodeIndex: 0,
+    currentNodeId: nextPath.nodeIds[0]!,
+    pendingPathIds: [...unfinishedPendingPathIds.slice(1), state.activePathId],
     phase: phaseForNode(adapter, nextPath, 0),
     usedHint: false,
     incorrectAttempts: 0,

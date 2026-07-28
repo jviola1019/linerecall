@@ -3,6 +3,7 @@ import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3'
 import { z } from 'zod'
 import { ApiError } from '../errors.js'
 import type { CatalogService } from '../ports.js'
+import { PuzzleRecordListV1Schema, type PuzzleRecordV1 } from '../puzzle-record.js'
 
 const SignedEnvelopeSchema = z.object({
   schema: z.literal('linerecall-signed-manifest-v1'),
@@ -26,7 +27,7 @@ interface CachedManifest { etag: string; value: z.infer<typeof ManifestSchema>; 
 
 export class SignedS3CatalogService implements CatalogService {
   #cached: CachedManifest | null = null
-  readonly #puzzles = new Map<string, { expiresAt: number; value: unknown[] }>()
+  readonly #puzzles = new Map<string, { expiresAt: number; value: PuzzleRecordV1[] }>()
 
   constructor(
     private readonly client: S3Client,
@@ -72,7 +73,7 @@ export class SignedS3CatalogService implements CatalogService {
     return this.#cached
   }
 
-  async #partition(descriptor: { key: string; sha256: string }): Promise<unknown[]> {
+  async #partition(descriptor: { key: string; sha256: string }): Promise<PuzzleRecordV1[]> {
     const cached = this.#puzzles.get(descriptor.sha256)
     if (cached && cached.expiresAt > Date.now()) return cached.value
     const result = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: descriptor.key }))
@@ -81,7 +82,12 @@ export class SignedS3CatalogService implements CatalogService {
     if (bytes.byteLength > 10_000_000 || createHash('sha256').update(bytes).digest('hex') !== descriptor.sha256) {
       throw new ApiError(503, 'puzzle_partition_corrupt', 'Puzzle data failed its integrity check')
     }
-    const value = z.array(z.unknown()).max(50_000).parse(JSON.parse(Buffer.from(bytes).toString('utf8')))
+    let value: PuzzleRecordV1[]
+    try {
+      value = PuzzleRecordListV1Schema.parse(JSON.parse(Buffer.from(bytes).toString('utf8')))
+    } catch {
+      throw new ApiError(503, 'puzzle_partition_corrupt', 'Puzzle records failed runtime validation')
+    }
     this.#puzzles.set(descriptor.sha256, { expiresAt: Date.now() + 300_000, value })
     return value
   }

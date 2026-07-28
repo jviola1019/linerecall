@@ -10,7 +10,7 @@ import {
   StaticCatalogService,
 } from '../src/adapters/memory.js'
 import { ApiError } from '../src/errors.js'
-import { DEVICE_ID, NOW, reviewEvent } from './helpers.js'
+import { DEVICE_ID, NOW, reviewEvent, tacticalPuzzle } from './helpers.js'
 
 describe('local adapter failure semantics', () => {
   it('resets fixed rate windows and rejects overflow', async () => {
@@ -29,10 +29,13 @@ describe('local adapter failure semantics', () => {
   })
 
   it('paginates static puzzles and queues no fabricated analysis result', async () => {
-    const catalog = new StaticCatalogService(undefined, [{ id: 1 }, { id: 2 }, { id: 3 }])
-    assert.deepEqual(await catalog.listPuzzles({ limit: 2 }), { items: [{ id: 1 }, { id: 2 }], nextCursor: '2' })
-    assert.deepEqual(await catalog.listPuzzles({ limit: 2, cursor: '2' }), { items: [{ id: 3 }], nextCursor: null })
-    assert.deepEqual(await catalog.listPuzzles({ limit: 1, cursor: 'not-a-cursor' }), { items: [{ id: 1 }], nextCursor: '1' })
+    const puzzles = [tacticalPuzzle('Puzzle001'), tacticalPuzzle('Puzzle002'), tacticalPuzzle('Puzzle003')]
+    const catalog = new StaticCatalogService(undefined, puzzles)
+    assert.deepEqual(await catalog.listPuzzles({ limit: 2 }), { items: puzzles.slice(0, 2), nextCursor: '2' })
+    assert.deepEqual(await catalog.listPuzzles({ limit: 2, cursor: '2' }), { items: puzzles.slice(2), nextCursor: null })
+    assert.deepEqual(await catalog.listPuzzles({ limit: 1, cursor: 'not-a-cursor' }), { items: puzzles.slice(0, 1), nextCursor: '1' })
+    assert.throws(() => new StaticCatalogService(undefined, [puzzles[0], puzzles[0]]), /Duplicate puzzle ID/u)
+    assert.throws(() => new StaticCatalogService(undefined, [{ id: 1 }]))
     const repertoires = new InMemoryRepertoireService()
     const job = await repertoires.createImport('user', { name: 'name', pgn: '*', side: 'white' }, NOW) as { id: string; status: string }
     assert.equal(job.status, 'queued')

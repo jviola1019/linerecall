@@ -6,6 +6,10 @@ import { cleanup, render, screen, waitFor, within } from '@testing-library/react
 import { userEvent } from '@testing-library/user-event'
 import '@testing-library/jest-dom/vitest'
 import { GraphTrainingBoundary } from '../../src/app/components/GraphTrainingBoundary.tsx'
+import {
+  MemoryFamilyTrainingJournalRepository,
+  type FamilyTrainingJournalRepository,
+} from '../../src/domain/family-training-journal.ts'
 import { GRAPH_TRAINING_CONTRACT_ID } from '../../src/domain/graph-training-session.ts'
 import { stableRepertoireCardId, type RepertoireGraphDocument } from '../../src/domain/repertoire.ts'
 import { createSyntheticTranspositionGraph } from '../fixtures/synthetic-repertoire-graph.ts'
@@ -67,17 +71,23 @@ describe('validated v3 graph-training boundary', () => {
       />,
     )
 
-    const pathSelect = await screen.findByLabelText('Path')
-    const options = [...pathSelect.querySelectorAll('option')]
+    const pathList = await screen.findByRole('list', { name: 'Audited variation paths' })
+    const options = within(pathList).getAllByRole('button')
     expect(options).toHaveLength(graph.paths.length)
     expect(options.some((option) => option.textContent?.includes('Knight first'))).toBe(true)
     expect(options.some((option) => option.textContent?.includes('Fianchetto first'))).toBe(true)
 
     const knight = options.find((option) => option.textContent?.includes('Knight first'))!
-    await user.selectOptions(pathSelect, knight.value)
+    await user.click(knight)
     await user.click(screen.getByRole('button', { name: 'Practice selected path' }))
     expect(screen.getByRole('heading', { name: 'Continuous graph practice' })).toBeVisible()
     expect(screen.queryByRole('button', { name: /^Again$|^Hard$|^Good$|^Easy$/u })).not.toBeInTheDocument()
+    expect(screen.getByRole('tabpanel', { name: 'line analysis' })).toHaveTextContent(/Current audited continuation/u)
+    await user.click(screen.getByRole('tab', { name: 'Alternatives' }))
+    expect(screen.getByRole('tabpanel', { name: 'alternatives analysis' })).toHaveTextContent(/Known moves from this position/u)
+    await user.click(screen.getByRole('tab', { name: 'Evidence' }))
+    expect(screen.getByRole('tabpanel', { name: 'evidence analysis' })).toHaveTextContent(/historical play/u)
+    expect(screen.getByRole('table')).toBeVisible()
 
     const picker = screen.getByRole('combobox', { name: 'Legal move picker' })
     await user.selectOptions(picker, 'g2g3')
@@ -162,7 +172,16 @@ describe('validated v3 graph-training boundary', () => {
       releaseId: graph.releaseId,
       packId: graph.pack.id,
     })
-  })
+
+    await user.click(screen.getByRole('button', { name: 'Start a new coverage cycle' }))
+    await play('g1f3')
+    await waitFor(() => expect(screen.getByText(/move 3 of 6/u)).toBeVisible())
+    await play('g2g3')
+    await waitFor(() => expect(screen.getByText(/move 5 of 6/u)).toBeVisible())
+    await play('f1g2')
+    await waitFor(() => expect(completions).toHaveBeenCalledTimes(3))
+    expect(completions.mock.calls[2]?.[0].coverageCycleId).toMatch(/::coverage:1$/u)
+  }, 30_000)
 
   test('manual pacing pauses opponent and path-boundary transitions without changing inferred scheduling', async () => {
     const user = userEvent.setup()
@@ -177,6 +196,11 @@ describe('validated v3 graph-training boundary', () => {
         onInferredReview={reviews}
       />,
     )
+    const pathList = await screen.findByRole('list', { name: 'Audited variation paths' })
+    const knightPath = within(pathList).getAllByRole('button')
+      .find((button) => button.textContent?.includes('Knight first'))
+    if (!knightPath) throw new Error('Knight-first regression path is missing')
+    await user.click(knightPath)
     await user.click(await screen.findByRole('button', { name: 'Practice selected path' }))
     const picker = screen.getByRole('combobox', { name: 'Legal move picker' })
     await user.selectOptions(picker, 'g1f3')
@@ -200,5 +224,88 @@ describe('validated v3 graph-training boundary', () => {
     expect(boundary).toBeVisible()
     await new Promise((resolve) => setTimeout(resolve, 10))
     expect(boundary).toBeVisible()
+  }, 30_000)
+
+  test('restores authoritative completion and pending paths from an explicit journal repository after remount', async () => {
+    const user = userEvent.setup()
+    const repository = new MemoryFamilyTrainingJournalRepository()
+    const props = {
+      resource: { status: 'ready' as const, envelope: { contractId: GRAPH_TRAINING_CONTRACT_ID, graph } },
+      dueCardIds: [] as const,
+      orientation: 'white' as const,
+      reducedMotion: true,
+      manualPacing: true,
+      familyId: 'synthetic-family',
+      journalRepository: repository,
+    }
+    const first = render(<GraphTrainingBoundary {...props} />)
+    await user.click(await screen.findByRole('button', { name: 'Start full repertoire' }))
+
+    const play = async (uci: string): Promise<void> => {
+      const picker = await screen.findByRole('combobox', { name: 'Legal move picker' })
+      await user.selectOptions(picker, uci)
+      await user.click(screen.getByRole('button', { name: 'Play move' }))
+    }
+    await play('g1f3')
+    await user.click(screen.getByRole('button', { name: 'Play opponent reply' }))
+    await play('g2g3')
+    await user.click(screen.getByRole('button', { name: 'Play opponent reply' }))
+    await play('f1g2')
+
+    await waitFor(async () => {
+      const saved = await repository.loadLatestCursor({
+        releaseId: graph.releaseId,
+        familyId: 'synthetic-family',
+        side: graph.pack.side,
+      })
+      expect(saved?.completedPathIds).toHaveLength(1)
+      expect(saved?.pendingPathIds).toHaveLength(1)
+      expect(saved?.batchIndex).toBe(0)
+    })
+    first.unmount()
+
+    render(<GraphTrainingBoundary {...props} />)
+    expect(await screen.findByRole('heading', { name: 'Continuous graph practice' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Fianchetto first' })).toBeVisible()
+    expect(within(screen.getByText('Completed paths').closest('div')!).getByText('1')).toBeVisible()
+    expect(screen.getByText(/Path 2 of 2/u)).toBeVisible()
+  })
+
+  test('keeps failed cursor writes queued, visible, and retryable without browser storage', async () => {
+    const user = userEvent.setup()
+    const memory = new MemoryFamilyTrainingJournalRepository()
+    let writable = false
+    const repository: FamilyTrainingJournalRepository = {
+      kind: 'memory',
+      appendCoverageEvent: (event) => memory.appendCoverageEvent(event),
+      appendCursor: async (cursor) => {
+        if (!writable) throw new Error('storage adapter rejected the write')
+        return memory.appendCursor(cursor)
+      },
+      listCoverageEvents: (scope) => memory.listCoverageEvents(scope),
+      loadLatestCursor: (scope) => memory.loadLatestCursor(scope),
+    }
+    render(
+      <GraphTrainingBoundary
+        resource={{ status: 'ready', envelope: { contractId: GRAPH_TRAINING_CONTRACT_ID, graph } }}
+        dueCardIds={[]}
+        orientation="white"
+        reducedMotion
+        familyId="synthetic-family"
+        journalRepository={repository}
+      />,
+    )
+    await user.click(await screen.findByRole('button', { name: 'Start full repertoire' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(/waiting to be saved/u)
+    expect(screen.getByRole('alert')).toHaveTextContent(/1 cursor update queued/u)
+
+    writable = true
+    await user.click(screen.getByRole('button', { name: 'Retry saving progress' }))
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+    expect(await memory.loadLatestCursor({
+      releaseId: graph.releaseId,
+      familyId: 'synthetic-family',
+      side: graph.pack.side,
+    })).not.toBeNull()
   })
 })

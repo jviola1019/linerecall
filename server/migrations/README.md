@@ -8,3 +8,4 @@
 - Never insert a `supported_snapshot_versions` row until the signed catalog release is approved.
 - Populate `snapshot_card_membership` from that same approved manifest before exposing the snapshot. Review-event foreign keys and API checks both fail closed when membership is missing.
 - Apply `004_lichess_personal_analytics.sql` after the base schema. It adds the monotonic connected-game cursor, durable sync status, irreversible game-ID deduplication, private edge aggregates, and forced RLS. It never stores provider PGN or opponent identity.
+- Apply `005_puzzle_attempt_evidence.sql` before enabling tactical sync. It preserves solved/abandoned outcomes, hint use, incorrect attempts, and bounded elapsed time. Historical attempts are migrated conservatively without inventing missing evidence.

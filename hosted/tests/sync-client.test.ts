@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createCard } from '../../src/domain/progress.ts'
-import { CloudProgressRepository, ConnectedSyncClient } from '../src/sync-client.ts'
+import {
+  CloudProgressRepository,
+  CloudPuzzleProgressRepository,
+  ConnectedSyncClient,
+} from '../src/sync-client.ts'
 
 const SERVER_TIME = '2026-07-14T12:00:00.000Z'
 const SETTINGS = {
@@ -108,27 +112,108 @@ describe('connected append-only sync', () => {
     await expect(client.bootstrap()).rejects.toThrow(/strict validation|invalid response/i)
   })
 
+  it('hydrates and publishes canonical server puzzle progress', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input))
+      expect(url.pathname).toBe('/v1/puzzles/progress')
+      return new Response(JSON.stringify({
+        progress: [{
+          puzzleId: 'puzzle-001',
+          attempts: 3,
+          solved: 2,
+          abandoned: 1,
+          cleanSolves: 1,
+          hintsUsed: 1,
+          incorrectMoves: 2,
+          totalElapsedMs: 9_000,
+          lastElapsedMs: 2_000,
+          lastAttemptAt: SERVER_TIME,
+          syncSequence: '7',
+        }],
+        nextCursor: '7',
+        hasMore: false,
+        serverTime: SERVER_TIME,
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    })
+    const client = new ConnectedSyncClient({
+      snapshotVersion: 'wire_test',
+      origin: 'https://app.example.test',
+      fetcher,
+    })
+    const published: number[] = []
+    const unsubscribe = client.subscribePuzzleProgress(
+      (progress) => published.push(progress.puzzles['puzzle-001']?.attempts ?? 0),
+      () => undefined,
+    )
+    const repository = new CloudPuzzleProgressRepository(client)
+    const progress = await repository.load()
+    unsubscribe()
+
+    expect(progress.puzzles['puzzle-001']).toMatchObject({
+      attempts: 3,
+      solves: 2,
+      abandoned: 1,
+      cleanSolves: 1,
+    })
+    expect(published).toEqual([0, 3])
+    expect(fetcher).toHaveBeenCalledOnce()
+  })
+
   it('queues puzzle history separately and removes an idempotently accepted attempt', async () => {
-    const puzzleIds: string[] = []
+    const puzzleAttempts: Array<{
+      puzzleId: string
+      outcome: string
+      incorrectAttempts: number
+      usedHint: boolean
+      elapsedMs?: number
+    }> = []
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(String(input))
       if (url.pathname === '/v1/puzzles/attempts') {
-        const puzzleRequest = JSON.parse(String(init?.body)) as { attempts: Array<{ attemptId: string; puzzleId: string }> }
-        puzzleIds.push(...puzzleRequest.attempts.map((attempt) => attempt.puzzleId))
+        const puzzleRequest = JSON.parse(String(init?.body)) as {
+          attempts: Array<{
+            attemptId: string
+            puzzleId: string
+            outcome: string
+            incorrectAttempts: number
+            usedHint: boolean
+            elapsedMs?: number
+          }>
+        }
+        puzzleAttempts.push(...puzzleRequest.attempts)
         return new Response(JSON.stringify({
           acceptedAttemptIds: puzzleRequest?.attempts.map((attempt) => attempt.attemptId) ?? [],
           rejectedAttempts: [],
-          progress: [{ puzzleId: 'puzzle-001', attempts: 1, solved: 1, lastAttemptAt: SERVER_TIME, syncSequence: '1' }],
+          progress: [{
+            puzzleId: 'puzzle-001', attempts: 1, solved: 1, abandoned: 0, cleanSolves: 0,
+            hintsUsed: 1, incorrectMoves: 2, totalElapsedMs: 4_321, lastElapsedMs: 4_321,
+            lastAttemptAt: SERVER_TIME, syncSequence: '1',
+          }],
           serverTime: SERVER_TIME,
         }), { status: 200, headers: { 'content-type': 'application/json' } })
       }
       return response()
     })
     const client = new ConnectedSyncClient({ snapshotVersion: 'wire_test', origin: 'https://app.example.test', fetcher })
-    const attemptId = client.queuePuzzleAttempt('puzzle-001', SERVER_TIME)
-    expect(attemptId).toMatch(/-7[0-9a-f]{3}-/u)
+    const stableAttemptId = '0198a6b4-9d0a-7000-8000-000000000001'
+    const attemptId = client.queuePuzzleAttempt({
+      attemptId: stableAttemptId,
+      puzzleId: 'puzzle-001',
+      outcome: 'solved',
+      incorrectAttempts: 2,
+      usedHint: true,
+      elapsedMs: 4_321,
+      occurredAt: SERVER_TIME,
+    })
+    expect(attemptId).toBe(stableAttemptId)
     await client.flush()
-    expect(puzzleIds).toEqual(['puzzle-001'])
+    expect(puzzleAttempts).toMatchObject([{
+      puzzleId: 'puzzle-001',
+      outcome: 'solved',
+      incorrectAttempts: 2,
+      usedHint: true,
+      elapsedMs: 4_321,
+    }])
     expect(client.pendingCount).toBe(0)
   })
 })

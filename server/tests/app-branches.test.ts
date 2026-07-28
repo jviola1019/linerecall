@@ -10,7 +10,7 @@ import {
   StaticCatalogService,
 } from '../src/adapters/memory.js'
 import type { Authenticator, ExternalConnectionService, RateLimiter, ServiceDependencies } from '../src/ports.js'
-import { AUDITED_MEMORY_OPTIONS, NOW } from './helpers.js'
+import { AUDITED_MEMORY_OPTIONS, NOW, tacticalPuzzle } from './helpers.js'
 
 const ORIGIN = 'https://app.example.test'
 const HEADERS = { origin: ORIGIN, 'x-linerecall-user': 'user-branches' }
@@ -23,7 +23,7 @@ function dependencies(overrides: Partial<ServiceDependencies> = {}): ServiceDepe
     repertoires: new InMemoryRepertoireService(),
     catalog: new StaticCatalogService(
       { etag: '"test-catalog"', manifest: { schema: 'test-catalog' } },
-      [{ id: 'puzzle-1', packId: 'pack-a' }, { id: 'puzzle-2', packId: 'pack-b' }],
+      [tacticalPuzzle('Puzzle001'), tacticalPuzzle('Puzzle002')],
     ),
     connections: new DisabledExternalConnectionService(),
     clock: { now: () => NOW },

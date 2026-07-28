@@ -5,6 +5,7 @@ import type {
   PuzzleAttemptSyncRequest,
   PuzzleAttemptSyncResponse,
   PuzzleAttemptV1,
+  PuzzleProgressBootstrapResponse,
   PuzzleProgressState,
   ReviewEventV1,
   SyncRejection,
@@ -15,6 +16,7 @@ import { ProgressSettingsV2Schema } from '../contracts.js'
 import { replayCard, serializeCard, type StoredReviewEvent } from '../domain/sm2.js'
 import { ApiError } from '../errors.js'
 import { uuidV7 } from '../ids.js'
+import { PuzzleRecordListV1Schema, type PuzzleRecordV1 } from '../puzzle-record.js'
 import type {
   AuthenticatedActor,
   Authenticator,
@@ -63,7 +65,10 @@ function stablePuzzleAttempt(attempt: PuzzleAttemptV1): string {
     attemptId: attempt.attemptId,
     deviceId: attempt.deviceId,
     puzzleId: attempt.puzzleId,
-    solved: attempt.solved,
+    outcome: attempt.outcome,
+    incorrectAttempts: attempt.incorrectAttempts,
+    usedHint: attempt.usedHint,
+    ...(attempt.elapsedMs === undefined ? {} : { elapsedMs: attempt.elapsedMs }),
     occurredAt: attempt.occurredAt,
     snapshotVersion: attempt.snapshotVersion,
   })
@@ -228,6 +233,30 @@ export class InMemorySyncStore implements SyncStore {
     return this.#page(this.#user(userId), cursor, limit, now, [], [])
   }
 
+  async bootstrapPuzzleProgress(
+    userId: string,
+    cursor: bigint,
+    limit: number,
+    now: Date,
+  ): Promise<PuzzleProgressBootstrapResponse> {
+    if (cursor < 0n || !Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
+      throw new ApiError(422, 'invalid_cursor', 'Puzzle progress cursor is invalid')
+    }
+    const ordered = [...this.#user(userId).puzzles.values()]
+      .filter(({ syncSequence }) => BigInt(syncSequence) > cursor)
+      .sort((left, right) => {
+        const sequence = BigInt(left.syncSequence) - BigInt(right.syncSequence)
+        return sequence < 0n ? -1 : sequence > 0n ? 1 : left.puzzleId.localeCompare(right.puzzleId, 'en')
+      })
+    const page = ordered.slice(0, limit)
+    return {
+      progress: page,
+      nextCursor: page.at(-1)?.syncSequence ?? cursor.toString(),
+      hasMore: ordered.length > page.length,
+      serverTime: now.toISOString(),
+    }
+  }
+
   async syncPuzzleAttempts(userId: string, request: PuzzleAttemptSyncRequest, now: Date): Promise<PuzzleAttemptSyncResponse> {
     const user = this.#user(userId)
     const acceptedAttemptIds: string[] = []
@@ -259,12 +288,20 @@ export class InMemorySyncStore implements SyncStore {
         ...incoming, normalizedOccurredAt, receivedAt: now.toISOString(), syncSequence: user.sequence,
       })
       const existing = user.puzzles.get(incoming.puzzleId)
+      const solved = incoming.outcome === 'solved'
+      const clean = solved && incoming.incorrectAttempts === 0 && !incoming.usedHint
+      const isLatestAttempt = !existing?.lastAttemptAt || normalizedOccurredAt >= existing.lastAttemptAt
       user.puzzles.set(incoming.puzzleId, {
         puzzleId: incoming.puzzleId,
         attempts: (existing?.attempts ?? 0) + 1,
-        solved: (existing?.solved ?? 0) + (incoming.solved ? 1 : 0),
-        lastAttemptAt: !existing?.lastAttemptAt || normalizedOccurredAt > existing.lastAttemptAt
-          ? normalizedOccurredAt : existing.lastAttemptAt,
+        solved: (existing?.solved ?? 0) + (solved ? 1 : 0),
+        abandoned: (existing?.abandoned ?? 0) + (solved ? 0 : 1),
+        cleanSolves: (existing?.cleanSolves ?? 0) + (clean ? 1 : 0),
+        hintsUsed: (existing?.hintsUsed ?? 0) + (incoming.usedHint ? 1 : 0),
+        incorrectMoves: (existing?.incorrectMoves ?? 0) + incoming.incorrectAttempts,
+        totalElapsedMs: (existing?.totalElapsedMs ?? 0) + (incoming.elapsedMs ?? 0),
+        lastElapsedMs: isLatestAttempt ? (incoming.elapsedMs ?? null) : (existing?.lastElapsedMs ?? null),
+        lastAttemptAt: isLatestAttempt ? normalizedOccurredAt : existing.lastAttemptAt,
         syncSequence: user.sequence.toString(),
       })
       affected.add(incoming.puzzleId)
@@ -314,7 +351,7 @@ export class InMemorySyncStore implements SyncStore {
   async exportAccount(userId: string, now: Date): Promise<unknown> {
     const user = this.#user(userId)
     return {
-      schema: 'linerecall-account-export-v1',
+      schema: 'linerecall-account-export-v4',
       exportedAt: now.toISOString(),
       settings: user.settings,
       reviewEvents: [...user.events.values()].map(({ receivedAt, normalizedOccurredAt, syncSequence, ...event }) => ({
@@ -377,6 +414,8 @@ export class HeaderAuthenticator implements Authenticator {
 }
 
 export class StaticCatalogService implements CatalogService {
+  readonly #puzzles: readonly PuzzleRecordV1[]
+
   constructor(
     private readonly value: { etag: string; manifest: unknown } = {
       etag: '"local-empty-catalog"',
@@ -387,8 +426,10 @@ export class StaticCatalogService implements CatalogService {
         partitions: [],
       },
     },
-    private readonly puzzles: readonly unknown[] = [],
-  ) {}
+    puzzles: readonly unknown[] = [],
+  ) {
+    this.#puzzles = PuzzleRecordListV1Schema.parse(puzzles)
+  }
 
   async getManifest(ifNoneMatch?: string): Promise<{ etag: string; manifest: unknown } | null> {
     return ifNoneMatch === this.value.etag ? null : this.value
@@ -397,9 +438,9 @@ export class StaticCatalogService implements CatalogService {
   async listPuzzles(query: { packId?: string; cursor?: string; limit: number }): Promise<{ items: unknown[]; nextCursor: string | null }> {
     const start = query.cursor ? Number.parseInt(query.cursor, 10) : 0
     const safeStart = Number.isSafeInteger(start) && start >= 0 ? start : 0
-    const items = this.puzzles.slice(safeStart, safeStart + query.limit)
+    const items = this.#puzzles.slice(safeStart, safeStart + query.limit)
     const next = safeStart + items.length
-    return { items: [...items], nextCursor: next < this.puzzles.length ? String(next) : null }
+    return { items: [...items], nextCursor: next < this.#puzzles.length ? String(next) : null }
   }
 }
 

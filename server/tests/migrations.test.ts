@@ -39,4 +39,16 @@ describe('PostgreSQL isolation migrations', () => {
     ]) assert.match(source, new RegExp(`FROM ${exported}`))
     assert.doesNotMatch(source, /SELECT .*access_token_ciphertext/)
   })
+
+  it('migrates tactical attempt evidence without inventing historical metrics', async () => {
+    const sql = await readFile(new URL('../migrations/005_puzzle_attempt_evidence.sql', import.meta.url), 'utf8')
+    for (const field of [
+      'abandoned', 'incorrect_attempts', 'used_hint', 'elapsed_ms',
+      'clean_solves', 'hints_used', 'incorrect_moves', 'total_elapsed_ms', 'last_elapsed_ms',
+    ]) assert.match(sql, new RegExp(field))
+    assert.match(sql, /SET abandoned = NOT solved/)
+    assert.match(sql, /SET abandoned = attempts - solved/)
+    assert.match(sql, /solved \+ abandoned = attempts/)
+    assert.match(sql, /elapsed_ms BETWEEN 0 AND 86400000/)
+  })
 })

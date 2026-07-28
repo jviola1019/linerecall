@@ -9,6 +9,7 @@ import {
   type PointerEvent,
   type ReactNode,
 } from 'react'
+import './board.css'
 import { createPortal } from 'react-dom'
 import { Chess, type PieceSymbol, type Square } from 'chess.js'
 import {
@@ -604,8 +605,8 @@ export function ChessBoard({
                       data-draggable={draggable || undefined}
                       aria-label={`${squareAccessibleNameForPiece(square, piece)}${selected ? ', selected' : ''}${legalTarget ? ', legal target' : ''}${squareStatusLabel ? `, ${squareStatusLabel} ${statusEndpoint}` : statusEndpoint && lastMove ? `, ${moveStatusPresentation(lastMove.status).label} ${statusEndpoint}` : ''}${hintEndpoint ? `, hint ${hintEndpoint}` : ''}`}
                       aria-selected={selected}
+                      aria-disabled={disabled || undefined}
                       tabIndex={focusedSquare === square ? 0 : -1}
-                      disabled={disabled}
                       onFocus={() => setFocusedSquare(square)}
                       onPointerEnter={() => setHoveredSquare(square)}
                       onPointerLeave={() => setHoveredSquare((current) => current === square ? null : current)}

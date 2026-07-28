@@ -12,7 +12,10 @@ const args = [
   '--experimental-test-coverage',
   '--test-reporter=lcov',
   `--test-reporter-destination=${output}`,
+  'tests/data/**/*.test.ts',
   'tests/domain/**/*.test.ts',
+  'tests/security/**/*.test.ts',
+  'tests/verification/**/*.test.ts',
 ]
 
 const code = await new Promise<number>((resolveCode, reject) => {
@@ -25,8 +28,8 @@ const code = await new Promise<number>((resolveCode, reject) => {
   child.once('close', (exitCode) => resolveCode(exitCode ?? 1))
 })
 if (code !== 0) {
-  process.stderr.write(`Critical-domain coverage tests failed with exit code ${code}.\n`)
+  process.stderr.write(`Data/domain/security/verification coverage tests failed with exit code ${code}.\n`)
   process.exitCode = code
 } else {
-  process.stdout.write(`Critical-domain LCOV written to ${output}.\n`)
+  process.stdout.write(`Data/domain/security/verification LCOV written to ${output}.\n`)
 }

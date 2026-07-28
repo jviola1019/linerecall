@@ -28,6 +28,17 @@ runtime. `--report-only` deliberately records all automated checks as
    all eligible audited practice branches, Stockfish/Scid/puzzle receipts, and
    a digest-bound `linerecall-app-wire-v3` manifest. The historical v2 snapshot
    and any top-three-only selector are categorically review-only.
+   The contract also requires one primary family for every taxonomy row,
+   source-edge inventory equality, unique primary path ownership, valid
+   content-addressed family/pack/puzzle references, and the complete
+   Caro–Kann, Sicilian Defence, and Ruy Lopez ECO regression ranges. The
+   149-family review catalog alone cannot pass this gate.
+   `npm run release:family-promotion` additionally requires the bounded
+   promotion index and exact receipts for the catalog, every family manifest
+   and provenance document, every referenced pack graph and eligible-source-
+   edge inventory, every promoted puzzle shard, and the release-bound Q2,
+   Stockfish, Scid, and puzzle-promotion results. A missing index is a blocked
+   result with no promoted counts, never an implicit skip.
 6. Verbose release-snapshot and compact app-snapshot validation.
 7. Candidate CSP injection and exact inline hash verification.
 8. A checksum-bound, provider-neutral hosting manifest and audit of exact
@@ -76,9 +87,22 @@ invalidates all recorded evidence.
 - Browser E2E: required viewports, zoom, mouse/touch/keyboard, all async states,
   offline behavior, focus restoration, and adversarial cases. Record A-E tab
   semantics, bounded active-volume rendering, and reachability/searchability of
-  all 500 ECO codes. Record that movable board source squares reserve touch drag
-  while non-draggable squares retain vertical pan/pinch, and retain every
-  browser-specific touch skip.
+  all 500 ECO codes. Record exactly one card per canonical Repertoire family,
+  both sides and every referenced pack on one family page, deep-link and
+  Back/Forward behavior, bounded family/branch rendering, totals aggregated
+  across all manifest-owned packs, autonomous `completed / total` cycles and
+  next-pack transitions, due cards across more than 1,000 paths,
+  alternate-path transfer without FEN snapback, and idempotent remount/retry
+  behavior. Prove that branch labels come from manifest memberships, visually
+  duplicated labels do not delete paths, and a rejected completion write
+  blocks pack advancement until an accessible retry succeeds. Record that
+  movable board source squares reserve touch drag while non-draggable squares
+  retain vertical pan/pinch, and retain every browser-specific touch skip.
+- Tactical E2E: exercise all nine resource states, individual-record and
+  duplicate-ID rejection, separate learner/forced-reply transitions, setup
+  moves, special moves, alternate mate-in-one solutions, corrupt/offline
+  shards, and separate puzzle mastery. An unavailable tactical shard must never
+  fall back to opening recall.
 - Manual accessibility: NVDA/Chrome/Firefox, VoiceOver/Safari/iOS,
   TalkBack/Android, forced colors, reduced motion, reflow, text spacing,
   contrast incompletes, physical touch pan/drag, actual zoom, and keyboard-only.

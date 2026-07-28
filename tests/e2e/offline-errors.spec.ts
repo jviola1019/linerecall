@@ -79,7 +79,11 @@ test('downloaded self-contained HTML starts directly from file URL with the netw
   const url = pathToFileURL(resolve('build/candidate/linerecall.html')).href
   await page.goto(url, { waitUntil: 'domcontentloaded' })
   await expect(page.getByRole('heading', { name: 'Ready when you are.' })).toBeVisible({ timeout: 20_000 })
-  await expect(page.getByRole('button', { name: /Start due review|Continue practice/u })).toBeVisible()
+  const familyAction = page.getByRole('button', { name: 'Open family' })
+  await expect(familyAction).toBeVisible()
+  await familyAction.click()
+  await expect(page.getByRole('heading', { name: /Caro.Kann/u, level: 1 })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Training graph pending audit' })).toBeDisabled()
   await page.getByRole('button', { name: 'Progress' }).click()
   await expect(page.getByRole('heading', { name: 'Your progress' })).toBeVisible()
 })

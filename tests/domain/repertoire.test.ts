@@ -4,6 +4,7 @@ import { Chess, type Move } from 'chess.js'
 import {
   CORE_MINIMUM_LEARNER_DECISIONS,
   CoverageCycleStateSchema,
+  EligibleSourceEdgeInventoryV1Schema,
   REPERTOIRE_SCHEMA_VERSION,
   RepertoireBranchEvidenceSchema,
   RepertoireEdgeSchema,
@@ -22,6 +23,7 @@ import {
   stableRepertoirePathId,
   stableRepertoirePositionId,
   validateRepertoireGraphDocument,
+  validateEligibleSourceEdgeInventory,
   type BookTerminalStatus,
   type RepertoireEdge,
   type RepertoireGraphDocument,
@@ -239,6 +241,45 @@ test('stable IDs and exact legal EPD replay reject false transpositions', async 
   const wrong = structuredClone(graph)
   wrong.edges[0]!.toNodeId = wrong.pack.rootNodeId
   await assert.rejects(() => validateRepertoireGraphDocument(wrong), /stable move identity|exact EPD/u)
+})
+
+test('promotion requires exact equality with the reconciled eligible source-edge inventory', async () => {
+  const graph = await syntheticGraph({
+    id: 'source_inventory',
+    side: 'white',
+    root: new Chess(),
+    rootPly: 0,
+    lines: [
+      { moves: ['e2e4', 'e7e5', 'g1f3'], family: 'Route A', usage: 0.6 },
+      { moves: ['d2d4', 'd7d5', 'c2c4'], family: 'Route B', usage: 0.4 },
+    ],
+  })
+  await validateRepertoireGraphDocument(graph)
+  const eligibleEdgeIds = graph.edges.filter(({ eligibleForDrill }) => eligibleForDrill).map(({ id }) => id)
+  const inventory = EligibleSourceEdgeInventoryV1Schema.parse({
+    schemaVersion: 1,
+    releaseId: graph.releaseId,
+    packId: graph.pack.id,
+    sourceReceiptSha256: 'a'.repeat(64),
+    eligibleEdgeIds,
+  })
+  assert.deepEqual(validateEligibleSourceEdgeInventory(graph, inventory), inventory)
+
+  assert.throws(
+    () => validateEligibleSourceEdgeInventory(graph, {
+      ...inventory,
+      eligibleEdgeIds: eligibleEdgeIds.slice(1),
+    }),
+    /inventory mismatch: 0 omitted and 1 invented|inventory mismatch: 1 omitted and 0 invented/u,
+  )
+  assert.throws(
+    () => validateEligibleSourceEdgeInventory(graph, { ...inventory, releaseId: 'another-release' }),
+    /another release/u,
+  )
+  assert.throws(
+    () => validateEligibleSourceEdgeInventory(graph, { ...inventory, packId: 'another_pack' }),
+    /another pack/u,
+  )
 })
 
 test('public repertoire contracts are strict and explicitly versioned', async () => {

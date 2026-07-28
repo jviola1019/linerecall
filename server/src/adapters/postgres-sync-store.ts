@@ -4,6 +4,7 @@ import type {
   ProgressSettingsV2,
   PuzzleAttemptSyncRequest,
   PuzzleAttemptSyncResponse,
+  PuzzleProgressBootstrapResponse,
   ReviewEventV1,
   SyncRejection,
   SyncRequestV1,
@@ -59,10 +60,13 @@ interface ShareExportRow extends QueryResultRow {
   expires_at: Date | null; revoked_at: Date | null; created_at: Date
 }
 interface PuzzleExportRow extends QueryResultRow {
-  puzzle_id: string; attempts: number; solved: number; last_attempt_at: Date | null
+  puzzle_id: string; attempts: number; solved: number; abandoned: number
+  clean_solves: number; hints_used: number; incorrect_moves: string
+  total_elapsed_ms: string; last_elapsed_ms: number | null; last_attempt_at: Date | null
 }
 interface PuzzleAttemptRow extends QueryResultRow {
-  attempt_id: string; device_id: string; puzzle_id: string; solved: boolean
+  attempt_id: string; device_id: string; puzzle_id: string; solved: boolean; abandoned: boolean
+  incorrect_attempts: number; used_hint: boolean; elapsed_ms: number | null
   occurred_at: Date; normalized_occurred_at: Date; received_at: Date
   snapshot_version: string; sync_sequence: string
 }
@@ -266,6 +270,59 @@ export class PostgresSyncStore implements SyncStore {
     }
   }
 
+  async bootstrapPuzzleProgress(
+    userId: string,
+    cursor: bigint,
+    limit: number,
+    now: Date,
+  ): Promise<PuzzleProgressBootstrapResponse> {
+    if (cursor < 0n || !Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
+      throw new ApiError(422, 'invalid_cursor', 'Puzzle progress cursor is invalid')
+    }
+    const client = await this.pool.connect()
+    try {
+      await client.query('BEGIN READ ONLY')
+      await this.#setUser(client, userId)
+      const result = await client.query<PuzzleExportRow & { sync_sequence: string }>(
+        `SELECT puzzle_id,attempts,solved,abandoned,clean_solves,hints_used,
+                incorrect_moves::text,total_elapsed_ms::text,last_elapsed_ms,last_attempt_at,sync_sequence::text
+         FROM puzzle_progress
+         WHERE user_id=$1 AND sync_sequence>$2
+         ORDER BY sync_sequence,puzzle_id
+         LIMIT $3`,
+        [userId, cursor.toString(), limit + 1],
+      )
+      const hasMore = result.rows.length > limit
+      const page = result.rows.slice(0, limit)
+      const progress = page.map((row) => ({
+        puzzleId: row.puzzle_id,
+        attempts: row.attempts,
+        solved: row.solved,
+        abandoned: row.abandoned,
+        cleanSolves: row.clean_solves,
+        hintsUsed: row.hints_used,
+        incorrectMoves: Number(row.incorrect_moves),
+        totalElapsedMs: Number(row.total_elapsed_ms),
+        lastElapsedMs: row.last_elapsed_ms,
+        lastAttemptAt: row.last_attempt_at?.toISOString() ?? null,
+        syncSequence: row.sync_sequence,
+      }))
+      const response = {
+        progress,
+        nextCursor: page.at(-1)?.sync_sequence ?? cursor.toString(),
+        hasMore,
+        serverTime: now.toISOString(),
+      }
+      await client.query('COMMIT')
+      return response
+    } catch (error) {
+      await client.query('ROLLBACK')
+      throw error
+    } finally {
+      client.release()
+    }
+  }
+
   async syncPuzzleAttempts(userId: string, request: PuzzleAttemptSyncRequest, now: Date): Promise<PuzzleAttemptSyncResponse> {
     const client = await this.pool.connect()
     try {
@@ -297,7 +354,12 @@ export class PostgresSyncStore implements SyncStore {
         const previous = duplicate.rows[0]
         if (previous) {
           const same = previous.device_id === incoming.deviceId && previous.puzzle_id === incoming.puzzleId &&
-            previous.solved === incoming.solved && previous.occurred_at.toISOString() === new Date(incoming.occurredAt).toISOString() &&
+            previous.solved === (incoming.outcome === 'solved') &&
+            previous.abandoned === (incoming.outcome === 'abandoned') &&
+            previous.incorrect_attempts === incoming.incorrectAttempts &&
+            previous.used_hint === incoming.usedHint &&
+            (previous.elapsed_ms ?? undefined) === incoming.elapsedMs &&
+            previous.occurred_at.toISOString() === new Date(incoming.occurredAt).toISOString() &&
             previous.snapshot_version === incoming.snapshotVersion
           if (same) {
             acceptedAttemptIds.push(incoming.attemptId)
@@ -312,21 +374,44 @@ export class PostgresSyncStore implements SyncStore {
         const normalized = future ? now : occurredAt
         const inserted = await client.query<{ sync_sequence: string }>(
           `INSERT INTO puzzle_attempt_events
-           (user_id,attempt_id,device_id,puzzle_id,solved,occurred_at,normalized_occurred_at,received_at,snapshot_version)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING sync_sequence::text`,
-          [userId, incoming.attemptId, incoming.deviceId, incoming.puzzleId, incoming.solved,
+           (user_id,attempt_id,device_id,puzzle_id,solved,abandoned,incorrect_attempts,used_hint,elapsed_ms,
+            occurred_at,normalized_occurred_at,received_at,snapshot_version)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING sync_sequence::text`,
+          [userId, incoming.attemptId, incoming.deviceId, incoming.puzzleId,
+            incoming.outcome === 'solved', incoming.outcome === 'abandoned',
+            incoming.incorrectAttempts, incoming.usedHint, incoming.elapsedMs ?? null,
             occurredAt, normalized, now, incoming.snapshotVersion],
         )
         const sequence = inserted.rows[0]!.sync_sequence
+        const solved = incoming.outcome === 'solved'
+        const clean = solved && incoming.incorrectAttempts === 0 && !incoming.usedHint
         await client.query(
-          `INSERT INTO puzzle_progress (user_id,puzzle_id,attempts,solved,last_attempt_at,sync_sequence)
-           VALUES ($1,$2,1,$3,$4,$5)
+          `INSERT INTO puzzle_progress
+             (user_id,puzzle_id,attempts,solved,abandoned,clean_solves,hints_used,incorrect_moves,
+              total_elapsed_ms,last_elapsed_ms,last_attempt_at,sync_sequence)
+           VALUES ($1,$2,1,$3,$4,$5,$6,$7,$8,$9,$10,$11)
            ON CONFLICT (user_id,puzzle_id) DO UPDATE SET
              attempts=puzzle_progress.attempts+1,
              solved=puzzle_progress.solved+EXCLUDED.solved,
-             last_attempt_at=GREATEST(puzzle_progress.last_attempt_at,EXCLUDED.last_attempt_at),
+             abandoned=puzzle_progress.abandoned+EXCLUDED.abandoned,
+             clean_solves=puzzle_progress.clean_solves+EXCLUDED.clean_solves,
+             hints_used=puzzle_progress.hints_used+EXCLUDED.hints_used,
+             incorrect_moves=puzzle_progress.incorrect_moves+EXCLUDED.incorrect_moves,
+             total_elapsed_ms=puzzle_progress.total_elapsed_ms+EXCLUDED.total_elapsed_ms,
+             last_elapsed_ms=CASE
+               WHEN puzzle_progress.last_attempt_at IS NULL OR EXCLUDED.last_attempt_at >= puzzle_progress.last_attempt_at
+                 THEN EXCLUDED.last_elapsed_ms
+               ELSE puzzle_progress.last_elapsed_ms
+             END,
+             last_attempt_at=CASE
+               WHEN puzzle_progress.last_attempt_at IS NULL OR EXCLUDED.last_attempt_at >= puzzle_progress.last_attempt_at
+                 THEN EXCLUDED.last_attempt_at
+               ELSE puzzle_progress.last_attempt_at
+             END,
              sync_sequence=EXCLUDED.sync_sequence`,
-          [userId, incoming.puzzleId, incoming.solved ? 1 : 0, normalized, sequence],
+          [userId, incoming.puzzleId, solved ? 1 : 0, solved ? 0 : 1, clean ? 1 : 0,
+            incoming.usedHint ? 1 : 0, incoming.incorrectAttempts, incoming.elapsedMs ?? 0,
+            incoming.elapsedMs ?? null, normalized, sequence],
         )
         acceptedAttemptIds.push(incoming.attemptId)
         affected.add(incoming.puzzleId)
@@ -336,8 +421,9 @@ export class PostgresSyncStore implements SyncStore {
         })
       }
       const ids = [...affected]
-      const progress = ids.length === 0 ? { rows: [] as PuzzleExportRow[] } : await client.query<PuzzleExportRow & { sync_sequence: string }>(
-        `SELECT puzzle_id,attempts,solved,last_attempt_at,sync_sequence::text
+      const progress = ids.length === 0 ? { rows: [] as Array<PuzzleExportRow & { sync_sequence: string }> } : await client.query<PuzzleExportRow & { sync_sequence: string }>(
+        `SELECT puzzle_id,attempts,solved,abandoned,clean_solves,hints_used,
+                incorrect_moves::text,total_elapsed_ms::text,last_elapsed_ms,last_attempt_at,sync_sequence::text
          FROM puzzle_progress WHERE user_id=$1 AND puzzle_id=ANY($2::text[]) ORDER BY puzzle_id`, [userId, ids],
       )
       await client.query('COMMIT')
@@ -346,8 +432,11 @@ export class PostgresSyncStore implements SyncStore {
         rejectedAttempts,
         progress: progress.rows.map((row) => ({
           puzzleId: row.puzzle_id, attempts: row.attempts, solved: row.solved,
+          abandoned: row.abandoned, cleanSolves: row.clean_solves, hintsUsed: row.hints_used,
+          incorrectMoves: Number(row.incorrect_moves), totalElapsedMs: Number(row.total_elapsed_ms),
+          lastElapsedMs: row.last_elapsed_ms,
           lastAttemptAt: row.last_attempt_at?.toISOString() ?? null,
-          syncSequence: 'sync_sequence' in row ? String(row.sync_sequence) : '0',
+          syncSequence: row.sync_sequence,
         })),
         serverTime: now.toISOString(),
       }
@@ -387,10 +476,13 @@ export class PostgresSyncStore implements SyncStore {
            WHERE user_id=$1 ORDER BY created_at,id`, [userId],
         ),
         client.query<PuzzleExportRow>(
-          'SELECT puzzle_id,attempts,solved,last_attempt_at FROM puzzle_progress WHERE user_id=$1 ORDER BY puzzle_id', [userId],
+          `SELECT puzzle_id,attempts,solved,abandoned,clean_solves,hints_used,
+                  incorrect_moves::text,total_elapsed_ms::text,last_elapsed_ms,last_attempt_at
+           FROM puzzle_progress WHERE user_id=$1 ORDER BY puzzle_id`, [userId],
         ),
         client.query<PuzzleAttemptRow>(
-          `SELECT attempt_id,device_id,puzzle_id,solved,occurred_at,normalized_occurred_at,received_at,snapshot_version,sync_sequence::text
+          `SELECT attempt_id,device_id,puzzle_id,solved,abandoned,incorrect_attempts,used_hint,elapsed_ms,
+                  occurred_at,normalized_occurred_at,received_at,snapshot_version,sync_sequence::text
            FROM puzzle_attempt_events WHERE user_id=$1 ORDER BY sync_sequence`, [userId],
         ),
         client.query<ConnectionExportRow>(
@@ -417,7 +509,7 @@ export class PostgresSyncStore implements SyncStore {
       ])
       await client.query('COMMIT')
       return {
-        schema: 'linerecall-account-export-v3',
+        schema: 'linerecall-account-export-v4',
         exportedAt: now.toISOString(),
         settings,
         reviewEvents: events.rows.map(eventFromRow).map(({ syncSequence, ...event }) => ({ ...event, syncSequence: syncSequence.toString() })),
@@ -443,10 +535,16 @@ export class PostgresSyncStore implements SyncStore {
         })),
         puzzleProgress: puzzles.rows.map((row) => ({
           puzzleId: row.puzzle_id, attempts: row.attempts, solved: row.solved,
+          abandoned: row.abandoned, cleanSolves: row.clean_solves, hintsUsed: row.hints_used,
+          incorrectMoves: Number(row.incorrect_moves), totalElapsedMs: Number(row.total_elapsed_ms),
+          lastElapsedMs: row.last_elapsed_ms,
           lastAttemptAt: row.last_attempt_at?.toISOString() ?? null,
         })),
         puzzleAttempts: puzzleAttempts.rows.map((row) => ({
-          attemptId: row.attempt_id, deviceId: row.device_id, puzzleId: row.puzzle_id, solved: row.solved,
+          attemptId: row.attempt_id, deviceId: row.device_id, puzzleId: row.puzzle_id,
+          outcome: row.solved && !row.abandoned ? 'solved' : 'abandoned',
+          incorrectAttempts: row.incorrect_attempts, usedHint: row.used_hint,
+          ...(row.elapsed_ms === null ? {} : { elapsedMs: row.elapsed_ms }),
           occurredAt: row.occurred_at.toISOString(), normalizedOccurredAt: row.normalized_occurred_at.toISOString(),
           receivedAt: row.received_at.toISOString(), snapshotVersion: row.snapshot_version,
           syncSequence: row.sync_sequence,

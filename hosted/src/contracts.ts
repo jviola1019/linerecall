@@ -91,7 +91,10 @@ export const PuzzleAttemptV1Schema = z.object({
   attemptId: z.string().regex(UUID_V7),
   deviceId: z.string().regex(UUID_V7),
   puzzleId: z.string().regex(SAFE_ID),
-  solved: z.boolean(),
+  outcome: z.enum(['solved', 'abandoned']),
+  incorrectAttempts: z.number().int().nonnegative().max(10_000),
+  usedHint: z.boolean(),
+  elapsedMs: z.number().int().nonnegative().max(86_400_000).optional(),
   occurredAt: z.string().datetime({ offset: true }),
   snapshotVersion: z.string().regex(SAFE_ID),
 }).strict()
@@ -101,6 +104,29 @@ export const PuzzleAttemptSyncRequestSchema = z.object({
   deviceId: z.string().regex(UUID_V7),
   attempts: z.array(PuzzleAttemptV1Schema).min(1).max(100),
 }).strict()
+export const PuzzleProgressStateSchema = z.object({
+  puzzleId: z.string().regex(SAFE_ID),
+  attempts: z.number().int().nonnegative(),
+  solved: z.number().int().nonnegative(),
+  abandoned: z.number().int().nonnegative(),
+  cleanSolves: z.number().int().nonnegative(),
+  hintsUsed: z.number().int().nonnegative(),
+  incorrectMoves: z.number().int().nonnegative(),
+  totalElapsedMs: z.number().int().nonnegative(),
+  lastElapsedMs: z.number().int().nonnegative().nullable(),
+  lastAttemptAt: z.string().datetime({ offset: true }).nullable(),
+  syncSequence: z.string().regex(/^\d+$/u),
+}).strict().superRefine((progress, context) => {
+  if (
+    progress.solved + progress.abandoned !== progress.attempts ||
+    progress.cleanSolves > progress.solved ||
+    progress.hintsUsed > progress.attempts
+  ) {
+    context.addIssue({ code: 'custom', message: 'Puzzle progress totals do not reconcile' })
+  }
+})
+export type PuzzleProgressState = z.infer<typeof PuzzleProgressStateSchema>
+
 export const PuzzleAttemptSyncResponseSchema = z.object({
   acceptedAttemptIds: z.array(z.string().regex(UUID_V7)).max(100),
   rejectedAttempts: z.array(z.object({
@@ -108,12 +134,17 @@ export const PuzzleAttemptSyncResponseSchema = z.object({
     code: z.enum(['conflicting_attempt_id', 'unsupported_snapshot', 'unknown_puzzle_membership', 'future_timestamp_normalized']),
     message: z.string().max(256),
   }).strict()).max(100),
-  progress: z.array(z.object({
-    puzzleId: z.string().regex(SAFE_ID), attempts: z.number().int().nonnegative(), solved: z.number().int().nonnegative(),
-    lastAttemptAt: z.string().datetime({ offset: true }).nullable(), syncSequence: z.string().regex(/^\d+$/u),
-  }).strict()).max(100),
+  progress: z.array(PuzzleProgressStateSchema).max(100),
   serverTime: z.string().datetime({ offset: true }),
 }).strict()
+
+export const PuzzleProgressBootstrapResponseSchema = z.object({
+  progress: z.array(PuzzleProgressStateSchema).max(500),
+  nextCursor: z.string().regex(/^\d+$/u),
+  hasMore: z.boolean(),
+  serverTime: z.string().datetime({ offset: true }),
+}).strict()
+export type PuzzleProgressBootstrapResponse = z.infer<typeof PuzzleProgressBootstrapResponseSchema>
 
 export const ErrorResponseSchema = z.object({
   error: z.object({
@@ -204,7 +235,7 @@ export const PasskeyRecordSchema = z.object({
 }).strict()
 
 export const UnsyncedExportSchema = z.object({
-  schema: z.literal('linerecall-unsynced-events-v2'),
+  schema: z.literal('linerecall-unsynced-events-v3'),
   exportedAt: IsoDateSchema,
   deviceId: z.string().regex(UUID_V7),
   snapshotVersion: z.string().regex(SAFE_ID),

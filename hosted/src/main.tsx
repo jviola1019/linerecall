@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client'
 import '../../src/app/styles.css'
 import './hosted.css'
 import { App } from '../../src/app/App.tsx'
-import type { PuzzleSolvedEvent } from '../../src/app/components/PuzzleView.tsx'
+import type { PuzzleAttemptEventV1 } from '../../src/domain/puzzle-progress.ts'
 import { EmbeddedSnapshotPayloadSchema } from '../../src/data/embedded-contract.ts'
 import { EmbeddedOpeningDataSource } from '../../src/data/embedded-opening-data-source.ts'
 import { MemoryProgressRepository } from '../../src/infrastructure/progress-repository.ts'
@@ -11,7 +11,12 @@ import snapshotJson from '../../src/generated/embedded-snapshot.json' with { typ
 import { AccountControl } from './AccountControl.tsx'
 import { AuthService } from './auth-service.ts'
 import type { AuthSession } from './contracts.ts'
-import { CloudProgressRepository, ConnectedSyncClient, type SyncState } from './sync-client.ts'
+import {
+  CloudProgressRepository,
+  CloudPuzzleProgressRepository,
+  ConnectedSyncClient,
+  type SyncState,
+} from './sync-client.ts'
 
 const snapshot = EmbeddedSnapshotPayloadSchema.parse(snapshotJson)
 const defaultSnapshotVersion = `wire_${snapshot.generatedAt.replace(/[^A-Za-z0-9._-]/gu, '_')}`
@@ -102,6 +107,10 @@ function HostedRoot(): React.JSX.Element {
       warning: 'Not signed in. Progress is session-only; use validated JSON export before leaving.',
     }
   }, [sync])
+  const puzzleProgressRepository = useMemo(
+    () => sync ? new CloudPuzzleProgressRepository(sync) : undefined,
+    [sync],
+  )
 
   const commitReview = useCallback((commit: Parameters<ConnectedSyncClient['queueReview']>[0]): string | undefined => {
     if (!sync) return undefined
@@ -119,13 +128,28 @@ function HostedRoot(): React.JSX.Element {
     onError: Parameters<ConnectedSyncClient['subscribeCards']>[1],
   ) => sync ? sync.subscribeCards(listener, onError) : () => undefined, [sync])
 
-  const commitPuzzle = useCallback((event: PuzzleSolvedEvent): void => {
-    if (!sync) return
+  const subscribePuzzles = useCallback((
+    listener: Parameters<ConnectedSyncClient['subscribePuzzleProgress']>[0],
+    onError: Parameters<ConnectedSyncClient['subscribePuzzleProgress']>[1],
+  ) => sync ? sync.subscribePuzzleProgress(listener, onError) : () => undefined, [sync])
+
+  const commitPuzzle = useCallback(async (event: PuzzleAttemptEventV1): Promise<void> => {
+    if (!sync) throw new Error('Cloud puzzle sync is unavailable')
     try {
       setClientError(null)
-      sync.queuePuzzleAttempt(event.puzzle.id, new Date().toISOString())
+      sync.queuePuzzleAttempt({
+        attemptId: event.eventId,
+        puzzleId: event.puzzleId,
+        outcome: event.outcome,
+        incorrectAttempts: event.incorrectAttempts,
+        usedHint: event.usedHint,
+        occurredAt: event.occurredAt,
+        ...(event.elapsedMs === undefined ? {} : { elapsedMs: event.elapsedMs }),
+      })
     } catch (cause) {
-      setClientError(cause instanceof Error ? cause.message : 'Puzzle attempt could not be placed in the sync queue')
+      const error = cause instanceof Error ? cause : new Error('Puzzle attempt could not be placed in the sync queue')
+      setClientError(error.message)
+      throw error
     }
   }, [sync])
 
@@ -154,7 +178,13 @@ function HostedRoot(): React.JSX.Element {
         dataSource={dataSource}
         repositorySelector={repositorySelector}
         accountControl={account}
-        {...(sync ? { onReviewCommit: commitReview, onPuzzleSolved: commitPuzzle, subscribeProgressCards: subscribeCards } : {})}
+        {...(puzzleProgressRepository ? { puzzleProgressRepository } : {})}
+        {...(sync ? {
+          onReviewCommit: commitReview,
+          onTacticalPuzzleAttempt: commitPuzzle,
+          subscribeProgressCards: subscribeCards,
+          subscribePuzzleProgress: subscribePuzzles,
+        } : {})}
       />
       {syncState || clientError ? (
         <div className="hosted-sync-strip" data-status={clientError ? 'error' : syncState?.status} role={clientError ? 'alert' : 'status'}>

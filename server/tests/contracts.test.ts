@@ -43,13 +43,39 @@ describe('PGN envelope bounds', () => {
         attemptId: '0198a5c0-1000-7000-8000-000000000010',
         deviceId: otherDevice,
         puzzleId: 'puzzle-1',
-        solved: true,
+        outcome: 'abandoned',
+        incorrectAttempts: 2,
+        usedHint: true,
+        elapsedMs: 5_000,
         occurredAt: '2026-07-14T11:55:00.000Z',
         snapshotVersion: 'release-2026q2',
       }],
     })
     assert.equal(puzzles.success, false)
     if (!puzzles.success) assert.deepEqual(puzzles.error.issues[0]?.path, ['attempts', 0, 'deviceId'])
+  })
+  it('requires explicit bounded tactical outcome evidence', () => {
+    const base = {
+      attemptId: '0198a5c0-1000-7000-8000-000000000010',
+      deviceId: DEVICE_ID,
+      puzzleId: 'puzzle-1',
+      outcome: 'abandoned',
+      incorrectAttempts: 3,
+      usedHint: true,
+      elapsedMs: 86_400_000,
+      occurredAt: '2026-07-14T11:55:00.000Z',
+      snapshotVersion: 'release-2026q2',
+    }
+    assert.equal(PuzzleAttemptSyncRequestSchema.safeParse({
+      deviceId: DEVICE_ID, attempts: [base],
+    }).success, true)
+    assert.equal(PuzzleAttemptSyncRequestSchema.safeParse({
+      deviceId: DEVICE_ID, attempts: [{ ...base, elapsedMs: 86_400_001 }],
+    }).success, false)
+    const { outcome: _outcome, ...legacyShape } = base
+    assert.equal(PuzzleAttemptSyncRequestSchema.safeParse({
+      deviceId: DEVICE_ID, attempts: [{ ...legacyShape, solved: true }],
+    }).success, false)
   })
   it('rejects hostile names and annotation labels before storage', () => {
     assert.equal(ImportRepertoireSchema.safeParse({ name: 'bad\0name', pgn: '1. e4', side: 'white' }).success, false)

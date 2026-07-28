@@ -1,15 +1,23 @@
 import { CardProgressSchema, createEmptyProgress, type CardProgress, type ProgressV1, type ProgressRepository } from '../../src/domain/progress.ts'
+import {
+  PuzzleProgressV1Schema,
+  createEmptyPuzzleProgress,
+  type PuzzleProgress,
+  type PuzzleProgressRepository,
+} from '../../src/domain/puzzle-progress.ts'
 import type { ReviewCommitMetadata } from '../../src/app/components/DrillView.tsx'
 import {
   PuzzleAttemptSyncRequestSchema,
   PuzzleAttemptSyncResponseSchema,
   PuzzleAttemptV1Schema,
+  PuzzleProgressBootstrapResponseSchema,
   ReviewEventV1Schema,
   SyncRequestV1Schema,
   SyncResponseV1Schema,
   UnsyncedExportSchema,
   type CardStateV2,
   type PuzzleAttemptV1,
+  type PuzzleProgressState,
   type ProgressSettingsV2,
   type ReviewEventV1,
   type SyncRejection,
@@ -24,12 +32,18 @@ export type SyncState =
 
 type StatusListener = (state: SyncState) => void
 type CardListener = (cards: readonly CardProgress[]) => void
+type PuzzleProgressListener = (progress: PuzzleProgress) => void
 type ErrorListener = (error: Error) => void
 
 interface RejectedReview {
   event: ReviewEventV1
   rejection: SyncRejection
 }
+
+export type PuzzleAttemptInput = Pick<
+  PuzzleAttemptV1,
+  'attemptId' | 'puzzleId' | 'outcome' | 'incorrectAttempts' | 'usedHint' | 'occurredAt' | 'elapsedMs'
+>
 
 const MAX_PENDING_EVENTS = 50_000
 const MAX_BOOTSTRAP_PAGES = 200
@@ -121,8 +135,11 @@ export class ConnectedSyncClient {
   readonly #rejected: RejectedReview[] = []
   readonly #statusListeners = new Set<StatusListener>()
   readonly #cardListeners = new Set<CardListener>()
+  readonly #puzzleProgressListeners = new Set<PuzzleProgressListener>()
   readonly #errorListeners = new Set<ErrorListener>()
   readonly #cards = new Map<string, CardProgress>()
+  #puzzleProgress: PuzzleProgress = createEmptyPuzzleProgress()
+  #puzzleCursor = '0'
   #cursor: string | null = null
   #settingsVersion = 0
   #settings: ProgressSettingsV2 | null = null
@@ -159,6 +176,16 @@ export class ConnectedSyncClient {
     }
   }
 
+  subscribePuzzleProgress(listener: PuzzleProgressListener, onError: ErrorListener): () => void {
+    this.#puzzleProgressListeners.add(listener)
+    this.#errorListeners.add(onError)
+    listener(structuredClone(this.#puzzleProgress))
+    return () => {
+      this.#puzzleProgressListeners.delete(listener)
+      this.#errorListeners.delete(onError)
+    }
+  }
+
   async bootstrap(): Promise<ProgressV1> {
     this.#setState({ status: 'syncing', pending: this.pendingCount, message: 'Loading your cloud schedule…' })
     let cursor = '0'
@@ -185,6 +212,30 @@ export class ConnectedSyncClient {
     progress.updatedAt = new Date().toISOString()
     this.#setState({ status: 'synced', pending: this.pendingCount, message: 'Cloud schedule is up to date.' })
     return progress
+  }
+
+  async bootstrapPuzzleProgress(reset = false): Promise<PuzzleProgress> {
+    if (reset) {
+      this.#puzzleCursor = '0'
+      this.#puzzleProgress = createEmptyPuzzleProgress()
+    }
+    let cursor = this.#puzzleCursor
+    let pages = 0
+    do {
+      if (pages >= MAX_BOOTSTRAP_PAGES) throw new Error('Cloud puzzle bootstrap exceeded its bounded page limit')
+      const response = await sameOriginRequest(
+        this.#fetcher,
+        this.#origin,
+        `/v1/puzzles/progress?cursor=${encodeURIComponent(cursor)}&limit=250`,
+      )
+      const page = await expectJson(response, (value) => PuzzleProgressBootstrapResponseSchema.parse(value))
+      this.#acceptPuzzleProgress(page.progress, page.serverTime)
+      cursor = page.nextCursor
+      pages += 1
+      if (!page.hasMore) break
+    } while (true)
+    this.#puzzleCursor = cursor
+    return structuredClone(this.#puzzleProgress)
   }
 
   queueReview(commit: ReviewCommitMetadata & { card: CardProgress }): string {
@@ -214,15 +265,18 @@ export class ConnectedSyncClient {
     return event.eventId
   }
 
-  queuePuzzleAttempt(puzzleId: string, occurredAtInput: string): string {
+  queuePuzzleAttempt(input: PuzzleAttemptInput): string {
     if (this.pendingCount >= MAX_PENDING_EVENTS) throw new Error('The in-memory sync queue reached its safety limit; export it before continuing')
-    const occurredAt = new Date(occurredAtInput)
+    const occurredAt = new Date(input.occurredAt)
     if (Number.isNaN(occurredAt.getTime())) throw new Error('Puzzle attempt timestamp is invalid')
     const attempt = PuzzleAttemptV1Schema.parse({
-      attemptId: uuidV7(),
+      attemptId: input.attemptId,
       deviceId: this.deviceId,
-      puzzleId,
-      solved: true,
+      puzzleId: input.puzzleId,
+      outcome: input.outcome,
+      incorrectAttempts: input.incorrectAttempts,
+      usedHint: input.usedHint,
+      ...(input.elapsedMs === undefined ? {} : { elapsedMs: input.elapsedMs }),
       occurredAt: occurredAt.toISOString(),
       snapshotVersion: this.#snapshotVersion,
     })
@@ -296,6 +350,10 @@ export class ConnectedSyncClient {
         for (const rejection of result.rejectedAttempts) {
           if (rejection.code !== 'future_timestamp_normalized') this.#pendingPuzzleAttempts.delete(rejection.attemptId)
         }
+        this.#acceptPuzzleProgress(result.progress, result.serverTime, result.acceptedAttemptIds)
+        if (result.rejectedAttempts.some(({ code }) => code !== 'future_timestamp_normalized')) {
+          await this.bootstrapPuzzleProgress(true)
+        }
       }
       this.#setState({
         status: 'synced',
@@ -331,6 +389,45 @@ export class ConnectedSyncClient {
     if (changed.length > 0) for (const listener of this.#cardListeners) listener(changed)
   }
 
+  #acceptPuzzleProgress(
+    entries: readonly PuzzleProgressState[],
+    serverTime: string,
+    acceptedAttemptIds: readonly string[] = [],
+  ): void {
+    const puzzles = { ...this.#puzzleProgress.puzzles }
+    for (const entry of entries) {
+      puzzles[entry.puzzleId] = {
+        puzzleId: entry.puzzleId,
+        attempts: entry.attempts,
+        solves: entry.solved,
+        abandoned: entry.abandoned,
+        cleanSolves: entry.cleanSolves,
+        hintsUsed: entry.hintsUsed,
+        incorrectMoves: entry.incorrectMoves,
+        totalElapsedMs: entry.totalElapsedMs,
+        lastElapsedMs: entry.lastElapsedMs,
+        lastAttemptAt: entry.lastAttemptAt,
+      }
+      if (BigInt(entry.syncSequence) > BigInt(this.#puzzleCursor)) this.#puzzleCursor = entry.syncSequence
+    }
+    const appliedEventIds = [...new Set([
+      ...this.#puzzleProgress.appliedEventIds,
+      ...acceptedAttemptIds,
+    ])].slice(-100_000)
+    this.#puzzleProgress = PuzzleProgressV1Schema.parse({
+      version: 1,
+      updatedAt: serverTime,
+      puzzles,
+      appliedEventIds,
+    })
+    for (const listener of this.#puzzleProgressListeners) listener(structuredClone(this.#puzzleProgress))
+  }
+
+  setLocalPuzzleProgress(progress: PuzzleProgress): void {
+    this.#puzzleProgress = structuredClone(PuzzleProgressV1Schema.parse(progress))
+    for (const listener of this.#puzzleProgressListeners) listener(structuredClone(this.#puzzleProgress))
+  }
+
   #setState(state: SyncState): void {
     this.#state = state
     for (const listener of this.#statusListeners) listener(state)
@@ -342,7 +439,7 @@ export class ConnectedSyncClient {
 
   exportUnsynced(): void {
     const payload = UnsyncedExportSchema.parse({
-      schema: 'linerecall-unsynced-events-v2',
+      schema: 'linerecall-unsynced-events-v3',
       exportedAt: new Date().toISOString(),
       deviceId: this.deviceId,
       snapshotVersion: this.#snapshotVersion,
@@ -372,5 +469,23 @@ export class CloudProgressRepository implements ProgressRepository {
 
   async clear(): Promise<void> {
     throw new Error('Cloud progress can be deleted only through the recent-authenticated account deletion flow')
+  }
+}
+
+export class CloudPuzzleProgressRepository implements PuzzleProgressRepository {
+  readonly kind = 'cloud' as const
+
+  constructor(private readonly sync: ConnectedSyncClient) {}
+
+  async load(): Promise<PuzzleProgress> {
+    return this.sync.bootstrapPuzzleProgress()
+  }
+
+  async save(progress: PuzzleProgress): Promise<void> {
+    this.sync.setLocalPuzzleProgress(progress)
+  }
+
+  async clear(): Promise<void> {
+    throw new Error('Cloud puzzle progress can be deleted only through the recent-authenticated account deletion flow')
   }
 }

@@ -47,3 +47,61 @@ test('catalog and registry audits fail closed on missing keys, unreviewed enable
   assert.ok(findings.some(({ rule, locale }) => rule === 'unreviewed-locale-enabled' && locale === 'es'))
   assert.ok(findings.some(({ rule, locale }) => rule === 'wrong-direction' && locale === 'ar'))
 })
+
+test('registry audit reports structural, reviewer, blocker, catalog, and placeholder failures', () => {
+  assert.equal(auditLocaleRegistry({}, {}).at(0)?.rule, 'invalid-registry-schema')
+
+  const structural = structuredClone(LOCALE_REGISTRY)
+  structural.locales[6] = structuredClone(structural.locales[1]!)
+  structural.defaultLocale = 'es'
+  structural.requiredMessageKeys.reverse()
+  const source = structural.locales.find(({ id }) => id === 'en-US')!
+  source.runtimeEnabled = false
+  const structuralRules = new Set(auditLocaleRegistry(structural, {}).map(({ rule }) => rule))
+  assert.ok(structuralRules.has('missing-locale'))
+  assert.ok(structuralRules.has('duplicate-locale'))
+  assert.ok(structuralRules.has('wrong-default-locale'))
+  assert.ok(structuralRules.has('required-key-order'))
+  assert.ok(structuralRules.has('source-locale-disabled'))
+  assert.ok(structuralRules.has('invalid-source-catalog'))
+
+  const blocked = structuredClone(LOCALE_REGISTRY)
+  const blockedSpanish = blocked.locales.find(({ id }) => id === 'es')!
+  blockedSpanish.blockers = []
+  blockedSpanish.reviewStatus = 'source'
+  const blockedRules = new Set(auditLocaleRegistry(blocked, {
+    ...LOCALE_CATALOGS,
+    es: LOCALE_CATALOGS['en-US'],
+  }).map(({ rule }) => rule))
+  assert.ok(blockedRules.has('multiple-source-locales'))
+  assert.ok(blockedRules.has('blocked-catalog-embedded'))
+
+  const approved = structuredClone(LOCALE_REGISTRY)
+  const approvedSpanish = approved.locales.find(({ id }) => id === 'es')!
+  approvedSpanish.runtimeEnabled = true
+  approvedSpanish.catalogId = 'es'
+  approvedSpanish.reviewStatus = 'approved'
+  approvedSpanish.blockers = []
+  approvedSpanish.reviewers = {
+    language: null,
+    layout: 'Layout Reviewer',
+    assistiveTechnology: 'AT Reviewer',
+  }
+  const approvedRules = new Set(auditLocaleRegistry(approved, {
+    ...LOCALE_CATALOGS,
+    es: {},
+  }).map(({ rule }) => rule))
+  assert.ok(approvedRules.has('unnamed-reviewer'))
+  assert.ok(approvedRules.has('invalid-enabled-catalog'))
+
+  approvedSpanish.reviewers.language = 'Language Reviewer'
+  const mismatchedCatalog = {
+    ...LOCALE_CATALOGS['en-US']!,
+    'status.itemsLoaded': 'Items loaded.',
+  }
+  const mismatchRules = auditLocaleRegistry(approved, {
+    ...LOCALE_CATALOGS,
+    es: mismatchedCatalog,
+  })
+  assert.ok(mismatchRules.some(({ rule, locale }) => rule === 'placeholder-mismatch' && locale === 'es'))
+})

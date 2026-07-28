@@ -177,8 +177,13 @@ export function DrillView({
   const analysisTabRefs = useRef(new Map<AnalysisTab, HTMLButtonElement>())
   const focusedLineRef = useRef<string | null>(null)
   const previousPhaseRef = useRef<TrainingSessionState['phase'] | null>(null)
+  const completionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
+    if (completionTimerRef.current !== null) {
+      clearTimeout(completionTimerRef.current)
+      completionTimerRef.current = null
+    }
     if (!line) {
       setSession(null)
       return
@@ -193,6 +198,10 @@ export function DrillView({
     setAnnotationMode(false)
     setAnnotations([])
   }, [line, practiceAll])
+
+  useEffect(() => () => {
+    if (completionTimerRef.current !== null) clearTimeout(completionTimerRef.current)
+  }, [])
 
   useEffect(() => {
     if (!mobileStatsOpen) return
@@ -406,8 +415,22 @@ export function DrillView({
       beforeCard,
       ...(reviewEventId ? { reviewEventId } : {}),
     })
-    setSession(completed.state)
-    setAnsweredFen(null)
+    if (completionTimerRef.current !== null) clearTimeout(completionTimerRef.current)
+    if (completed.state.phase === 'complete') {
+      // Keep the board mounted at the legally applied destination long enough
+      // for the final piece translation to finish before the completion view
+      // replaces it. Reduced-motion users receive the completed state at once.
+      setSession(next)
+      setAnsweredFen(applyLegalMove(node.fen, uci).fen)
+      completionTimerRef.current = setTimeout(() => {
+        completionTimerRef.current = null
+        setSession(completed.state)
+        setAnsweredFen(null)
+      }, reducedMotion ? 0 : 180)
+    } else {
+      setSession(completed.state)
+      setAnsweredFen(null)
+    }
     onAnnouncement(
       completed.state.phase === 'complete'
         ? `${status.label}. ${suggested} recorded automatically. Session complete.`
@@ -516,15 +539,26 @@ export function DrillView({
           <span><strong>{session.queue.length}</strong> remaining</span>
           <span><strong>{mastery}%</strong> mastery</span>
         </div>
-        <label className="flow-mode-toggle">
-          <input
-            type="checkbox"
-            checked={manualGrading}
-            onChange={(event) => onSetManualGrading?.(event.currentTarget.checked)}
-            disabled={!onSetManualGrading || session.phase === 'answer_ready'}
-          />
-          Pause after each move
-        </label>
+        <div className="drill-header-actions">
+          <button
+            type="button"
+            className="secondary-button"
+            aria-pressed={practiceAll}
+            disabled={practiceAll}
+            onClick={() => setPracticeAll(true)}
+          >
+            {practiceAll ? 'Full line active' : 'Practice full line'}
+          </button>
+          <label className="flow-mode-toggle">
+            <input
+              type="checkbox"
+              checked={manualGrading}
+              onChange={(event) => onSetManualGrading?.(event.currentTarget.checked)}
+              disabled={!onSetManualGrading || session.phase === 'answer_ready'}
+            />
+            Pause after each move
+          </label>
+        </div>
       </header>
 
       <button

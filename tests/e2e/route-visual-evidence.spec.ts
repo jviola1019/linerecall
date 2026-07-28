@@ -19,8 +19,8 @@ interface RouteDefinition {
 
 const ROUTES: readonly RouteDefinition[] = [
   { id: 'today', button: 'Today', heading: 'Ready when you are.', selector: '.today-view', primary: true },
-  { id: 'repertoire', button: 'Repertoire', heading: 'Repertoire', selector: '.repertoire-view', primary: true },
-  { id: 'puzzles', button: 'Puzzles', heading: 'Puzzles', selector: '.puzzles-route', primary: true },
+  { id: 'repertoire', button: 'Repertoire', heading: 'Repertoire', selector: '.family-catalog-view', primary: true },
+  { id: 'puzzles', button: 'Puzzles', heading: 'Puzzles', selector: '.tactical-puzzle-route', primary: true },
   { id: 'explore', button: 'Explore', heading: 'Explore openings', selector: '.catalog-view-explore', primary: true },
   { id: 'progress', button: 'Progress', heading: 'Your progress', selector: '.progress-view', primary: true },
   { id: 'data', button: 'Data & licenses', heading: /Data.*Licenses/iu, selector: '.documentation-view', primary: false },
@@ -39,6 +39,7 @@ async function openRoute(page: Page, route: RouteDefinition, assertFocus = false
   await expect(page.locator(route.selector)).toBeVisible({ timeout: 15_000 })
   await expect(page.locator('.view-stage')).toHaveAttribute('data-view', route.id)
   await expect(page.locator('#main-content h1:visible')).toHaveCount(1)
+  await expect(page.locator('.primary-nav button:visible')).toHaveCount(5)
   if (assertFocus) await expect(page.locator('#main-content')).toBeFocused()
   if (route.primary) {
     await expect(page.getByRole('button', { name: route.button, exact: true })).toHaveAttribute('aria-current', 'page')

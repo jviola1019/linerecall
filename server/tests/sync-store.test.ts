@@ -102,7 +102,10 @@ describe('InMemorySyncStore', () => {
       attemptId: '0198a5c0-4000-7000-8000-000000000005',
       deviceId: DEVICE_ID,
       puzzleId: 'puzzle-001',
-      solved: true,
+      outcome: 'solved' as const,
+      incorrectAttempts: 2,
+      usedHint: true,
+      elapsedMs: 8_765,
       occurredAt: '2026-07-14T11:58:00.000Z',
       snapshotVersion: 'release-2026q2',
     }
@@ -111,11 +114,41 @@ describe('InMemorySyncStore', () => {
     const recall = await store.bootstrap('user-puzzle', 0n, 250, NOW)
     assert.equal(first.progress[0]?.attempts, 1)
     assert.equal(first.progress[0]?.solved, 1)
+    assert.equal(first.progress[0]?.abandoned, 0)
+    assert.equal(first.progress[0]?.cleanSolves, 0)
+    assert.equal(first.progress[0]?.hintsUsed, 1)
+    assert.equal(first.progress[0]?.incorrectMoves, 2)
+    assert.equal(first.progress[0]?.totalElapsedMs, 8_765)
+    assert.equal(first.progress[0]?.lastElapsedMs, 8_765)
     assert.equal(retry.progress[0]?.attempts, 1)
     assert.equal(recall.cards.length, 0)
 
+    const abandoned = await store.syncPuzzleAttempts('user-puzzle', {
+      deviceId: DEVICE_ID,
+      attempts: [{
+        ...attempt,
+        attemptId: '0198a5c0-5000-7000-8000-000000000007',
+        outcome: 'abandoned',
+        incorrectAttempts: 3,
+        usedHint: false,
+        elapsedMs: undefined,
+        occurredAt: '2026-07-14T11:59:00.000Z',
+      }],
+    }, NOW)
+    assert.equal(abandoned.progress[0]?.attempts, 2)
+    assert.equal(abandoned.progress[0]?.solved, 1)
+    assert.equal(abandoned.progress[0]?.abandoned, 1)
+    assert.equal(abandoned.progress[0]?.incorrectMoves, 5)
+    assert.equal(abandoned.progress[0]?.totalElapsedMs, 8_765)
+    assert.equal(abandoned.progress[0]?.lastElapsedMs, null)
+    const bootstrap = await store.bootstrapPuzzleProgress('user-puzzle', 0n, 1, NOW)
+    assert.equal(bootstrap.progress[0]?.puzzleId, 'puzzle-001')
+    assert.equal(bootstrap.progress[0]?.attempts, 2)
+    assert.equal(bootstrap.nextCursor, bootstrap.progress[0]?.syncSequence)
+    assert.equal(bootstrap.hasMore, false)
+
     const conflict = await store.syncPuzzleAttempts('user-puzzle', {
-      deviceId: DEVICE_ID, attempts: [{ ...attempt, solved: false }],
+      deviceId: DEVICE_ID, attempts: [{ ...attempt, outcome: 'abandoned' }],
     }, NOW)
     const unknown = await store.syncPuzzleAttempts('user-puzzle', {
       deviceId: DEVICE_ID,

@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import test from 'node:test'
 import { gunzipSync, gzipSync } from 'node:zlib'
 import { EmbeddedOpeningDataSource, SnapshotDataError } from '../../src/data/embedded-opening-data-source.ts'
+import { supportsOpeningFamilies } from '../../src/data/opening-data-source.ts'
 import embeddedSnapshot from '../../src/generated/embedded-snapshot.json' with { type: 'json' }
 import type { EmbeddedSnapshotPayload } from '../../src/data/embedded-contract.ts'
 
@@ -47,6 +48,11 @@ test('embedded snapshot verifies, validates, hydrates, and caches audited data',
   assert.equal(partition.eco, 'C20')
   assert.ok(partition.lines.length > 0)
   assert.ok(partition.verifiedLines.every((line) => line.eco === 'C20'))
+  assert.equal(supportsOpeningFamilies(source), false)
+  await assert.rejects(source.loadFamilyCatalog(), (error: unknown) =>
+    error instanceof SnapshotDataError && error.code === 'missing' && /family catalog/u.test(error.message))
+  await assert.rejects(source.loadFamilyManifest('Caro Kann'), (error: unknown) =>
+    error instanceof SnapshotDataError && error.code === 'missing' && /identifier is invalid/u.test(error.message))
 })
 
 test('embedded data source fails accessibly for cancellation, invalid ECO, and corruption', async () => {

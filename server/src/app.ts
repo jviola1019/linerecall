@@ -303,6 +303,13 @@ export async function createApp(dependencies: ServiceDependencies, options: AppO
     })
   })
 
+  app.get('/v1/puzzles/progress', async (request, reply) => {
+    const actor = await actorFor(request)
+    await rateLimit(request, reply, { name: 'puzzle-progress', limit: 60, windowMs: 60_000, subject: 'user' }, actor)
+    const query = parseBody(BootstrapQuerySchema, request.query)
+    return dependencies.sync.bootstrapPuzzleProgress(actor.userId, BigInt(query.cursor), query.limit, now())
+  })
+
   app.post('/v1/puzzles/attempts', async (request, reply) => {
     const actor = await actorFor(request)
     await rateLimit(request, reply, { name: 'puzzle-attempts', limit: 120, windowMs: 60_000, subject: 'user' }, actor)

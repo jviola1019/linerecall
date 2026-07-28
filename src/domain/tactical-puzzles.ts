@@ -91,16 +91,67 @@ export const PuzzleRecordV1Schema = z.object({
 
 export type PuzzleRecord = z.infer<typeof PuzzleRecordV1Schema>
 
+export const PuzzleRecordListV1Schema = z.array(PuzzleRecordV1Schema).max(50_000).superRefine((puzzles, context) => {
+  const puzzleIds = new Set<string>()
+  for (const [index, puzzle] of puzzles.entries()) {
+    if (puzzleIds.has(puzzle.puzzleId)) {
+      context.addIssue({
+        code: 'custom',
+        path: [index, 'puzzleId'],
+        message: `Duplicate puzzle ID ${puzzle.puzzleId}`,
+      })
+    }
+    puzzleIds.add(puzzle.puzzleId)
+  }
+})
+
 export const TacticalPuzzleStateSchema = z.object({
   puzzleId: z.string().regex(/^[A-Za-z0-9]{5,16}$/u),
   learnerIndex: z.number().int().min(0).max(5),
   fen: z.string().min(1).max(128),
   incorrectAttempts: z.number().int().nonnegative(),
   usedHint: z.boolean(),
+  phase: z.enum(['learner', 'forced-reply', 'completed']),
+  pendingForcedReplyUci: UciMoveSchema.nullable(),
   completed: z.boolean(),
-}).strict()
+}).strict().superRefine((state, context) => {
+  if (state.phase === 'learner' && (state.completed || state.pendingForcedReplyUci !== null)) {
+    context.addIssue({ code: 'custom', message: 'Learner phase cannot be completed or hold a forced reply' })
+  }
+  if (state.phase === 'forced-reply' && (state.completed || state.pendingForcedReplyUci === null)) {
+    context.addIssue({ code: 'custom', message: 'Forced-reply phase requires one pending reply' })
+  }
+  if (state.phase === 'completed' && (!state.completed || state.pendingForcedReplyUci !== null)) {
+    context.addIssue({ code: 'custom', message: 'Completed phase cannot hold a forced reply' })
+  }
+})
 
 export type TacticalPuzzleState = z.infer<typeof TacticalPuzzleStateSchema>
+
+export const TacticalPuzzleTransitionSchema = z.object({
+  actor: z.enum(['learner', 'opponent']),
+  moveUci: UciMoveSchema,
+  fromFen: z.string().min(1).max(128),
+  toFen: z.string().min(1).max(128),
+}).strict()
+
+export type TacticalPuzzleTransition = z.infer<typeof TacticalPuzzleTransitionSchema>
+
+export type TacticalPuzzleLearnerMoveResult = {
+  verdict: 'awaiting-reply' | 'solved' | 'retry' | 'illegal'
+  acceptedMoveUci: string | null
+  acceptedAlternateMate: boolean
+  transition: TacticalPuzzleTransition | null
+  grade: 'again' | 'hard' | 'good' | null
+  state: TacticalPuzzleState
+}
+
+export type TacticalPuzzleForcedReplyResult = {
+  verdict: 'advanced' | 'solved'
+  transition: TacticalPuzzleTransition
+  grade: 'again' | 'hard' | 'good' | null
+  state: TacticalPuzzleState
+}
 
 export type TacticalPuzzleMoveResult = {
   verdict: 'advanced' | 'solved' | 'retry' | 'illegal'
@@ -136,32 +187,41 @@ export function beginTacticalPuzzle(inputValue: PuzzleRecord): TacticalPuzzleSta
     fen: puzzle.presentationFen,
     incorrectAttempts: 0,
     usedHint: false,
+    phase: 'learner',
+    pendingForcedReplyUci: null,
     completed: false,
   })
 }
 
 export function useTacticalPuzzleHint(stateInput: TacticalPuzzleState): TacticalPuzzleState {
   const state = TacticalPuzzleStateSchema.parse(stateInput)
-  if (state.completed) return state
+  if (state.phase !== 'learner') return state
   return { ...state, usedHint: true }
 }
 
+function gradeFor(state: TacticalPuzzleState): 'again' | 'hard' | 'good' {
+  return state.incorrectAttempts > 0 ? 'again' : state.usedHint ? 'hard' : 'good'
+}
+
 /**
- * Grade one learner move without mutating the board on retry. A mate-in-one
- * node accepts any legal mating move; all other nodes require the audited move.
- * The audited opponent reply is then applied automatically.
+ * Apply only the learner transition. A successful result with
+ * `verdict: "awaiting-reply"` deliberately stops before the audited opponent
+ * reply so visual clients can animate the two transitions independently.
  */
-export function playTacticalPuzzleMove(
+export function playTacticalPuzzleLearnerMove(
   puzzleInput: PuzzleRecord,
   stateInput: TacticalPuzzleState,
   moveUci: string,
-): TacticalPuzzleMoveResult {
+): TacticalPuzzleLearnerMoveResult {
   const puzzle = validatedPuzzle(puzzleInput)
   const state = TacticalPuzzleStateSchema.parse(stateInput)
-  if (state.puzzleId !== puzzle.puzzleId || state.completed) throw new Error('Puzzle state does not belong to an active puzzle')
+  if (state.puzzleId !== puzzle.puzzleId || state.phase !== 'learner') {
+    throw new Error('Puzzle state does not belong to an active learner turn')
+  }
   const node = puzzle.learnerNodes[state.learnerIndex]
   if (!node || node.fen !== state.fen) throw new Error('Puzzle state is not at its audited learner node')
   const chess = new Chess(state.fen)
+  const fromFen = chess.fen()
   try {
     move(chess, moveUci)
   } catch {
@@ -169,7 +229,7 @@ export function playTacticalPuzzleMove(
       verdict: 'illegal',
       acceptedMoveUci: null,
       acceptedAlternateMate: false,
-      autoPlayedReplyUci: null,
+      transition: null,
       grade: null,
       state: { ...state, incorrectAttempts: state.incorrectAttempts + 1 },
     }
@@ -180,30 +240,142 @@ export function playTacticalPuzzleMove(
       verdict: 'retry',
       acceptedMoveUci: null,
       acceptedAlternateMate: false,
-      autoPlayedReplyUci: null,
+      transition: null,
       grade: null,
       state: { ...state, incorrectAttempts: state.incorrectAttempts + 1 },
     }
   }
-  let autoPlayedReplyUci: string | null = null
+  const transition = TacticalPuzzleTransitionSchema.parse({
+    actor: 'learner',
+    moveUci,
+    fromFen,
+    toFen: chess.fen(),
+  })
+  const nextLearnerIndex = state.learnerIndex + 1
   if (!alternateMate && node.forcedReplyUci !== null) {
-    move(chess, node.forcedReplyUci)
-    autoPlayedReplyUci = node.forcedReplyUci
+    return {
+      verdict: 'awaiting-reply',
+      acceptedMoveUci: moveUci,
+      acceptedAlternateMate: false,
+      transition,
+      grade: null,
+      state: TacticalPuzzleStateSchema.parse({
+        ...state,
+        fen: chess.fen(),
+        phase: 'forced-reply',
+        pendingForcedReplyUci: node.forcedReplyUci,
+      }),
+    }
   }
-  const learnerIndex = state.learnerIndex + 1
-  const completed = alternateMate || learnerIndex >= puzzle.learnerNodes.length
-  const grade = state.incorrectAttempts > 0 ? 'again' : state.usedHint ? 'hard' : 'good'
+  const completed = alternateMate || nextLearnerIndex >= puzzle.learnerNodes.length
+  if (!completed) throw new Error('Audited puzzle is missing the forced reply before its next learner node')
+  const completedState = TacticalPuzzleStateSchema.parse({
+    ...state,
+    learnerIndex: nextLearnerIndex,
+    fen: chess.fen(),
+    phase: 'completed',
+    pendingForcedReplyUci: null,
+    completed: true,
+  })
   return {
-    verdict: completed ? 'solved' : 'advanced',
+    verdict: 'solved',
     acceptedMoveUci: moveUci,
     acceptedAlternateMate: alternateMate,
-    autoPlayedReplyUci,
-    grade: completed ? grade : null,
-    state: TacticalPuzzleStateSchema.parse({
-      ...state,
-      learnerIndex,
-      fen: chess.fen(),
-      completed,
-    }),
+    transition,
+    grade: gradeFor(completedState),
+    state: completedState,
+  }
+}
+
+/** Apply exactly one audited opponent reply after its learner move. */
+export function playTacticalPuzzleForcedReply(
+  puzzleInput: PuzzleRecord,
+  stateInput: TacticalPuzzleState,
+): TacticalPuzzleForcedReplyResult {
+  const puzzle = validatedPuzzle(puzzleInput)
+  const state = TacticalPuzzleStateSchema.parse(stateInput)
+  if (state.puzzleId !== puzzle.puzzleId || state.phase !== 'forced-reply') {
+    throw new Error('Puzzle state does not have a pending forced reply')
+  }
+  const node = puzzle.learnerNodes[state.learnerIndex]
+  if (!node || node.forcedReplyUci === null || node.forcedReplyUci !== state.pendingForcedReplyUci) {
+    throw new Error('Pending reply does not match the audited puzzle node')
+  }
+  const expectedPosition = new Chess(node.fen)
+  move(expectedPosition, node.expectedMoveUci)
+  if (expectedPosition.fen() !== state.fen) throw new Error('Forced-reply state does not follow the audited learner move')
+  const chess = new Chess(state.fen)
+  const fromFen = chess.fen()
+  move(chess, state.pendingForcedReplyUci)
+  const transition = TacticalPuzzleTransitionSchema.parse({
+    actor: 'opponent',
+    moveUci: state.pendingForcedReplyUci,
+    fromFen,
+    toFen: chess.fen(),
+  })
+  const learnerIndex = state.learnerIndex + 1
+  const completed = learnerIndex >= puzzle.learnerNodes.length
+  const nextState = TacticalPuzzleStateSchema.parse({
+    ...state,
+    learnerIndex,
+    fen: chess.fen(),
+    phase: completed ? 'completed' : 'learner',
+    pendingForcedReplyUci: null,
+    completed,
+  })
+  if (!completed && puzzle.learnerNodes[learnerIndex]?.fen !== nextState.fen) {
+    throw new Error('Forced reply does not reach the next audited learner node')
+  }
+  return {
+    verdict: completed ? 'solved' : 'advanced',
+    transition,
+    grade: completed ? gradeFor(nextState) : null,
+    state: nextState,
+  }
+}
+
+/**
+ * Compatibility wrapper for consumers that still expect the opponent reply to
+ * be applied atomically. New animation code should call the two phase-specific
+ * functions above.
+ */
+export function playTacticalPuzzleMove(
+  puzzleInput: PuzzleRecord,
+  stateInput: TacticalPuzzleState,
+  moveUci: string,
+): TacticalPuzzleMoveResult {
+  const compatibilityState = TacticalPuzzleStateSchema.parse(stateInput)
+  if (compatibilityState.puzzleId !== puzzleInput.puzzleId || compatibilityState.completed) {
+    throw new Error('Puzzle state does not belong to an active puzzle')
+  }
+  const learnerResult = playTacticalPuzzleLearnerMove(puzzleInput, stateInput, moveUci)
+  if (learnerResult.verdict === 'illegal' || learnerResult.verdict === 'retry') {
+    return {
+      verdict: learnerResult.verdict,
+      acceptedMoveUci: null,
+      acceptedAlternateMate: false,
+      autoPlayedReplyUci: null,
+      grade: null,
+      state: learnerResult.state,
+    }
+  }
+  if (learnerResult.verdict === 'solved') {
+    return {
+      verdict: 'solved',
+      acceptedMoveUci: learnerResult.acceptedMoveUci,
+      acceptedAlternateMate: learnerResult.acceptedAlternateMate,
+      autoPlayedReplyUci: null,
+      grade: learnerResult.grade,
+      state: learnerResult.state,
+    }
+  }
+  const replyResult = playTacticalPuzzleForcedReply(puzzleInput, learnerResult.state)
+  return {
+    verdict: replyResult.verdict,
+    acceptedMoveUci: learnerResult.acceptedMoveUci,
+    acceptedAlternateMate: false,
+    autoPlayedReplyUci: replyResult.transition.moveUci,
+    grade: replyResult.grade,
+    state: replyResult.state,
   }
 }

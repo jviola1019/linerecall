@@ -1,4 +1,10 @@
-import type { PuzzleAttemptSyncRequest, PuzzleAttemptSyncResponse, SyncRequestV1, SyncResponseV1 } from './contracts.js'
+import type {
+  PuzzleAttemptSyncRequest,
+  PuzzleAttemptSyncResponse,
+  PuzzleProgressBootstrapResponse,
+  SyncRequestV1,
+  SyncResponseV1,
+} from './contracts.js'
 
 export interface AuthenticatedActor {
   userId: string
@@ -15,6 +21,12 @@ export interface Authenticator {
 export interface SyncStore {
   sync(userId: string, request: SyncRequestV1, now: Date): Promise<SyncResponseV1>
   bootstrap(userId: string, cursor: bigint, limit: number, now: Date): Promise<SyncResponseV1>
+  bootstrapPuzzleProgress(
+    userId: string,
+    cursor: bigint,
+    limit: number,
+    now: Date,
+  ): Promise<PuzzleProgressBootstrapResponse>
   syncPuzzleAttempts(userId: string, request: PuzzleAttemptSyncRequest, now: Date): Promise<PuzzleAttemptSyncResponse>
   exportAccount(userId: string, now: Date): Promise<unknown>
   deleteAccount(userId: string, now: Date): Promise<void>

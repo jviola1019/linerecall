@@ -1,17 +1,26 @@
 # LineRecall
 
 LineRecall is an offline-first chess opening trainer and an optional connected
-service. It provides ECO/name/move/PGN search, legal board and non-spatial move
-input, continuous review, deviation evidence, SM-2 scheduling, progress
-transfer, a separate review-only opening-recall queue, and accessible keyboard
-controls. The audited Lichess tactical-puzzle product is not yet shipped.
+service. Repertoire is organized by canonical opening family: Caro–Kann,
+Sicilian Defence, Ruy Lopez, and every other assigned family appears once, with
+both learner sides and all promoted paths nested beneath it. Explore keeps the
+3,790 individual ECO taxonomy rows available for historical lookup and
+name/move/PGN search.
+
+The source tree includes legal board and non-spatial move input, autonomous
+family coverage cycles, deviation evidence, SM-2 scheduling, separate tactical
+puzzle progress, JSON progress transfer, and accessible keyboard controls. The
+audited Lichess tactical-puzzle product is not yet shipped.
 
 Public source: <https://github.com/jviola1019/linerecall>
 
 ## Release status
 
-This repository is under active release-gated development. The current
-self-contained HTML is a **review candidate**, not a production release.
+This repository is under active release-gated development. Any self-contained
+HTML under `build/candidate` is a **review candidate**, not a production
+release. Exact-byte audit evidence applies only when its recorded SHA-256
+matches that candidate; the retained 2026-07-20 evidence does not approve the
+newer unified-family source or later working builds.
 `dist/linerecall.html` does not exist because the complete schema-v3 corpus,
 engine, puzzle, staging, assistive-technology, localization, security-review,
 and legal gates have not all passed.
@@ -34,15 +43,44 @@ The release process fails closed:
 Current engineering foundations include bounded two-pass schema-v3 ingestion,
 content-addressed archive receipts, exact-position repertoire graphs, stable
 position/card identities, starvation-free branch rotation, CSP-safe spatial
-piece transitions, distinct product routes, and a durable Lichess sync worker.
-These foundations are covered with fixture and adversarial tests. They do not
-stand in for the unfinished full-corpus and manual campaigns.
+piece transitions, canonical family contracts, hash-addressable product routes,
+a separate tactical-puzzle resource, and a durable Lichess sync worker. These
+foundations are covered with fixture and adversarial tests. They do not stand
+in for the unfinished full-corpus and manual campaigns.
 
-The v3 runtime can autonomously continue from one completed path to the next,
-cross bounded batches until every supplied audited path is covered, and report
-overall and named-family completion counts. The embedded v2 candidate
-deliberately supplies no production graph, so it shows no fabricated
-Caro-Kann or other real-corpus path totals.
+The generated review-family catalog currently assigns all 3,790 taxonomy rows
+to exactly 149 primary families. This is a taxonomy/navigation measurement,
+not a repertoire-path count. It includes one Caro–Kann family (110 rows), one
+Sicilian Defence family (388 rows), and one Ruy Lopez family (234 rows).
+Runtime code validates those assignments; it does not infer families by
+splitting display names.
+
+For a promoted v3 family graph, the runtime requires every manifest-owned pack
+for the selected side, aggregates totals across those packs, and autonomously
+continues from one completed path and pack to the next. Family syllabus labels
+come from validated, content-addressed manifest memberships rather than graph
+display text; equal labels collapse visually without deleting distinct paths.
+Due cards survive bounded batches, and a failed completion write blocks
+advancement until an accessible retry succeeds. The embedded v2 review data
+deliberately supplies no production family graph, so the interface shows no
+fabricated Caro–Kann or other real-corpus path totals.
+
+## Product routes
+
+The single-file build uses hash routes so hosted and downloaded copies share
+the same links:
+
+- `#/today` — due work and the next family action;
+- `#/repertoire` — one card per canonical family;
+- `#/repertoire/:familyId` — both learner sides and family details;
+- `#/train/:familyId/:side` — autonomous family training;
+- `#/puzzles` — audited tactical puzzles only;
+- `#/explore` — all ECO taxonomy rows and search;
+- `#/progress` — opening and separately labeled puzzle progress; and
+- `#/data` — provenance, licenses, and audit evidence.
+
+If no promoted tactical shard is available, Puzzles shows an explicit
+unavailable state. It never substitutes opening recall or synthetic tactics.
 
 ## Run the source checks
 
@@ -92,6 +130,13 @@ Run `npm run release:audit -- --report-only` to produce an honest blocker
 report without attempting production promotion. A nonzero exit is expected
 while release gates remain open.
 
+`npm run release:family-promotion` audits the separate family-content
+promotion index, every referenced graph and eligible-edge inventory, tactical
+shards, and release-specific Q2, Stockfish, Scid, and puzzle receipts. It
+currently exits nonzero because
+`data/generated/v3/family-promotion-index.json` does not exist. No family,
+pack, path, eligible-edge, or tactical count is production-promoted.
+
 Development uses `npm run dev`. The downloaded application uses no runtime
 CDN, remote font, analytics, telemetry, opening API, API key, Stockfish binary,
 or Scid file.
@@ -125,6 +170,8 @@ data retains its separate CC BY-SA 4.0 notice.
 - Source manifests and exact recorded results: `docs/DATA_SOURCES.md`
 - Bounded reproduction and recovery procedure: `docs/DATA_REPRODUCTION.md`
 - Bounded tactical-puzzle contracts and blockers: `docs/PUZZLE_V3_PIPELINE.md`
+- Canonical family registry, loaders, routes, and persistence boundaries:
+  `docs/OPENING_FAMILY_ARCHITECTURE.md`
 - Autonomous v3 graph-training contract: `docs/GRAPH_TRAINING_V3.md`
 - Current blockers and evidence validity: `docs/RELEASE_AUDIT.md`
 - Release gate definitions: `docs/RELEASE_GATES.md`
@@ -134,6 +181,7 @@ data retains its separate CC BY-SA 4.0 notice.
 - Connected API and worker: `server/`
 - Hosted client: `hosted/`
 - Provider-neutral reference infrastructure: `infra/`
+- No-cost CI and non-deployment policy: `docs/ZERO_SPEND_GITHUB.md`
 
 Engineering evidence supports a release decision. It is not legal
 certification and does not replace hands-on NVDA, VoiceOver, TalkBack,

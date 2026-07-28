@@ -104,7 +104,6 @@
 
 .puzzle-board-toolbar,
 .puzzle-board-actions,
-.annotation-panel-heading,
 .puzzle-feedback-heading,
 .puzzle-analysis-meta {
   display: flex;
@@ -116,74 +115,7 @@
 .puzzle-board-toolbar { min-height: 52px; color: var(--muted); }
 .puzzle-board-actions { justify-content: flex-end; min-height: 60px; padding-top: 0.55rem; }
 
-.chessboard-overlay-frame {
-  position: relative;
-  width: min(100%, 680px);
-  aspect-ratio: 1;
-  margin-inline: auto;
-}
-
-.chessboard-overlay-frame > .chessboard {
-  width: 100%;
-  height: 100%;
-  margin: 0;
-}
-
-.board-annotation-layer {
-  position: absolute;
-  z-index: 10;
-  inset: 2px;
-  overflow: hidden;
-  pointer-events: none;
-}
-
-.board-annotation-layer[data-editing="true"] {
-  pointer-events: auto;
-  touch-action: none;
-  cursor: crosshair;
-  background: rgb(12 16 14 / 8%);
-}
-
-.board-annotation-layer[data-editing="true"]:focus-visible {
-  outline: 4px solid var(--focus);
-  outline-offset: -4px;
-}
-
-.board-annotation-svg {
-  display: block;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-}
-
-.annotation-shape {
-  fill: none;
-  stroke-width: 2.35;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  vector-effect: non-scaling-stroke;
-}
-
-.annotation-shape.annotation-study { stroke: #ffe66d; }
-.annotation-shape.annotation-alternative { stroke: #68c9ff; stroke-dasharray: 7 4; }
-.annotation-shape.annotation-warning { stroke: #ff7b72; stroke-dasharray: 1.5 3.2; stroke-width: 3; }
-.annotation-marker.annotation-study { fill: #ffe66d; }
-.annotation-marker.annotation-alternative { fill: #68c9ff; }
-.annotation-marker.annotation-warning { fill: #ff7b72; }
-
-.annotation-start-square,
-.annotation-cursor-square {
-  fill: none;
-  stroke: #fff;
-  stroke-width: 1.4;
-  vector-effect: non-scaling-stroke;
-}
-
-.annotation-start-square { stroke-dasharray: 3 2; }
-.annotation-cursor-square { stroke: var(--focus); stroke-dasharray: 1 1; }
-
 .puzzle-feedback,
-.annotation-panel,
 .puzzle-session-log {
   min-width: 0;
   padding: clamp(0.75rem, 1.8vw, 1rem);
@@ -262,28 +194,6 @@
 .puzzle-analysis code { display: block; margin-top: 0.45rem; white-space: normal; word-break: break-word; }
 .puzzle-analysis small { display: block; margin-top: 0.3rem; color: var(--muted); overflow-wrap: anywhere; }
 
-.annotation-panel-heading { align-items: flex-start; }
-.annotation-panel-heading h3 { margin-top: 0; }
-.annotation-panel-heading p { margin: 0; color: var(--muted); font-size: 0.82rem; }
-
-.annotation-form {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.35rem 0.55rem;
-  margin-top: 0.8rem;
-  padding-top: 0.8rem;
-  border-top: 1px solid var(--border);
-}
-
-.annotation-form label { color: var(--muted); font-size: 0.78rem; font-weight: 700; }
-.annotation-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 0.5rem; padding-top: 0.35rem; }
-.annotation-text-alternative { margin-top: 0.8rem; padding-top: 0.65rem; border-top: 1px solid var(--border); }
-.annotation-text-alternative h4 { margin: 0 0 0.35rem; }
-.annotation-text-alternative p { color: var(--muted); }
-.annotation-text-alternative ol { display: grid; gap: 0.35rem; padding-left: 1.5rem; }
-.annotation-text-alternative li { padding-left: 0.2rem; }
-.annotation-text-alternative li button { margin-left: 0.45rem; }
-
 .puzzle-session-log { margin-top: 1rem; }
 .puzzle-session-log h2 { margin-bottom: 0.4rem; }
 .puzzle-session-log > p { color: var(--muted); }
@@ -305,7 +215,6 @@
 @media (max-width: 900px) {
   .puzzle-view { padding-bottom: calc(5rem + env(safe-area-inset-bottom)); }
   .puzzle-workspace { grid-template-columns: 1fr; }
-  .chessboard-overlay-frame { width: min(calc(100vw - 1.3rem), 680px); }
   .puzzle-board-actions {
     position: static;
     z-index: auto;
@@ -330,13 +239,9 @@
   .puzzle-limitation p { margin-bottom: 0.45rem; }
   .puzzle-board-toolbar { align-items: flex-start; }
   .puzzle-board-toolbar > .inline-controls { justify-content: flex-end; }
-  .chessboard-overlay-frame { width: calc(100vw - 2rem); }
   .puzzle-feedback-heading { display: grid; grid-template-columns: auto minmax(0, 1fr); }
   .puzzle-auto-grade { grid-column: 1 / -1; width: fit-content; }
   .puzzle-evidence-facts { grid-template-columns: 1fr; }
-  .annotation-form { grid-template-columns: 1fr; }
-  .annotation-actions { grid-column: 1; display: grid; }
-  .annotation-actions button,
   .puzzle-board-actions button { flex: 1 1 0; }
 }
 
@@ -352,15 +257,6 @@
   .puzzle-progress-track::-webkit-progress-bar { background: Canvas; }
   .puzzle-progress-track::-webkit-progress-value { background: Highlight; }
   .puzzle-progress-track::-moz-progress-bar { background: Highlight; }
-  .annotation-shape,
-  .annotation-marker,
-  .annotation-start-square,
-  .annotation-cursor-square { filter: none; stroke: CanvasText; fill: CanvasText; }
-  .annotation-shape { fill: none; }
-  .annotation-shape.annotation-alternative { stroke-dasharray: 7 4; }
-  .annotation-shape.annotation-warning { stroke-dasharray: 1.5 3.2; }
-  .annotation-start-square,
-  .annotation-cursor-square { fill: none; }
   .puzzle-flow-toggle input::before { border-color: ButtonText; background: Canvas; color: CanvasText; }
   .puzzle-flow-toggle input:checked::before { background: Highlight; color: HighlightText; }
 }

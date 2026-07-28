@@ -1,6 +1,11 @@
 import { z } from 'zod'
 
-const PuzzleIdSchema = z.string().regex(/^[A-Za-z0-9]{5,16}$/u)
+/**
+ * Progress may reference promoted publisher IDs or content-addressed internal
+ * IDs. Keep the key space aligned with the connected sync contract while
+ * excluding property-path sentinels such as `__proto__`.
+ */
+const PuzzleIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u)
 
 export const PuzzleAttemptEventV1Schema = z.object({
   eventId: z.string().uuid(),
@@ -9,19 +14,33 @@ export const PuzzleAttemptEventV1Schema = z.object({
   outcome: z.enum(['solved', 'abandoned']),
   incorrectAttempts: z.number().int().nonnegative().max(10_000),
   usedHint: z.boolean(),
+  elapsedMs: z.number().int().nonnegative().max(86_400_000).optional(),
 }).strict()
 
 export const PuzzleProgressEntryV1Schema = z.object({
   puzzleId: PuzzleIdSchema,
   attempts: z.number().int().nonnegative(),
   solves: z.number().int().nonnegative(),
+  abandoned: z.number().int().nonnegative(),
   cleanSolves: z.number().int().nonnegative(),
   hintsUsed: z.number().int().nonnegative(),
   incorrectMoves: z.number().int().nonnegative(),
+  totalElapsedMs: z.number().int().nonnegative(),
+  lastElapsedMs: z.number().int().nonnegative().nullable(),
   lastAttemptAt: z.string().datetime({ offset: true }).nullable(),
 }).strict().superRefine((entry, context) => {
-  if (entry.solves > entry.attempts || entry.cleanSolves > entry.solves || entry.hintsUsed > entry.attempts) {
+  if (
+    entry.solves + entry.abandoned !== entry.attempts ||
+    entry.cleanSolves > entry.solves ||
+    entry.hintsUsed > entry.attempts
+  ) {
     context.addIssue({ code: 'custom', message: 'Puzzle progress totals do not reconcile' })
+  }
+  if ((entry.attempts === 0) !== (entry.lastAttemptAt === null)) {
+    context.addIssue({ code: 'custom', message: 'Puzzle last-attempt time must match whether attempts exist' })
+  }
+  if (entry.attempts === 0 && entry.lastElapsedMs !== null) {
+    context.addIssue({ code: 'custom', message: 'A puzzle with no attempts cannot have a last elapsed time' })
   }
 })
 
@@ -75,20 +94,27 @@ export function applyPuzzleAttemptEvent(
     puzzleId: event.puzzleId,
     attempts: 0,
     solves: 0,
+    abandoned: 0,
     cleanSolves: 0,
     hintsUsed: 0,
     incorrectMoves: 0,
+    totalElapsedMs: 0,
+    lastElapsedMs: null,
     lastAttemptAt: null,
   }
   const solved = event.outcome === 'solved'
   const clean = solved && event.incorrectAttempts === 0 && !event.usedHint
+  const elapsedMs = event.elapsedMs ?? 0
   const entry = PuzzleProgressEntryV1Schema.parse({
     ...previous,
     attempts: previous.attempts + 1,
     solves: previous.solves + (solved ? 1 : 0),
+    abandoned: previous.abandoned + (solved ? 0 : 1),
     cleanSolves: previous.cleanSolves + (clean ? 1 : 0),
     hintsUsed: previous.hintsUsed + (event.usedHint ? 1 : 0),
     incorrectMoves: previous.incorrectMoves + event.incorrectAttempts,
+    totalElapsedMs: previous.totalElapsedMs + elapsedMs,
+    lastElapsedMs: elapsedMs,
     lastAttemptAt: event.occurredAt,
   })
   return PuzzleProgressV1Schema.parse({

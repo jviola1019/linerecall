@@ -187,9 +187,33 @@ export class DebouncedProgressWriter {
     const pending = this.#pending
     this.#pending = null
     if (pending === null) return this.#inFlight
-    this.#inFlight = this.#inFlight.then(() => this.#repository.save(pending)).catch((error: unknown) => {
-      this.#onError(error instanceof Error ? error : new Error(String(error)))
+    const completion = this.#enqueue(pending)
+    await completion.catch(() => undefined)
+  }
+
+  /**
+   * Persist a review before the UI claims it was recorded. This supersedes a
+   * pending debounced snapshot and participates in the same serialized write
+   * chain as settings/import writes.
+   */
+  async saveImmediately(progress: ProgressV1): Promise<void> {
+    const validated = ProgressV1Schema.parse(progress)
+    if (this.#timer !== null) {
+      clearTimeout(this.#timer)
+      this.#timer = null
+    }
+    this.#pending = null
+    await this.#enqueue(validated)
+  }
+
+  #enqueue(progress: ProgressV1): Promise<void> {
+    const completion = this.#inFlight.then(() => this.#repository.save(progress))
+    const reported = completion.catch((error: unknown) => {
+      const normalized = error instanceof Error ? error : new Error(String(error))
+      this.#onError(normalized)
+      throw normalized
     })
-    await this.#inFlight
+    this.#inFlight = reported.catch(() => undefined)
+    return reported
   }
 }

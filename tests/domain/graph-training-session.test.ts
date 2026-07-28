@@ -7,14 +7,20 @@ import {
   continueGraphTrainingSession,
   createAutonomousGraphTrainingPlan,
   createExplicitGraphSessionSelection,
+  createFamilyTrainingCursorSnapshot,
   createGraphTrainingPathCompletion,
   createGraphTrainingSession,
+  coverageCycleOrdinalFromId,
   expectedGraphTrainingMoves,
   graphTrainingFen,
   listGraphTrainingPaths,
   markGraphTrainingHint,
+  nextNonemptyGraphTrainingBatch,
   pendingOpponentGraphMove,
   prepareGraphTrainingAdapter,
+  removeTransferredPathFromFutureBatches,
+  restoreGraphTrainingCycleFromCursor,
+  skipCurrentGraphTrainingPath,
   submitGraphTrainingMove,
   summarizeGraphTrainingCoverage,
   type GraphTrainingAdapter,
@@ -27,6 +33,49 @@ async function adapterFixture() {
   const graph = await createSyntheticTranspositionGraph()
   const adapter = await prepareGraphTrainingAdapter({ contractId: GRAPH_TRAINING_CONTRACT_ID, graph })
   return { graph, adapter }
+}
+
+function expandAdapterForBatchBoundary(
+  adapter: GraphTrainingAdapter,
+  pathCount: number,
+): { adapter: GraphTrainingAdapter; dueCardIds: string[] } {
+  const template = adapter.graph.paths[0]!
+  const templateLearnerNode = adapter.nodesById.get(template.nodeIds[2]!)!
+  const paths = Array.from({ length: pathCount }, (_, index) => {
+    const suffix = index.toString(16)
+    const pathId = `path_f${suffix.padStart(19, '0')}`
+    const learnerNodeId = `pos_f${suffix.padStart(15, '0')}`
+    const nodeIds = [...template.nodeIds]
+    nodeIds[2] = learnerNodeId
+    return { ...template, id: pathId, nodeIds }
+  })
+  const syntheticLearnerNodes = paths.map((path) => {
+    const id = path.nodeIds[2]!
+    return {
+      ...templateLearnerNode,
+      id,
+      cardId: stableRepertoireCardId(adapter.graph.pack.id, id),
+    }
+  })
+  const graph = {
+    ...adapter.graph,
+    pack: {
+      ...adapter.graph.pack,
+      pathIds: paths.map(({ id }) => id),
+      nodeIds: [...adapter.graph.pack.nodeIds, ...syntheticLearnerNodes.map(({ id }) => id)],
+    },
+    paths,
+    nodes: [...adapter.graph.nodes, ...syntheticLearnerNodes],
+  }
+  return {
+    adapter: {
+      ...adapter,
+      graph,
+      pathsById: new Map(paths.map((path) => [path.id, path])),
+      nodesById: new Map(graph.nodes.map((node) => [node.id, node])),
+    },
+    dueCardIds: syntheticLearnerNodes.map(({ cardId }) => cardId),
+  }
 }
 
 test('the v3 feature boundary rejects raw v2-shaped input and validates every learner card', async () => {
@@ -83,7 +132,10 @@ test('autonomous planning batches every audited path exactly once and progress c
   assert.equal(progress.families.reduce((sum, family) => sum + family.completedPathCount, 0), 1)
 
   assert.throws(() => createAutonomousGraphTrainingPlan({ adapter, dueCardIds: [], maximumPathsPerBatch: 0 }), /1 through 1000/u)
+  assert.throws(() => createAutonomousGraphTrainingPlan({ adapter, dueCardIds: [], maximumPathsPerBatch: 1_001 }), /1 through 1000/u)
+  assert.throws(() => createAutonomousGraphTrainingPlan({ adapter, dueCardIds: [], maximumPathsPerBatch: 1.5 }), /1 through 1000/u)
   assert.throws(() => createAutonomousGraphTrainingPlan({ adapter, dueCardIds: [], coverageCycleOrdinal: -1 }), /nonnegative/u)
+  assert.throws(() => createAutonomousGraphTrainingPlan({ adapter, dueCardIds: [], coverageCycleOrdinal: 1.5 }), /nonnegative/u)
   assert.throws(
     () => summarizeGraphTrainingCoverage({ adapter, includedPathIds: [], completedPathIds: [] }),
     /at least one/u,
@@ -91,6 +143,199 @@ test('autonomous planning batches every audited path exactly once and progress c
   assert.throws(
     () => summarizeGraphTrainingCoverage({ adapter, includedPathIds: ['path_ffffffffffffffffffff'], completedPathIds: [] }),
     /unavailable path/u,
+  )
+})
+
+test('an authoritative due-card set survives the 1,000-path batch boundary', async () => {
+  const fixture = await adapterFixture()
+  const expanded = expandAdapterForBatchBoundary(fixture.adapter, 1_001)
+  const plan = createAutonomousGraphTrainingPlan({
+    adapter: expanded.adapter,
+    dueCardIds: expanded.dueCardIds,
+  })
+  assert.deepEqual(plan.pathIdBatches.map(({ length }) => length), [1_000, 1])
+
+  const firstSelection = createExplicitGraphSessionSelection({
+    adapter: expanded.adapter,
+    pathIds: plan.pathIdBatches[0]!,
+    dueCardIds: expanded.dueCardIds,
+  })
+  const firstSession = createGraphTrainingSession({ adapter: expanded.adapter, selection: firstSelection })
+  assert.equal(firstSession.dueCardIds.length, 1_001)
+
+  const firstBatchNodeIds = new Set(
+    plan.pathIdBatches[0]!.flatMap((pathId) => expanded.adapter.pathsById.get(pathId)!.nodeIds),
+  )
+  const unreviewedAfterFirstBatch = firstSession.dueCardIds.filter((cardId) => {
+    const nodeId = cardId.slice(cardId.indexOf('::') + 2)
+    return !firstBatchNodeIds.has(nodeId)
+  })
+  assert.equal(unreviewedAfterFirstBatch.length, 1)
+
+  const secondSelection = createExplicitGraphSessionSelection({
+    adapter: expanded.adapter,
+    pathIds: plan.pathIdBatches[1]!,
+    dueCardIds: unreviewedAfterFirstBatch,
+  })
+  assert.deepEqual(secondSelection.dueCardIds, unreviewedAfterFirstBatch)
+})
+
+test('a path transferred from a future 1,001-path batch is claimed once and skipped by later batches', async () => {
+  const fixture = await adapterFixture()
+  const expanded = expandAdapterForBatchBoundary(fixture.adapter, 1_001)
+  const plan = createAutonomousGraphTrainingPlan({
+    adapter: expanded.adapter,
+    dueCardIds: expanded.dueCardIds,
+  })
+  const transferredPathId = plan.pathIdBatches[1]![0]!
+  const claimed = removeTransferredPathFromFutureBatches({
+    plan,
+    activeBatchIndex: 0,
+    transferredPathId,
+  })
+
+  assert.equal(plan.pathIdBatches[1]?.includes(transferredPathId), true)
+  assert.equal(claimed.pathIdBatches.flat().includes(transferredPathId), false)
+  assert.equal(claimed.totalPathIds.includes(transferredPathId), true)
+  assert.equal(nextNonemptyGraphTrainingBatch(claimed, 0), null)
+  assert.equal(
+    [transferredPathId, ...claimed.pathIdBatches.slice(1).flat()]
+      .filter((pathId) => pathId === transferredPathId).length,
+    1,
+  )
+  assert.throws(
+    () => removeTransferredPathFromFutureBatches({
+      plan,
+      activeBatchIndex: -1,
+      transferredPathId,
+    }),
+    /nonnegative/u,
+  )
+  const admitted = removeTransferredPathFromFutureBatches({
+    plan,
+    activeBatchIndex: 0,
+    transferredPathId: 'path_ffffffffffffffffffff',
+  })
+  assert.equal(admitted.totalPathIds.at(-1), 'path_ffffffffffffffffffff')
+  assert.throws(
+    () => removeTransferredPathFromFutureBatches({
+      plan,
+      activeBatchIndex: 0,
+      transferredPathId: '<script>',
+    }),
+    /invalid audited path identity/u,
+  )
+})
+
+test('family cursor snapshots restore authoritative due, pending, completed, batch, and cycle state', async () => {
+  const { adapter } = await adapterFixture()
+  const rootCard = stableRepertoireCardId(adapter.graph.pack.id, adapter.graph.pack.rootNodeId)
+  const plan = createAutonomousGraphTrainingPlan({
+    adapter,
+    dueCardIds: [rootCard],
+    coverageCycleOrdinal: 7,
+    maximumPathsPerBatch: 1,
+  })
+  const selection = createExplicitGraphSessionSelection({
+    adapter,
+    pathIds: plan.pathIdBatches[0]!,
+    dueCardIds: [rootCard],
+    coverageCycleOrdinal: plan.coverageCycleOrdinal,
+  })
+  let state = createGraphTrainingSession({ adapter, selection })
+  while (state.phase !== 'path_complete') {
+    state = state.phase === 'opponent_move_ready'
+      ? applyPendingOpponentGraphMove(adapter, state)
+      : submitGraphTrainingMove({ adapter, state, moveUci: activePathMove(adapter, state) })
+  }
+  state = continueGraphTrainingSession(adapter, state)
+  assert.equal(state.phase, 'session_complete')
+
+  const cursor = createFamilyTrainingCursorSnapshot({
+    adapter,
+    familyId: 'synthetic-family',
+    plan,
+    activeBatchIndex: 0,
+    completedBeforeBatch: [],
+    session: state,
+    authoritativeDueCardIds: [rootCard],
+  })
+  assert.equal(cursor.coverageCycleId, `${adapter.graph.pack.id}::coverage:7`)
+  assert.equal(cursor.completedPathIds.length, 1)
+  assert.equal(cursor.pendingPathIds.length, 1)
+  assert.deepEqual(cursor.reviewedCardIds, [rootCard])
+
+  const restored = restoreGraphTrainingCycleFromCursor({
+    adapter,
+    familyId: 'synthetic-family',
+    cursor,
+  })
+  assert.equal(restored.activeBatchIndex, 0)
+  assert.deepEqual(restored.completedBeforeBatch, cursor.completedPathIds)
+  assert.equal(restored.session.activePathId, cursor.pendingPathIds[0])
+  assert.deepEqual(restored.session.dueCardIds, [])
+  assert.deepEqual(restored.authoritativeDueCardIds, [rootCard])
+  assert.equal(restored.plan.coverageCycleOrdinal, 7)
+  assert.equal(coverageCycleOrdinalFromId(adapter.graph.pack.id, cursor.coverageCycleId), 7)
+  const laterBatch = restoreGraphTrainingCycleFromCursor({
+    adapter,
+    familyId: 'synthetic-family',
+    cursor: { ...cursor, batchIndex: 4 },
+  })
+  assert.equal(laterBatch.activeBatchIndex, 4)
+  assert.deepEqual(laterBatch.plan.pathIdBatches.slice(0, 4), [[], [], [], []])
+  assert.deepEqual(laterBatch.plan.pathIdBatches[4], cursor.pendingPathIds)
+  assert.throws(
+    () => coverageCycleOrdinalFromId('another-pack', cursor.coverageCycleId),
+    /another graph pack/u,
+  )
+  assert.throws(
+    () => coverageCycleOrdinalFromId(adapter.graph.pack.id, `${adapter.graph.pack.id}::coverage:-1`),
+    /invalid cycle ordinal/u,
+  )
+  assert.throws(
+    () => coverageCycleOrdinalFromId(adapter.graph.pack.id, `${adapter.graph.pack.id}::coverage:1.5`),
+    /invalid cycle ordinal/u,
+  )
+  assert.throws(
+    () => createFamilyTrainingCursorSnapshot({
+      adapter,
+      familyId: 'synthetic-family',
+      plan,
+      activeBatchIndex: -1,
+      completedBeforeBatch: [],
+      session: state,
+      authoritativeDueCardIds: [rootCard],
+    }),
+    /nonnegative integer/u,
+  )
+  assert.throws(
+    () => createFamilyTrainingCursorSnapshot({
+      adapter,
+      familyId: 'synthetic-family',
+      plan: { ...plan, releaseId: 'another-release' },
+      activeBatchIndex: 0,
+      completedBeforeBatch: [],
+      session: state,
+      authoritativeDueCardIds: [rootCard],
+    }),
+    /inconsistent/u,
+  )
+  assert.throws(
+    () => restoreGraphTrainingCycleFromCursor({
+      adapter,
+      familyId: 'another-family',
+      cursor,
+    }),
+    /another release, family, or side/u,
+  )
+  assert.throws(
+    () => restoreGraphTrainingCycleFromCursor({
+      adapter,
+      familyId: 'synthetic-family',
+      cursor: { ...cursor, releaseId: 'another-release' },
+    }),
+    /another release, family, or side/u,
   )
 })
 
@@ -125,10 +370,11 @@ test('an alternate audited root edge switches to its real path and preserves the
   const fianchettoPath = paths.find(({ familyTags }) => familyTags.includes('Fianchetto first'))!
   const selection = createExplicitGraphSessionSelection({
     adapter,
-    pathIds: paths.map(({ id }) => id),
+    pathIds: [knightPath.id],
     dueCardIds: [stableRepertoireCardId(adapter.graph.pack.id, adapter.graph.pack.rootNodeId)],
   })
   let state = createGraphTrainingSession({ adapter, selection, preferredPathId: knightPath.id })
+  assert.deepEqual(state.sessionPathIds, [knightPath.id])
 
   state = submitGraphTrainingMove({ adapter, state, moveUci: 'g2g3' })
   assert.equal(state.activePathId, fianchettoPath.id)
@@ -137,6 +383,7 @@ test('an alternate audited root edge switches to its real path and preserves the
   assert.equal(state.lastFeedback?.review?.grade, 'good')
   assert.equal(new Chess(graphTrainingFen(adapter, state)).get('g3')?.type, 'p')
   assert.equal(state.pendingPathIds.at(-1), knightPath.id)
+  assert.deepEqual(new Set(state.sessionPathIds), new Set([knightPath.id, fianchettoPath.id]))
 
   state = applyPendingOpponentGraphMove(adapter, state)
   state = submitGraphTrainingMove({ adapter, state, moveUci: 'g1f3' })
@@ -145,6 +392,21 @@ test('an alternate audited root edge switches to its real path and preserves the
   const sharedPosition = adapter.pathsById.get(knightPath.id)!.nodeIds[3]
   assert.equal(state.currentNodeId, sharedPosition)
   assert.equal(state.lastTransition?.toNodeId, sharedPosition)
+
+  while (state.phase !== 'path_complete') {
+    state = state.phase === 'opponent_move_ready'
+      ? applyPendingOpponentGraphMove(adapter, state)
+      : submitGraphTrainingMove({ adapter, state, moveUci: activePathMove(adapter, state) })
+  }
+  assert.doesNotThrow(() => createGraphTrainingPathCompletion({
+    adapter,
+    state,
+    pathId: fianchettoPath.id,
+    completedAt: '2026-07-28T12:00:00.000Z',
+  }))
+  const resumed = continueGraphTrainingSession(adapter, state)
+  assert.equal(resumed.activePathId, knightPath.id)
+  assert.equal(resumed.completedPathIds.filter((pathId) => pathId === fianchettoPath.id).length, 1)
 })
 
 test('incorrect recall requires correction, infers Again, and replays the failed card at session end', async () => {
@@ -245,7 +507,7 @@ test('selection and stale-state guards reject unsafe pack, path, card, cycle, an
     dueCardIds: [uniqueSecondLearner.cardId!],
     coverageCycleOrdinal: 4,
   })
-  assert.deepEqual(filtered.dueCardIds, [])
+  assert.deepEqual(filtered.dueCardIds, [uniqueSecondLearner.cardId])
   assert.match(filtered.coverageCycleId, /:4$/u)
 
   const selection = createExplicitGraphSessionSelection({ adapter, pathIds: [firstPath.id], dueCardIds: [] })
@@ -425,6 +687,40 @@ test('a successful session-end repeat removes the failed card and allows complet
   assert.equal(repeated.lastFeedback?.review?.source, 'repeat')
   assert.equal(repeated.lastFeedback?.review?.grade, 'good')
   assert.deepEqual(repeated.repeatCardIds, [])
+})
+
+test('skipping rotates an unfinished path without grading or completing it', async () => {
+  const { adapter } = await adapterFixture()
+  const paths = listGraphTrainingPaths(adapter)
+  const rootCard = stableRepertoireCardId(adapter.graph.pack.id, adapter.graph.pack.rootNodeId)
+  const selection = createExplicitGraphSessionSelection({
+    adapter,
+    pathIds: paths.map(({ id }) => id),
+    dueCardIds: [rootCard],
+  })
+  const initial = createGraphTrainingSession({ adapter, selection })
+  const partiallyTraversed = submitGraphTrainingMove({
+    adapter,
+    state: initial,
+    moveUci: activePathMove(adapter, initial),
+  })
+  const skipped = skipCurrentGraphTrainingPath(adapter, partiallyTraversed)
+
+  assert.equal(skipped.activePathId, initial.pendingPathIds[0])
+  assert.equal(skipped.currentNodeId, adapter.graph.pack.rootNodeId)
+  assert.equal(skipped.pendingPathIds.at(-1), initial.activePathId)
+  assert.deepEqual(skipped.completedPathIds, [])
+  assert.deepEqual(skipped.dueCardIds, partiallyTraversed.dueCardIds)
+  assert.deepEqual(skipped.repeatCardIds, partiallyTraversed.repeatCardIds)
+  assert.equal(skipped.pathBoundaryCount, 1)
+  assert.throws(
+    () => skipCurrentGraphTrainingPath(adapter, { ...initial, pendingPathIds: [] }),
+    /No other unfinished/u,
+  )
+  assert.throws(
+    () => skipCurrentGraphTrainingPath(adapter, { ...initial, phase: 'path_complete' }),
+    /Only an unfinished/u,
+  )
 })
 
 test('a Black pack starts with its audited opponent edge before asking Black for a move', async () => {

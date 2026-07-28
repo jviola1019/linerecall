@@ -3,15 +3,22 @@ import type { OpeningSearchMatch } from '../domain/input-validation.ts'
 import type { DataManifest, OpeningPartition, VerifiedLine } from '../domain/opening-data.ts'
 import {
   createEmptyProgress,
+  createCard,
   localDateKey,
+  scheduleReview,
   updateReviewStreak,
   updateScopedReviewStreaks,
   CardProgressSchema,
+  ProgressV1Schema,
   type CardProgress,
   type ProgressRepository,
   type ProgressV1,
 } from '../domain/progress.ts'
-import type { OpeningDataCore, OpeningDataSource } from '../data/opening-data-source.ts'
+import {
+  supportsOpeningFamilies,
+  type OpeningDataCore,
+  type OpeningDataSource,
+} from '../data/opening-data-source.ts'
 import { positionGraphFromWire } from '../data/position-graph.ts'
 import type { PositionGraph } from '../domain/deviation.ts'
 import {
@@ -23,18 +30,47 @@ import { DataLicenses } from './components/DataLicenses.tsx'
 import { DrillView, type ReviewCommitMetadata } from './components/DrillView.tsx'
 import { OpeningBrowser, type PartitionResource } from './components/OpeningBrowser.tsx'
 import { ProgressView } from './components/ProgressView.tsx'
-import { PuzzleView, type PuzzleResource, type PuzzleSolvedEvent } from './components/PuzzleView.tsx'
-import { RepertoireView } from './components/RepertoireView.tsx'
-import { GraphTrainingBoundary, type GraphTrainingResource } from './components/GraphTrainingBoundary.tsx'
+import {
+  OpeningFamilyView,
+  type FamilyGraphResources,
+  type FamilyGraphResourceSet,
+} from './components/OpeningFamilyView.tsx'
+import { TacticalPuzzleView } from './components/TacticalPuzzleView.tsx'
 import type {
   GraphTrainingPathCompletionV1,
   GraphTrainingReviewInference,
 } from '../domain/graph-training-session.ts'
+import {
+  GRAPH_TRAINING_CONTRACT_ID,
+  GraphTrainingPathCompletionV1Schema,
+} from '../domain/graph-training-session.ts'
 import { ErrorState, LoadingState } from './components/ResourceState.tsx'
-import { openingPuzzlesFromVerifiedLine } from '../domain/opening-puzzles.ts'
 import { resolveRuntimeLocale } from '../i18n/registry.ts'
+import type { TacticalPuzzleResource } from '../data/tactical-puzzle-resource.ts'
+import type { PuzzleAttemptEventV1, PuzzleProgress, PuzzleProgressRepository } from '../domain/puzzle-progress.ts'
+import { PuzzleProgressV1Schema, createEmptyPuzzleProgress } from '../domain/puzzle-progress.ts'
+import {
+  MemoryPuzzleProgressRepository,
+  persistPuzzleAttempt,
+} from '../infrastructure/puzzle-progress-repository.ts'
+import {
+  FamilyCoverageEventV1Schema,
+  OpeningFamilyManifestV1Schema,
+  validateFamilyPackGraphOwnership,
+} from '../domain/opening-family.ts'
+import {
+  countUniqueCompletedFamilyPaths,
+  MemoryFamilyTrainingJournalRepository,
+  type FamilyTrainingJournalRepository,
+} from '../domain/family-training-journal.ts'
+import {
+  appHashForRoute,
+  parseAppHash,
+  type AppHashRoute,
+} from './hash-route.ts'
 
-type AppView = 'today' | 'repertoire' | 'puzzles' | 'explore' | 'drill' | 'progress' | 'data'
+type AppView = 'today' | 'repertoire' | 'family' | 'train' | 'puzzles' | 'explore' | 'drill' | 'progress' | 'data'
+type PrimaryView = 'today' | 'repertoire' | 'puzzles' | 'explore' | 'progress'
 
 interface AppState {
   view: AppView
@@ -52,6 +88,8 @@ interface AppState {
   audit: { status: 'idle' | 'loading' | 'ready' | 'error'; value: DataManifest | null; error: string | null }
   auditRetry: number
   drillLine: VerifiedLine | null
+  selectedFamilyId: string | null
+  selectedFamilySide: 'white' | 'black'
 }
 
 type AppAction =
@@ -72,6 +110,8 @@ type AppAction =
   | { type: 'select_line'; lineId: string; firstVariantId: string | null }
   | { type: 'select_variant'; variantId: string }
   | { type: 'start_drill'; line: VerifiedLine }
+  | { type: 'apply_route'; route: AppHashRoute }
+  | { type: 'select_family_side'; familyId: string; side: 'white' | 'black' }
 
 const INITIAL_STATE: AppState = {
   view: 'today',
@@ -89,6 +129,8 @@ const INITIAL_STATE: AppState = {
   audit: { status: 'idle', value: null, error: null },
   auditRetry: 0,
   drillLine: null,
+  selectedFamilyId: null,
+  selectedFamilySide: 'white',
 }
 
 const EMPTY_POSITION_GRAPH: PositionGraph = {
@@ -173,11 +215,40 @@ function reducer(state: AppState, action: AppAction): AppState {
     case 'select_line': return { ...state, selectedLineId: action.lineId, selectedVariantId: action.firstVariantId }
     case 'select_variant': return { ...state, selectedVariantId: action.variantId }
     case 'start_drill': return { ...state, view: 'drill', drillLine: action.line }
+    case 'apply_route': {
+      if (action.route.view === 'family') {
+        return { ...state, view: 'family', selectedFamilyId: action.route.familyId }
+      }
+      if (action.route.view === 'train') {
+        return {
+          ...state,
+          view: 'train',
+          selectedFamilyId: action.route.familyId,
+          selectedFamilySide: action.route.side,
+        }
+      }
+      return { ...state, view: action.route.view }
+    }
+    case 'select_family_side': return {
+      ...state,
+      selectedFamilyId: action.familyId,
+      selectedFamilySide: action.side,
+    }
   }
 }
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'An unexpected data error occurred.'
+}
+
+function eventId(): string {
+  if (typeof globalThis.crypto?.randomUUID === 'function') return globalThis.crypto.randomUUID()
+  const bytes = new Uint8Array(16)
+  globalThis.crypto.getRandomValues(bytes)
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80
+  const hex = [...bytes].map((value) => value.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 
 function NavGlyph({ name }: { name: 'today' | 'book' | 'puzzle' | 'search' | 'progress' }): React.JSX.Element {
@@ -200,20 +271,102 @@ export interface AppProps {
   repositorySelector?: () => Promise<{ repository: ProgressRepository; warning: string | null }>
   accountControl?: ReactNode
   onReviewCommit?: (commit: ReviewCommitMetadata & { card: CardProgress }) => string | undefined
-  onPuzzleSolved?: (event: PuzzleSolvedEvent) => void
+  onTacticalPuzzleAttempt?: (event: PuzzleAttemptEventV1) => void | Promise<void>
   subscribeProgressCards?: (
     listener: (cards: readonly CardProgress[]) => void,
     onError: (error: Error) => void,
   ) => () => void
-  graphTrainingResource?: GraphTrainingResource
+  subscribePuzzleProgress?: (
+    listener: (progress: PuzzleProgress) => void,
+    onError: (error: Error) => void,
+  ) => () => void
+  tacticalPuzzleResource?: TacticalPuzzleResource
+  puzzleProgressRepository?: PuzzleProgressRepository
+  familyGraphResources?: FamilyGraphResources
+  familyTrainingJournal?: FamilyTrainingJournalRepository
   graphTrainingDueCardIds?: readonly string[]
   onGraphReviewInference?: (review: GraphTrainingReviewInference) => void
   onGraphPathCompleted?: (completion: GraphTrainingPathCompletionV1) => void
 }
 
-const DEFAULT_GRAPH_TRAINING_RESOURCE: GraphTrainingResource = {
+const DEFAULT_TACTICAL_PUZZLE_RESOURCE: TacticalPuzzleResource = {
   status: 'disabled',
-  reason: 'No receipt-bound v3 repertoire graph is promoted in this offline candidate. Legacy v2 lines are never adapted into the v3 trainer.',
+  reason: 'No tactical shard has passed digest, legality, opening-association, and Stockfish release verification. Opening-recall prompts are not substituted here.',
+}
+
+const DEFAULT_FAMILY_GRAPH_RESOURCES: FamilyGraphResources = {}
+
+type FamilyLoadState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'ready' }
+  | { status: 'error'; message: string }
+
+function sameOrderedStrings(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index])
+}
+
+function mergeFamilyGraphResources(
+  loaded: FamilyGraphResources,
+  supplied: FamilyGraphResources,
+): FamilyGraphResources {
+  const merged: Record<string, FamilyGraphResourceSet> = { ...loaded }
+  for (const [familyId, suppliedSet] of Object.entries(supplied)) {
+    const loadedSet = loaded[familyId]
+    merged[familyId] = {
+      ...(loadedSet ?? {}),
+      ...suppliedSet,
+      ...(
+        loadedSet?.packResources || suppliedSet.packResources
+          ? {
+              packResources: {
+                ...(loadedSet?.packResources ?? {}),
+                ...(suppliedSet.packResources ?? {}),
+              },
+            }
+          : {}
+      ),
+    }
+  }
+  return merged
+}
+
+function validatedFamilyGraphs(
+  resources: FamilyGraphResourceSet | undefined,
+  side?: 'white' | 'black',
+): Array<ReturnType<typeof validateFamilyPackGraphOwnership>['graph']> {
+  const manifestResult = OpeningFamilyManifestV1Schema.safeParse(resources?.manifest)
+  if (!manifestResult.success) return []
+  const manifest = manifestResult.data
+  const sideCounts = manifest.packRefs.reduce((counts, ref) => {
+    counts[ref.side] += 1
+    return counts
+  }, { white: 0, black: 0 })
+  return manifest.packRefs.flatMap((ref) => {
+    if (side !== undefined && ref.side !== side) return []
+    const resource = resources?.packResources?.[ref.packId]
+      ?? (sideCounts[ref.side] === 1 ? resources?.[ref.side] : undefined)
+    if (resource?.status !== 'ready') return []
+    try {
+      return [validateFamilyPackGraphOwnership({
+        manifest,
+        packId: ref.packId,
+        graph: resource.envelope.graph,
+      }).graph]
+    } catch {
+      return []
+    }
+  })
+}
+
+function familySideFullyReady(
+  resources: FamilyGraphResourceSet | undefined,
+  side: 'white' | 'black',
+): boolean {
+  const manifestResult = OpeningFamilyManifestV1Schema.safeParse(resources?.manifest)
+  if (!manifestResult.success) return false
+  const expected = manifestResult.data.packRefs.filter((ref) => ref.side === side)
+  return expected.length > 0 && validatedFamilyGraphs(resources, side).length === expected.length
 }
 
 export function App({
@@ -221,9 +374,13 @@ export function App({
   repositorySelector = selectProgressRepository,
   accountControl,
   onReviewCommit,
-  onPuzzleSolved,
+  onTacticalPuzzleAttempt,
   subscribeProgressCards,
-  graphTrainingResource = DEFAULT_GRAPH_TRAINING_RESOURCE,
+  subscribePuzzleProgress,
+  tacticalPuzzleResource = DEFAULT_TACTICAL_PUZZLE_RESOURCE,
+  puzzleProgressRepository,
+  familyGraphResources = DEFAULT_FAMILY_GRAPH_RESOURCES,
+  familyTrainingJournal,
   graphTrainingDueCardIds = [],
   onGraphReviewInference,
   onGraphPathCompleted,
@@ -240,12 +397,58 @@ export function App({
   const [progressHydration, setProgressHydration] = useState<'loading' | 'ready'>('loading')
   const [storageWarning, setStorageWarning] = useState<string | null>(null)
   const [saveError, setSaveError] = useState<string | null>(null)
+  const [puzzleProgress, setPuzzleProgress] = useState<PuzzleProgress>(() => createEmptyPuzzleProgress())
+  const [familyCompletionCount, setFamilyCompletionCount] = useState<Record<string, number>>({})
+  const [loadedFamilyGraphResources, setLoadedFamilyGraphResources] = useState<FamilyGraphResources>({})
+  const [familyLoadStates, setFamilyLoadStates] = useState<Record<string, FamilyLoadState>>({})
+  const [familyLoadRetries, setFamilyLoadRetries] = useState<Record<string, number>>({})
   const [announcement, setAnnouncement] = useState({ message: '', sequence: 0 })
   const writerRef = useRef<DebouncedProgressWriter | null>(null)
+  const progressRef = useRef(progress)
+  const graphReviewWriteChainRef = useRef<Promise<void>>(Promise.resolve())
+  const fallbackPuzzleProgressRepositoryRef = useRef<PuzzleProgressRepository>(new MemoryPuzzleProgressRepository())
+  const fallbackFamilyTrainingJournalRef = useRef<FamilyTrainingJournalRepository>(
+    new MemoryFamilyTrainingJournalRepository(),
+  )
+  const activePuzzleProgressRepository = puzzleProgressRepository ?? fallbackPuzzleProgressRepositoryRef.current
+  const activeFamilyTrainingJournal = familyTrainingJournal ?? fallbackFamilyTrainingJournalRef.current
+  const effectiveFamilyGraphResources = useMemo(
+    () => mergeFamilyGraphResources(loadedFamilyGraphResources, familyGraphResources),
+    [familyGraphResources, loadedFamilyGraphResources],
+  )
   const mainRef = useRef<HTMLElement>(null)
   const focusViewAfterNavigationRef = useRef(false)
 
   const announce = (message: string): void => setAnnouncement((current) => ({ message, sequence: current.sequence + 1 }))
+
+  useEffect(() => {
+    progressRef.current = progress
+  }, [progress])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const applyLocation = (focus: boolean): void => {
+      const route = parseAppHash(window.location.hash)
+      if (focus) focusViewAfterNavigationRef.current = true
+      dispatch({ type: 'apply_route', route })
+    }
+    if (window.location.hash === '') {
+      window.history.replaceState(null, '', appHashForRoute({ view: 'today' }))
+    }
+    applyLocation(false)
+    const onHistoryNavigation = (): void => applyLocation(true)
+    window.addEventListener('hashchange', onHistoryNavigation)
+    window.addEventListener('popstate', onHistoryNavigation)
+    return () => {
+      window.removeEventListener('hashchange', onHistoryNavigation)
+      window.removeEventListener('popstate', onHistoryNavigation)
+    }
+  }, [])
+
+  useEffect(() => {
+    setLoadedFamilyGraphResources({})
+    setFamilyLoadStates({})
+  }, [dataSource])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -279,6 +482,130 @@ export function App({
       if (timer !== null) clearTimeout(timer)
     }
   }, [dataSource, state.coreRetry])
+
+  useEffect(() => {
+    if (
+      state.coreStatus !== 'ready'
+      || !state.core
+      || !state.selectedFamilyId
+      || !supportsOpeningFamilies(dataSource)
+      || familyGraphResources[state.selectedFamilyId] !== undefined
+    ) return
+
+    const familyId = state.selectedFamilyId
+    const reviewFamily = state.core.reviewFamilyCatalog.families.find(({ id }) => id === familyId)
+    if (!reviewFamily) return
+    const controller = new AbortController()
+    setFamilyLoadStates((current) => ({ ...current, [familyId]: { status: 'loading' } }))
+
+    const load = async (): Promise<void> => {
+      const catalog = await dataSource.loadFamilyCatalog(controller.signal)
+      const catalogEntry = catalog.families.find(({ id }) => id === familyId)
+      if (
+        !catalogEntry
+        || catalogEntry.canonicalName !== reviewFamily.canonicalName
+        || !sameOrderedStrings(catalogEntry.aliases, reviewFamily.aliases)
+        || !sameOrderedStrings(catalogEntry.ecoCodes, reviewFamily.ecoCodes)
+        || catalogEntry.taxonomyLineCount !== reviewFamily.taxonomyLineIds.length
+      ) {
+        throw new Error('The promoted family catalog does not match the audited taxonomy registry')
+      }
+      const manifest = await dataSource.loadFamilyManifest(familyId, controller.signal)
+      if (!sameOrderedStrings(manifest.taxonomyLineIds, reviewFamily.taxonomyLineIds)) {
+        throw new Error('The promoted family manifest owns a different taxonomy-line inventory')
+      }
+      const loadingResources = Object.fromEntries(
+        manifest.packRefs.map(({ packId }) => [packId, { status: 'loading' as const }]),
+      )
+      if (controller.signal.aborted) return
+      setLoadedFamilyGraphResources((current) => ({
+        ...current,
+        [familyId]: {
+          manifest,
+          packResources: loadingResources,
+        },
+      }))
+
+      let nextPack = 0
+      let failed = false
+      const workers = Array.from(
+        { length: Math.min(4, manifest.packRefs.length) },
+        async (): Promise<void> => {
+          while (!controller.signal.aborted) {
+            const index = nextPack
+            nextPack += 1
+            const packRef = manifest.packRefs[index]
+            if (!packRef) return
+            try {
+              const graph = await dataSource.loadRepertoirePack(packRef, controller.signal)
+              if (controller.signal.aborted) return
+              const resource = {
+                status: 'ready' as const,
+                envelope: {
+                  contractId: GRAPH_TRAINING_CONTRACT_ID,
+                  graph,
+                },
+              }
+              setLoadedFamilyGraphResources((current) => ({
+                ...current,
+                [familyId]: {
+                  manifest,
+                  packResources: {
+                    ...(current[familyId]?.packResources ?? {}),
+                    [packRef.packId]: resource,
+                  },
+                },
+              }))
+            } catch (cause) {
+              if (controller.signal.aborted) return
+              failed = true
+              const resource = {
+                status: 'error' as const,
+                error: errorMessage(cause),
+              }
+              setLoadedFamilyGraphResources((current) => ({
+                ...current,
+                [familyId]: {
+                  manifest,
+                  packResources: {
+                    ...(current[familyId]?.packResources ?? {}),
+                    [packRef.packId]: resource,
+                  },
+                },
+              }))
+            }
+          }
+        },
+      )
+      await Promise.all(workers)
+      if (!controller.signal.aborted) {
+        setFamilyLoadStates((current) => ({
+          ...current,
+          [familyId]: failed
+            ? { status: 'error', message: 'One or more promoted family packs failed checksum or graph validation.' }
+            : { status: 'ready' },
+        }))
+      }
+    }
+
+    void load().catch((cause: unknown) => {
+      if (controller.signal.aborted) return
+      const message = errorMessage(cause)
+      setFamilyLoadStates((current) => ({
+        ...current,
+        [familyId]: { status: 'error', message },
+      }))
+      announce(`Audited family data could not be loaded: ${message}`)
+    })
+    return () => controller.abort()
+  }, [
+    dataSource,
+    familyGraphResources,
+    familyLoadRetries,
+    state.core,
+    state.coreStatus,
+    state.selectedFamilyId,
+  ])
 
   useEffect(() => {
     if (state.coreStatus !== 'ready') return
@@ -331,7 +658,10 @@ export function App({
       if (!active) return
       setRepositoryKind(repository.kind)
       setStorageWarning(warning)
-      if (saved) setProgress(saved)
+      if (saved) {
+        progressRef.current = saved
+        setProgress(saved)
+      }
       writer = new DebouncedProgressWriter(repository, (error) => {
         setSaveError(`Progress could not be saved: ${error.message}. Export JSON before leaving.`)
       })
@@ -358,6 +688,46 @@ export function App({
   }, [repositorySelector])
 
   useEffect(() => {
+    let active = true
+    void activePuzzleProgressRepository.load().then((saved) => {
+      if (active && saved) setPuzzleProgress(saved)
+    }).catch((error: unknown) => {
+      if (active) setSaveError(`Puzzle progress could not be read: ${errorMessage(error)}. This does not affect opening recall progress.`)
+    })
+    return () => { active = false }
+  }, [activePuzzleProgressRepository])
+
+  useEffect(() => {
+    if (!state.selectedFamilyId || state.coreStatus !== 'ready' || !state.core) return
+    let active = true
+    const familyId = state.selectedFamilyId
+    const resourceSet = effectiveFamilyGraphResources[familyId]
+    const manifest = OpeningFamilyManifestV1Schema.safeParse(resourceSet?.manifest)
+    const releaseId = manifest.success
+      ? manifest.data.releaseId
+      : state.core.reviewFamilyCatalog.generatedAt
+    void activeFamilyTrainingJournal.listCoverageEvents({
+      releaseId,
+      familyId,
+    }).then((events) => {
+      if (!active) return
+      setFamilyCompletionCount((current) => ({
+        ...current,
+        [familyId]: countUniqueCompletedFamilyPaths(events),
+      }))
+    }).catch((error: unknown) => {
+      if (active) setSaveError(`Family completion history could not be read: ${errorMessage(error)}`)
+    })
+    return () => { active = false }
+  }, [
+    activeFamilyTrainingJournal,
+    effectiveFamilyGraphResources,
+    state.core,
+    state.coreStatus,
+    state.selectedFamilyId,
+  ])
+
+  useEffect(() => {
     document.documentElement.dataset.theme = progress.settings.theme
   }, [progress.settings.theme])
 
@@ -380,7 +750,9 @@ export function App({
         setProgress((current) => {
           const nextCards: Record<string, CardProgress> = { ...current.cards }
           for (const card of verified) nextCards[card.cardId] = card
-          return { ...current, updatedAt: new Date().toISOString(), cards: nextCards }
+          const next = { ...current, updatedAt: new Date().toISOString(), cards: nextCards }
+          progressRef.current = next
+          return next
         })
         setSaveError(null)
         announce(`Cloud schedule updated for ${verified.length} card${verified.length === 1 ? '' : 's'}.`)
@@ -393,11 +765,29 @@ export function App({
     })
   }, [progressHydration, subscribeProgressCards])
 
+  useEffect(() => {
+    if (!subscribePuzzleProgress) return
+    return subscribePuzzleProgress((canonical) => {
+      try {
+        const verified = PuzzleProgressV1Schema.parse(canonical)
+        setPuzzleProgress(verified)
+        setSaveError(null)
+        announce('Cloud puzzle progress updated.')
+      } catch (cause) {
+        const failure = cause instanceof Error ? cause : new Error('Cloud puzzle projection was invalid')
+        setSaveError(`Cloud puzzle progress was rejected: ${failure.message}. Existing puzzle progress was kept.`)
+      }
+    }, (error) => {
+      setSaveError(`Cloud puzzle progress could not be refreshed: ${error.message}. Unsynced attempts remain in memory.`)
+    })
+  }, [subscribePuzzleProgress])
+
   const saveProgress = (next: ProgressV1): void => {
     if (progressHydration !== 'ready' || writerRef.current === null) {
       announce('Progress is still loading; no change was made.')
       return
     }
+    progressRef.current = next
     setProgress(next)
     writerRef.current?.schedule(next)
   }
@@ -414,16 +804,139 @@ export function App({
   const handleReview = (card: CardProgress, commit: ReviewCommitMetadata): string | undefined => {
     const now = new Date()
     const reviewLocalDate = localDateKey(now)
-    const scopedStreaks = updateScopedReviewStreaks(progress, card.lineId, reviewLocalDate)
+    const current = progressRef.current
+    const scopedStreaks = updateScopedReviewStreaks(current, card.lineId, reviewLocalDate)
     const next = {
-      ...progress,
+      ...current,
       updatedAt: now.toISOString(),
-      cards: { ...progress.cards, [card.cardId]: card },
-      streak: updateReviewStreak(progress.streak, reviewLocalDate),
+      cards: { ...current.cards, [card.cardId]: card },
+      streak: updateReviewStreak(current.streak, reviewLocalDate),
       ...scopedStreaks,
     }
     saveProgress(next)
     return onReviewCommit?.({ ...commit, card })
+  }
+
+  const handleTacticalPuzzleAttempt = async (event: PuzzleAttemptEventV1): Promise<void> => {
+    const next = await persistPuzzleAttempt(activePuzzleProgressRepository, event)
+    setPuzzleProgress(next)
+    await onTacticalPuzzleAttempt?.(event)
+    announce(event.outcome === 'solved' ? 'Tactical puzzle progress saved.' : 'Puzzle skip saved without changing opening mastery.')
+  }
+
+  const commitGraphReviewInference = async (review: GraphTrainingReviewInference): Promise<void> => {
+    if (progressHydration !== 'ready' || writerRef.current === null) {
+      throw new Error('Progress storage is not ready')
+    }
+    if (!state.selectedFamilyId) throw new Error('Graph review has no active opening family')
+    const ownedGraph = validatedFamilyGraphs(effectiveFamilyGraphResources[state.selectedFamilyId])
+      .find(({ pack }) => pack.id === review.packId)
+    const ownedNode = ownedGraph?.nodes.find(({ id }) => id === review.nodeId)
+    const ownedEdge = ownedGraph?.edges.find(({ id }) => id === review.edgeId)
+    if (
+      !ownedGraph
+      || !ownedNode
+      || ownedNode.cardId !== review.cardId
+      || !ownedNode.learnerTurn
+      || !ownedEdge
+      || ownedEdge.fromNodeId !== review.nodeId
+      || ownedEdge.uci !== review.moveUci
+    ) {
+      throw new Error('Graph review does not belong to the active promoted family graph')
+    }
+    const now = new Date()
+    const current = progressRef.current
+    const existing = current.cards[review.cardId]
+      ?? createCard(review.cardId, review.packId, review.nodeId, now)
+    const card = scheduleReview(existing, review.grade, now).card
+    const next = ProgressV1Schema.parse({
+      ...current,
+      updatedAt: now.toISOString(),
+      cards: { ...current.cards, [card.cardId]: card },
+      streak: updateReviewStreak(current.streak, localDateKey(now)),
+    })
+    if (onReviewCommit) {
+      const queuedEventId = onReviewCommit({
+        kind: 'review',
+        grade: review.grade,
+        lineId: review.packId,
+        nodeId: review.nodeId,
+        occurredAt: now.toISOString(),
+        card,
+      })
+      if (!queuedEventId) throw new Error('The connected review queue did not accept this review')
+    }
+    await writerRef.current.saveImmediately(next)
+    progressRef.current = next
+    setProgress(next)
+    onGraphReviewInference?.(review)
+    setSaveError(null)
+    announce(`${review.grade} review saved for this ${review.source} card.`)
+  }
+
+  const handleGraphReviewInference = (review: GraphTrainingReviewInference): void => {
+    graphReviewWriteChainRef.current = graphReviewWriteChainRef.current
+      .then(() => commitGraphReviewInference(review))
+      .catch((error: unknown) => {
+        const failure = error instanceof Error ? error : new Error('Graph review could not be saved')
+        setSaveError(`Graph review could not be saved: ${failure.message}. The move remains visible but was not reported as recorded.`)
+        announce('Graph review was not saved. Progress storage needs attention.')
+      })
+  }
+
+  const handleFamilyPathCompleted = async (
+    familyId: string,
+    completion: GraphTrainingPathCompletionV1,
+  ): Promise<void> => {
+    const completionRecord = GraphTrainingPathCompletionV1Schema.parse(completion)
+    const family = state.core?.reviewFamilyCatalog.families.find(({ id }) => id === familyId)
+    if (!family) throw new Error('Path completion references an opening family outside the active catalog')
+    const resourceSet = effectiveFamilyGraphResources[familyId]
+    const manifestResult = OpeningFamilyManifestV1Schema.safeParse(resourceSet?.manifest)
+    if (!manifestResult.success || manifestResult.data.id !== familyId) {
+      throw new Error('Path completion has no validated opening-family manifest')
+    }
+    const ownedGraph = validatedFamilyGraphs(resourceSet)
+      .find((graph) =>
+        graph.releaseId === completionRecord.releaseId
+        && graph.pack.id === completionRecord.packId)
+    if (!ownedGraph) throw new Error('Path completion does not belong to a promoted family graph resource')
+    const ownedPath = ownedGraph.paths.find(({ id }) => id === completionRecord.pathId)
+    if (
+      !ownedPath
+      || ownedPath.packId !== completionRecord.packId
+      || JSON.stringify(ownedPath.familyTags) !== JSON.stringify(completionRecord.familyTags)
+    ) throw new Error('Path completion does not match the promoted family graph path')
+    if (supportsOpeningFamilies(dataSource)) {
+      const manifest = await dataSource.loadFamilyManifest(familyId)
+      if (
+        !manifest.packRefs.some(({ packId }) => packId === completionRecord.packId)
+        || !manifest.pathMemberships.some(({ packId, pathId }) =>
+          packId === completionRecord.packId && pathId === completionRecord.pathId)
+      ) throw new Error('Path completion is absent from the validated opening-family manifest')
+    }
+    const event = FamilyCoverageEventV1Schema.parse({
+      schemaVersion: 1,
+      eventId: eventId(),
+      releaseId: completionRecord.releaseId,
+      familyId,
+      packId: completionRecord.packId,
+      pathId: completionRecord.pathId,
+      coverageCycleId: completionRecord.coverageCycleId,
+      completedAt: completionRecord.completedAt,
+    })
+    const result = await activeFamilyTrainingJournal.appendCoverageEvent(event)
+    if (result === 'appended') {
+      const events = await activeFamilyTrainingJournal.listCoverageEvents({
+        releaseId: completionRecord.releaseId,
+        familyId,
+      })
+      setFamilyCompletionCount((current) => ({
+        ...current,
+        [familyId]: countUniqueCompletedFamilyPaths(events),
+      }))
+    }
+    await onGraphPathCompleted?.(completionRecord)
   }
 
   const partition = state.partition.value
@@ -450,17 +963,7 @@ export function App({
     announce(`Loading ${match.eco}, ${match.name}.`)
   }
 
-  const selectRepertoirePack = (summary: OpeningDataCore['variantSummaries'][number]): void => {
-    dispatch({
-      type: 'select_eco',
-      eco: summary.eco,
-      lineId: summary.sourceLineId,
-      variantId: summary.id,
-    })
-    announce(`Loading ${summary.name}, training ${summary.trainedSide}.`)
-  }
-
-  const navItems: ReadonlyArray<{ view: AppView; label: string; icon: 'today' | 'book' | 'puzzle' | 'search' | 'progress' }> = [
+  const navItems: ReadonlyArray<{ view: PrimaryView; label: string; icon: 'today' | 'book' | 'puzzle' | 'search' | 'progress' }> = [
     { view: 'today', label: 'Today', icon: 'today' },
     { view: 'repertoire', label: 'Repertoire', icon: 'book' },
     { view: 'puzzles', label: 'Puzzles', icon: 'puzzle' },
@@ -470,18 +973,45 @@ export function App({
   const readyCore = state.coreStatus === 'ready' ? state.core : null
   const appReady = readyCore !== null && progressHydration === 'ready'
   const dueCount = Object.values(progress.cards).filter((card) => Date.parse(card.dueAt) <= Date.now()).length
-  const suggestedLine = selectedVariant?.drillEligible
-    ? selectedVariant
-    : partition?.verifiedLines.find((line) => line.drillEligible) ?? null
-
-  const puzzleResource = useMemo<PuzzleResource>(() => {
-    if (!suggestedLine) return { status: 'idle' }
-    try {
-      return { status: 'ready', puzzles: openingPuzzlesFromVerifiedLine(suggestedLine) }
-    } catch (error) {
-      return { status: 'error', error: errorMessage(error) }
+  const suggestedFamily = readyCore?.reviewFamilyCatalog.families.find((family) =>
+    validatedFamilyGraphs(effectiveFamilyGraphResources[family.id]).length > 0)
+    ?? readyCore?.reviewFamilyCatalog.families.find(({ id }) => id === 'caro-kann')
+    ?? readyCore?.reviewFamilyCatalog.families[0]
+    ?? null
+  const suggestedFamilySide = suggestedFamily?.availableSides[0] ?? 'white'
+  const suggestedFamilyGraphReady = suggestedFamily
+    ? familySideFullyReady(effectiveFamilyGraphResources[suggestedFamily.id], suggestedFamilySide)
+    : false
+  const effectiveGraphDueCardIds = useMemo(() => {
+    if (!state.selectedFamilyId) return [...graphTrainingDueCardIds]
+    const graphs = validatedFamilyGraphs(
+      effectiveFamilyGraphResources[state.selectedFamilyId],
+      state.selectedFamilySide,
+    )
+    if (graphs.length === 0) return [...graphTrainingDueCardIds]
+    const graphCardIds = new Set(
+      graphs.flatMap((graph) => graph.nodes.flatMap(({ cardId }) => cardId ? [cardId] : [])),
+    )
+    const due = new Set(
+      graphTrainingDueCardIds.filter((cardId) => graphCardIds.has(cardId)),
+    )
+    const now = Date.now()
+    for (const cardId of graphCardIds) {
+      const card = progress.cards[cardId]
+      if (!card || Date.parse(card.dueAt) <= now) due.add(cardId)
     }
-  }, [suggestedLine])
+    return [...due].sort((left, right) => left.localeCompare(right, 'en'))
+  }, [
+    effectiveFamilyGraphResources,
+    graphTrainingDueCardIds,
+    progress.cards,
+    state.selectedFamilyId,
+    state.selectedFamilySide,
+  ])
+  const activeNavView = state.view === 'family' || state.view === 'train' ? 'repertoire' : state.view
+  const selectedFamilyLoadState = state.selectedFamilyId
+    ? familyLoadStates[state.selectedFamilyId] ?? { status: 'idle' as const }
+    : { status: 'idle' as const }
 
   const commitViewChange = (update: () => void): void => {
     // Navigation is intentionally committed synchronously. The native View
@@ -493,11 +1023,17 @@ export function App({
     update()
   }
 
-  const navigateTo = (view: AppView, label: string): void => {
+  const navigateRoute = (route: AppHashRoute, label: string): void => {
     focusViewAfterNavigationRef.current = true
-    commitViewChange(() => dispatch({ type: 'navigate', view }))
+    if (typeof window !== 'undefined') window.history.pushState(null, '', appHashForRoute(route))
+    commitViewChange(() => dispatch({ type: 'apply_route', route }))
     announce(`${label} view opened.`)
   }
+
+  const navigateTo = (
+    view: Exclude<AppView, 'family' | 'train' | 'drill'>,
+    label: string,
+  ): void => navigateRoute({ view }, label)
 
   const startTraining = (line: VerifiedLine): void => {
     focusViewAfterNavigationRef.current = true
@@ -506,6 +1042,25 @@ export function App({
       updateSettings({ boardOrientation: line.trainedSide })
     }
     announce(`Starting ${line.name}, training ${line.trainedSide}. Flow grading is ${progress.settings.manualGrading ? 'paused for confirmation' : 'automatic'}.`)
+  }
+
+  const openFamily = (familyId: string): void => {
+    const family = readyCore?.reviewFamilyCatalog.families.find(({ id }) => id === familyId)
+    if (!family) {
+      announce('That opening family is not part of this audited taxonomy release.')
+      return
+    }
+    navigateRoute({ view: 'family', familyId }, family.canonicalName)
+  }
+
+  const selectFamilySide = (familyId: string, side: 'white' | 'black'): void => {
+    dispatch({ type: 'select_family_side', familyId, side })
+    announce(`Train ${side} selected for ${familyId}.`)
+  }
+
+  const startFamilyTraining = (familyId: string, side: 'white' | 'black'): void => {
+    if (progress.settings.boardOrientation !== side) updateSettings({ boardOrientation: side })
+    navigateRoute({ view: 'train', familyId, side }, `${familyId} training`)
   }
 
   useEffect(() => {
@@ -562,7 +1117,7 @@ export function App({
               type="button"
               key={item.view}
               disabled={!appReady}
-              aria-current={state.view === item.view ? 'page' : undefined}
+              aria-current={activeNavView === item.view ? 'page' : undefined}
               onClick={() => navigateTo(item.view, item.label)}
             >
               <NavGlyph name={item.icon} /><span>{item.label}</span>
@@ -652,11 +1207,19 @@ export function App({
             <div className="today-grid">
               <article className="start-card">
                 <p className="eyebrow">Next session</p>
-                <h2>{suggestedLine?.name ?? 'Choose a repertoire'}</h2>
-                <p>{suggestedLine ? `${suggestedLine.eco} · Train ${suggestedLine.trainedSide} · ${suggestedLine.nodes.length} learner decisions` : 'Select an engine-checked variation from the repertoire catalog.'}</p>
-                {suggestedLine ? (
-                  <button type="button" className="primary-action" onClick={() => startTraining(suggestedLine)}>
-                    {dueCount > 0 ? 'Start due review' : 'Continue practice'}
+                <h2>{suggestedFamily?.canonicalName ?? 'Choose a repertoire'}</h2>
+                <p>{suggestedFamily
+                  ? `${suggestedFamily.ecoCodes[0]}–${suggestedFamily.ecoCodes.at(-1)} · ${suggestedFamily.taxonomyLineIds.length} named lines · Train ${suggestedFamilySide}`
+                  : 'Choose one canonical opening family from the repertoire catalog.'}</p>
+                {suggestedFamily ? (
+                  <button
+                    type="button"
+                    className="primary-action"
+                    onClick={() => suggestedFamilyGraphReady
+                      ? startFamilyTraining(suggestedFamily.id, suggestedFamilySide)
+                      : openFamily(suggestedFamily.id)}
+                  >
+                    {suggestedFamilyGraphReady && dueCount > 0 ? 'Start due review' : suggestedFamilyGraphReady ? 'Continue family' : 'Open family'}
                   </button>
                 ) : (
                   <button type="button" className="primary-action" onClick={() => navigateTo('repertoire', 'Repertoire')}>Browse repertoires</button>
@@ -692,30 +1255,54 @@ export function App({
             </div>
           </section>
         ) : null}
-        {appReady && state.view === 'repertoire' ? (
-          <RepertoireView
-            summaries={readyCore.variantSummaries}
-            partition={state.partition}
-            selectedLineId={selectedLine?.sourceLineId ?? state.selectedLineId}
-            selectedVariantId={selectedVariant?.id ?? state.selectedVariantId}
-            onSelectPack={selectRepertoirePack}
-            onSelectVariant={(variantId) => dispatch({ type: 'select_variant', variantId })}
-            onStartDrill={startTraining}
-            onRetry={() => dispatch({ type: 'retry_partition' })}
-            graphTraining={(
-              <GraphTrainingBoundary
-                resource={graphTrainingResource}
-                dueCardIds={graphTrainingDueCardIds}
-                orientation={progress.settings.boardOrientation}
-                reducedMotion={progress.settings.reducedMotion}
-                manualPacing={progress.settings.manualGrading}
-                onSetOrientation={(boardOrientation) => updateSettings({ boardOrientation })}
-                onAnnouncement={announce}
-                {...(onGraphReviewInference ? { onInferredReview: onGraphReviewInference } : {})}
-                {...(onGraphPathCompleted ? { onPathCompleted: onGraphPathCompleted } : {})}
-              />
-            )}
-          />
+        {appReady && (state.view === 'repertoire' || state.view === 'family' || state.view === 'train') ? (
+          <>
+            {state.selectedFamilyId && selectedFamilyLoadState.status === 'loading' ? (
+              <p className="resource-notice" role="status">Loading checksum-verified family packsâ€¦</p>
+            ) : null}
+            {state.selectedFamilyId && selectedFamilyLoadState.status === 'error' ? (
+              <div className="resource-notice error-warning" role="alert">
+                <span>{selectedFamilyLoadState.message}</span>
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={() => setFamilyLoadRetries((current) => ({
+                    ...current,
+                    [state.selectedFamilyId!]: (current[state.selectedFamilyId!] ?? 0) + 1,
+                  }))}
+                >
+                  Retry family data
+                </button>
+              </div>
+            ) : null}
+            <OpeningFamilyView
+              mode={state.view === 'repertoire' ? 'catalog' : state.view === 'family' ? 'detail' : 'training'}
+              families={readyCore.reviewFamilyCatalog.families}
+              {...(state.selectedFamilyId ? { selectedFamilyId: state.selectedFamilyId } : {})}
+              selectedSide={state.selectedFamilySide}
+              graphResources={effectiveFamilyGraphResources}
+              familyTrainingJournal={activeFamilyTrainingJournal}
+              dueCardIds={effectiveGraphDueCardIds}
+              orientation={progress.settings.boardOrientation}
+              reducedMotion={progress.settings.reducedMotion}
+              manualPacing={progress.settings.manualGrading}
+              completionCountByFamily={familyCompletionCount}
+              onSelectFamily={openFamily}
+              onSelectSide={selectFamilySide}
+              onStartTraining={startFamilyTraining}
+              onBackToCatalog={() => navigateTo('repertoire', 'Repertoire')}
+              onOpenExplore={(family) => {
+                dispatch({ type: 'select_eco', eco: family.ecoCodes[0]! })
+                navigateTo('explore', 'Explore')
+              }}
+              onSetOrientation={(boardOrientation) => updateSettings({ boardOrientation })}
+              onInferredReview={handleGraphReviewInference}
+              onPathCompleted={handleFamilyPathCompleted}
+              onAnnouncement={(message) => {
+                if (!/ recorded for this (?:due|repeat) card\.$/iu.test(message)) announce(message)
+              }}
+            />
+          </>
         ) : null}
         {appReady && state.view === 'explore' ? (
           <section className="catalog-view catalog-view-explore" aria-label="Opening explorer">
@@ -742,13 +1329,12 @@ export function App({
           </section>
         ) : null}
         {appReady && state.view === 'puzzles' ? (
-          <PuzzleView
-            resource={puzzleResource}
+          <TacticalPuzzleView
+            resource={tacticalPuzzleResource}
             orientation={progress.settings.boardOrientation}
             onSetOrientation={(boardOrientation) => updateSettings({ boardOrientation })}
-            onRetry={() => dispatch({ type: 'retry_partition' })}
-            {...(onPuzzleSolved ? { onSolved: onPuzzleSolved } : {})}
-            onExit={() => navigateTo('repertoire', 'Repertoire')}
+            onRetry={() => announce('No alternate tactical shard is available in this build.')}
+            onAttempt={handleTacticalPuzzleAttempt}
             onAnnouncement={announce}
             reducedMotion={progress.settings.reducedMotion}
           />
@@ -776,6 +1362,8 @@ export function App({
             repositoryKind={repositoryKind}
             storageWarning={storageWarning}
             saveError={saveError}
+            puzzleProgress={puzzleProgress}
+            familyCompletionCount={familyCompletionCount}
             onImport={(imported) => saveProgress(imported)}
             onAnnouncement={announce}
           />

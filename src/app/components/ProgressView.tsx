@@ -2,6 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState, type ChangeEvent } from 'r
 import type { OpeningVariantSummary } from '../../data/opening-data-source.ts'
 import type { OpeningSearchEntry } from '../../domain/input-validation.ts'
 import { masteryPercent, type ProgressRepository, type ProgressV1 } from '../../domain/progress.ts'
+import { puzzleMasteryPercent, type PuzzleProgress } from '../../domain/puzzle-progress.ts'
 import {
   summarizeProgress,
   type VariationProgressSummary,
@@ -19,6 +20,8 @@ export interface ProgressViewProps {
   repositoryKind: ProgressRepository['kind']
   storageWarning: string | null
   saveError: string | null
+  puzzleProgress?: PuzzleProgress
+  familyCompletionCount?: Readonly<Record<string, number>>
   onImport: (progress: ProgressV1) => void
   onAnnouncement: (message: string) => void
 }
@@ -65,6 +68,8 @@ export function ProgressView({
   repositoryKind,
   storageWarning,
   saveError,
+  puzzleProgress,
+  familyCompletionCount = {},
   onImport,
   onAnnouncement,
 }: ProgressViewProps): React.JSX.Element {
@@ -89,6 +94,12 @@ export function ProgressView({
     () => new Map(summaries.variations.map((variation) => [variation.id, variation] as const)),
     [summaries.variations],
   )
+  const puzzleEntries = useMemo(
+    () => Object.values(puzzleProgress?.puzzles ?? {}).sort((left, right) =>
+      (right.lastAttemptAt ?? '').localeCompare(left.lastAttemptAt ?? '', 'en')),
+    [puzzleProgress],
+  )
+  const completedFamilyPaths = Object.values(familyCompletionCount).reduce((total, count) => total + count, 0)
   const [candidate, setCandidate] = useState<ProgressV1 | null>(null)
   const [fileName, setFileName] = useState<string | null>(null)
   const [importError, setImportError] = useState<string | null>(null)
@@ -153,6 +164,18 @@ export function ProgressView({
         <div><strong>{summaries.mastery}%</strong><span>Mean mastery</span></div>
         <div><strong>{progress.streak.current}</strong><span>Day streak</span></div>
       </section>
+      <section className="progress-separated-summary" aria-label="Family coverage and tactical progress">
+        <article>
+          <p className="eyebrow">Family coverage</p>
+          <strong>{completedFamilyPaths}</strong>
+          <span>audited paths completed</span>
+        </article>
+        <article>
+          <p className="eyebrow">Tactical puzzles</p>
+          <strong>{puzzleEntries.reduce((total, entry) => total + entry.solves, 0)}</strong>
+          <span>solutions · separate mastery</span>
+        </article>
+      </section>
       <p className="field-help">
         Mastery includes every learner position in each started opening; unreviewed cards count as 0%.
         Streaks count consecutive local calendar days with completed reviews globally and within each opening and trained-side variation.
@@ -163,6 +186,36 @@ export function ProgressView({
           {summaries.excludedCards} stored {summaries.excludedCards === 1 ? 'card record was' : 'card records were'} excluded from progress totals because {summaries.excludedCards === 1 ? 'it does' : 'they do'} not match a current audited learner position or {summaries.excludedCards === 1 ? 'it duplicates' : 'they duplicate'} one. The raw review history remains below.
         </div>
       ) : null}
+
+      <section className="card-history" aria-labelledby="puzzle-progress-title">
+        <h2 id="puzzle-progress-title">Puzzle progress</h2>
+        <p className="field-help">Puzzle attempts never change opening-recall schedules or family coverage.</p>
+        {puzzleEntries.length === 0 ? (
+          <p className="field-help">Audited tactical results appear here after a promoted puzzle shard is available.</p>
+        ) : (
+          <div className="table-scroll" tabIndex={0} role="region" aria-label="Puzzle progress, horizontally scrollable">
+            <table className="stats-table">
+              <caption>{puzzleEntries.length} attempted tactical {puzzleEntries.length === 1 ? 'puzzle' : 'puzzles'}</caption>
+              <thead>
+                <tr><th scope="col">Puzzle</th><th scope="col">Mastery</th><th scope="col">Solved</th><th scope="col">Clean solves</th><th scope="col">Hints</th><th scope="col">Incorrect moves</th><th scope="col">Abandoned</th></tr>
+              </thead>
+              <tbody>
+                {puzzleEntries.map((entry) => (
+                  <tr key={entry.puzzleId}>
+                    <th scope="row"><code>{entry.puzzleId}</code></th>
+                    <td>{puzzleMasteryPercent(entry)}%</td>
+                    <td>{entry.solves}</td>
+                    <td>{entry.cleanSolves}</td>
+                    <td>{entry.hintsUsed}</td>
+                    <td>{entry.incorrectMoves}</td>
+                    <td>{entry.abandoned}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
 
       <section className="transfer-panel" aria-labelledby="transfer-title">
         <div>

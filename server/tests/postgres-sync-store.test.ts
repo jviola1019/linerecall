@@ -70,7 +70,10 @@ function puzzleAttempt(overrides: Partial<PuzzleAttemptV1> = {}): PuzzleAttemptV
     attemptId: '0198a5c0-1000-7000-8000-000000000010',
     deviceId: DEVICE_ID,
     puzzleId: 'puzzle-001',
-    solved: true,
+    outcome: 'solved',
+    incorrectAttempts: 0,
+    usedHint: false,
+    elapsedMs: 9_000,
     occurredAt: '2026-07-14T11:55:00.000Z',
     snapshotVersion: 'release-2026q2',
     ...overrides,
@@ -238,10 +241,72 @@ describe('PostgreSQL sync repository', () => {
     assert.ok(database.statements.some(({ sql }) => sql === 'ROLLBACK'))
   })
 
+  it('bootstraps canonical puzzle progress with a bounded stable cursor', async () => {
+    let mode: 'page' | 'empty' | 'null-timestamp' | 'failure' = 'page'
+    const database = new ScriptedPool((sql) => {
+      if (sql.includes('FROM puzzle_progress')) {
+        if (mode === 'failure') throw new Error('puzzle bootstrap unavailable')
+        if (mode === 'empty') return { rows: [] }
+        if (mode === 'null-timestamp') return { rows: [{
+          puzzle_id: 'puzzle-003', attempts: 1, solved: 0, abandoned: 1, clean_solves: 0,
+          hints_used: 0, incorrect_moves: '0', total_elapsed_ms: '0', last_elapsed_ms: null,
+          last_attempt_at: null, sync_sequence: '6',
+        }] }
+        return { rows: [
+          {
+            puzzle_id: 'puzzle-001', attempts: 2, solved: 2, abandoned: 0, clean_solves: 1,
+            hints_used: 1, incorrect_moves: '1', total_elapsed_ms: '12000', last_elapsed_ms: 5_000,
+            last_attempt_at: NOW, sync_sequence: '4',
+          },
+          {
+            puzzle_id: 'puzzle-002', attempts: 1, solved: 0, abandoned: 1, clean_solves: 0,
+            hints_used: 0, incorrect_moves: '2', total_elapsed_ms: '0', last_elapsed_ms: null,
+            last_attempt_at: NOW, sync_sequence: '5',
+          },
+        ] }
+      }
+      return {}
+    })
+    const store = new PostgresSyncStore(database.pool)
+    const page = await store.bootstrapPuzzleProgress('user-a', 3n, 1, NOW)
+    assert.equal(page.progress.length, 1)
+    assert.equal(page.progress[0]?.puzzleId, 'puzzle-001')
+    assert.equal(page.nextCursor, '4')
+    assert.equal(page.hasMore, true)
+    assert.ok(database.statements.some(({ sql }) => sql === 'BEGIN READ ONLY'))
+
+    mode = 'empty'
+    const empty = await store.bootstrapPuzzleProgress('user-a', 4n, 1, NOW)
+    assert.deepEqual(empty.progress, [])
+    assert.equal(empty.nextCursor, '4')
+    assert.equal(empty.hasMore, false)
+
+    mode = 'null-timestamp'
+    const nullable = await store.bootstrapPuzzleProgress('user-a', 5n, 1, NOW)
+    assert.equal(nullable.progress[0]?.lastAttemptAt, null)
+    assert.equal(nullable.progress[0]?.lastElapsedMs, null)
+
+    mode = 'failure'
+    await assert.rejects(
+      () => store.bootstrapPuzzleProgress('user-a', 5n, 1, NOW),
+      /puzzle bootstrap unavailable/u,
+    )
+    assert.equal(database.statements.at(-1)?.sql, 'ROLLBACK')
+
+    await assert.rejects(
+      () => store.bootstrapPuzzleProgress('user-a', -1n, 1, NOW),
+      (error: unknown) => error instanceof ApiError && error.code === 'invalid_cursor',
+    )
+  })
+
   it('keeps puzzle attempts separate, idempotent, membership-bound, and clock-normalized', async () => {
     const unsupported = puzzleAttempt({ attemptId: '0198a5c0-1000-7000-8000-000000000031', snapshotVersion: 'retired' })
     const unknown = puzzleAttempt({ attemptId: '0198a5c0-1000-7000-8000-000000000032', puzzleId: 'missing' })
-    const duplicate = puzzleAttempt({ attemptId: '0198a5c0-1000-7000-8000-000000000033', puzzleId: 'puzzle-duplicate' })
+    const duplicate = puzzleAttempt({
+      attemptId: '0198a5c0-1000-7000-8000-000000000033',
+      puzzleId: 'puzzle-duplicate',
+    })
+    delete duplicate.elapsedMs
     const conflict = puzzleAttempt({ attemptId: '0198a5c0-1000-7000-8000-000000000034', puzzleId: 'puzzle-conflict' })
     const future = puzzleAttempt({
       attemptId: '0198a5c0-1000-7000-8000-000000000035',
@@ -256,20 +321,32 @@ describe('PostgreSQL sync repository', () => {
         const attemptId = values?.[1]
         if (attemptId === duplicate.attemptId) return { rows: [{
           attempt_id: duplicate.attemptId, device_id: duplicate.deviceId, puzzle_id: duplicate.puzzleId,
-          solved: duplicate.solved, occurred_at: new Date(duplicate.occurredAt), normalized_occurred_at: new Date(duplicate.occurredAt),
+          solved: true, abandoned: false, incorrect_attempts: duplicate.incorrectAttempts,
+          used_hint: duplicate.usedHint, elapsed_ms: duplicate.elapsedMs ?? null,
+          occurred_at: new Date(duplicate.occurredAt), normalized_occurred_at: new Date(duplicate.occurredAt),
           received_at: NOW, snapshot_version: duplicate.snapshotVersion, sync_sequence: '8',
         }] }
         if (attemptId === conflict.attemptId) return { rows: [{
           attempt_id: conflict.attemptId, device_id: conflict.deviceId, puzzle_id: conflict.puzzleId,
-          solved: false, occurred_at: new Date(conflict.occurredAt), normalized_occurred_at: new Date(conflict.occurredAt),
+          solved: false, abandoned: true, incorrect_attempts: conflict.incorrectAttempts,
+          used_hint: conflict.usedHint, elapsed_ms: conflict.elapsedMs ?? null,
+          occurred_at: new Date(conflict.occurredAt), normalized_occurred_at: new Date(conflict.occurredAt),
           received_at: NOW, snapshot_version: conflict.snapshotVersion, sync_sequence: '9',
         }] }
         return { rows: [] }
       }
       if (sql.includes('INSERT INTO puzzle_attempt_events')) return { rows: [{ sync_sequence: String(sequence++) }] }
       if (sql.includes('FROM puzzle_progress WHERE')) return { rows: [
-        { puzzle_id: duplicate.puzzleId, attempts: 2, solved: 2, last_attempt_at: NOW, sync_sequence: '8' },
-        { puzzle_id: future.puzzleId, attempts: 1, solved: 1, last_attempt_at: NOW, sync_sequence: '10' },
+        {
+          puzzle_id: duplicate.puzzleId, attempts: 2, solved: 2, abandoned: 0, clean_solves: 2,
+          hints_used: 0, incorrect_moves: '0', total_elapsed_ms: '18000', last_elapsed_ms: 9_000,
+          last_attempt_at: NOW, sync_sequence: '8',
+        },
+        {
+          puzzle_id: future.puzzleId, attempts: 1, solved: 1, abandoned: 0, clean_solves: 1,
+          hints_used: 0, incorrect_moves: '0', total_elapsed_ms: '9000', last_elapsed_ms: 9_000,
+          last_attempt_at: NOW, sync_sequence: '10',
+        },
       ] }
       return {}
     })
@@ -285,7 +362,7 @@ describe('PostgreSQL sync repository', () => {
     assert.equal(response.progress[0]?.lastAttemptAt, NOW.toISOString())
     const futureInsert = database.statements.find(({ sql, values }) =>
       sql.includes('INSERT INTO puzzle_attempt_events') && values?.[1] === future.attemptId)
-    assert.equal((futureInsert?.values?.[6] as Date).toISOString(), NOW.toISOString())
+    assert.equal((futureInsert?.values?.[10] as Date).toISOString(), NOW.toISOString())
   })
 
   it('returns no puzzle projection when every attempt is rejected and rolls back query failures', async () => {
@@ -321,9 +398,14 @@ describe('PostgreSQL sync repository', () => {
       if (sql.includes('FROM repertoires WHERE')) return { rows: [{ id: 'rep', version: 2, current_revision_id: 'revision', updated_at: NOW }] }
       if (sql.includes('FROM repertoire_revisions')) return { rows: [{ id: 'revision', repertoire_id: 'rep', version: 2, document: { nodes: [] }, created_at: NOW }] }
       if (sql.includes('FROM share_links')) return { rows: [{ id: 'share', repertoire_id: 'rep', revision_id: 'revision', expires_at: null, revoked_at: NOW, created_at: NOW }] }
-      if (sql.includes('FROM puzzle_progress')) return { rows: [{ puzzle_id: 'puzzle-1', attempts: 2, solved: 1, last_attempt_at: NOW }] }
+      if (sql.includes('FROM puzzle_progress')) return { rows: [{
+        puzzle_id: 'puzzle-1', attempts: 2, solved: 1, abandoned: 1, clean_solves: 1,
+        hints_used: 1, incorrect_moves: '3', total_elapsed_ms: '15000', last_elapsed_ms: 7_000,
+        last_attempt_at: NOW,
+      }] }
       if (sql.includes('FROM puzzle_attempt_events')) return { rows: [{
-        attempt_id: 'attempt', device_id: DEVICE_ID, puzzle_id: 'puzzle-1', solved: true,
+        attempt_id: 'attempt', device_id: DEVICE_ID, puzzle_id: 'puzzle-1',
+        solved: true, abandoned: false, incorrect_attempts: 1, used_hint: true, elapsed_ms: 7_000,
         occurred_at: NOW, normalized_occurred_at: NOW, received_at: NOW,
         snapshot_version: 'release-2026q2', sync_sequence: '12',
       }] }
@@ -348,12 +430,26 @@ describe('PostgreSQL sync repository', () => {
       return {}
     })
     const exported = await new PostgresSyncStore(database.pool).exportAccount('user-a', NOW) as Record<string, unknown>
-    assert.equal(exported.schema, 'linerecall-account-export-v3')
+    assert.equal(exported.schema, 'linerecall-account-export-v4')
     assert.equal((exported.reviewEvents as unknown[]).length, 1)
     assert.equal((exported.cards as unknown[]).length, 1)
     assert.equal((exported.imports as unknown[]).length, 1)
     assert.equal((exported.repertoireRevisions as unknown[]).length, 1)
     assert.equal((exported.puzzleAttempts as unknown[]).length, 1)
+    assert.deepEqual((exported.puzzleAttempts as Array<Record<string, unknown>>)[0], {
+      attemptId: 'attempt',
+      deviceId: DEVICE_ID,
+      puzzleId: 'puzzle-1',
+      outcome: 'solved',
+      incorrectAttempts: 1,
+      usedHint: true,
+      elapsedMs: 7_000,
+      occurredAt: NOW.toISOString(),
+      normalizedOccurredAt: NOW.toISOString(),
+      receivedAt: NOW.toISOString(),
+      snapshotVersion: 'release-2026q2',
+      syncSequence: '12',
+    })
     assert.equal((exported.lichessSyncJobs as unknown[]).length, 1)
     assert.equal((exported.lichessImportedGames as unknown[]).length, 1)
     assert.equal((exported.personalOpeningEdges as unknown[]).length, 1)
@@ -386,7 +482,9 @@ describe('PostgreSQL sync repository', () => {
         expires_at: NOW, revoked_at: null, created_at: NOW,
       }] }
       if (sql.includes('FROM puzzle_progress')) return { rows: [{
-        puzzle_id: 'puzzle-new', attempts: 0, solved: 0, last_attempt_at: null,
+        puzzle_id: 'puzzle-new', attempts: 0, solved: 0, abandoned: 0, clean_solves: 0,
+        hints_used: 0, incorrect_moves: '0', total_elapsed_ms: '0', last_elapsed_ms: null,
+        last_attempt_at: null,
       }] }
       if (sql.includes('FROM external_connections')) return { rows: [{
         provider: 'lichess', consented_at: NOW, last_synced_at: null, disconnected_at: NOW,

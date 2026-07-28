@@ -22,13 +22,18 @@ import { ProgressView } from '../../src/app/components/ProgressView.tsx'
 import { EmptyState, ErrorState, LoadingState } from '../../src/app/components/ResourceState.tsx'
 import { EmbeddedOpeningDataSource } from '../../src/data/embedded-opening-data-source.ts'
 import type { EmbeddedSnapshotPayload } from '../../src/data/embedded-contract.ts'
-import type { OpeningDataCore, OpeningDataSource } from '../../src/data/opening-data-source.ts'
+import type {
+  FamilyOpeningDataSource,
+  OpeningDataCore,
+  OpeningDataSource,
+} from '../../src/data/opening-data-source.ts'
 import { positionGraphFromWire } from '../../src/data/position-graph.ts'
 import embeddedSnapshot from '../../src/generated/embedded-snapshot.json' with { type: 'json' }
 import type { DataManifest, OpeningPartition, VerifiedLine } from '../../src/domain/opening-data.ts'
+import type { OpeningFamilyCatalogV1 } from '../../src/domain/opening-family.ts'
 import { createCard, createEmptyProgress, scheduleReview } from '../../src/domain/progress.ts'
-import { GRAPH_TRAINING_CONTRACT_ID } from '../../src/domain/graph-training-session.ts'
-import { createSyntheticTranspositionGraph } from '../fixtures/synthetic-repertoire-graph.ts'
+import { MemoryProgressRepository } from '../../src/infrastructure/progress-repository.ts'
+import { createSyntheticFamilyPromotion } from '../fixtures/synthetic-family-promotion.ts'
 
 Object.defineProperty(globalThis, 'crypto', { value: webcrypto, configurable: true })
 Object.defineProperty(globalThis, 'Blob', { value: NodeBlob, configurable: true })
@@ -55,6 +60,7 @@ beforeAll(async () => {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  window.history.replaceState(null, '', '#/today')
 })
 
 describe('accessible chess input', () => {
@@ -106,6 +112,13 @@ describe('accessible chess input', () => {
     expect(announce).toHaveBeenCalledWith(expect.stringContaining('has no legal moves'))
     rerender(<ChessBoard fen={new Chess().fen()} orientation="white" disabled onMove={onMove} />)
     expect(screen.getByRole('button', { name: 'Play move' })).toBeDisabled()
+    const readOnlyE2 = screen.getByRole('gridcell', { name: /e2, White pawn/u })
+    expect(readOnlyE2).toHaveAttribute('aria-disabled', 'true')
+    readOnlyE2.focus()
+    await user.keyboard('{ArrowUp}')
+    expect(document.activeElement?.getAttribute('aria-label')).toMatch(/^e3,/u)
+    await user.keyboard('{Enter}')
+    expect(onMove).not.toHaveBeenCalled()
   })
 })
 
@@ -375,7 +388,7 @@ describe('drill, progress, provenance, and top-level state', () => {
     }
   })
 
-  test('mounts the fail-closed graph boundary on Repertoire and accepts only an explicitly supplied v3 envelope', async () => {
+  test('groups Repertoire by family and accepts only an explicitly supplied family graph', async () => {
     const user = userEvent.setup()
     const dataSource: OpeningDataSource = {
       initialize: vi.fn(async () => core),
@@ -385,21 +398,96 @@ describe('drill, progress, provenance, and top-level state', () => {
     const first = render(<App dataSource={dataSource} />)
     expect(await screen.findByRole('heading', { name: 'Ready when you are.' })).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Repertoire' }))
-    expect(await screen.findByRole('heading', { name: 'Deep graph practice is not enabled' })).toBeVisible()
-    expect(screen.getByText(/Legacy v2 lines are never adapted/u)).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Repertoire' })).toBeVisible()
+    expect(screen.getAllByRole('button', { name: /Caro/u })).toHaveLength(1)
+    expect(screen.queryByRole('heading', { name: 'Deep graph practice is not enabled' })).not.toBeInTheDocument()
     first.unmount()
+    window.history.replaceState(null, '', '#/today')
 
-    const graph = await createSyntheticTranspositionGraph()
+    const family = core.reviewFamilyCatalog.families.find(({ id }) => id === 'caro-kann')
+    if (!family) throw new Error('Required family is missing')
+    const promotion = await createSyntheticFamilyPromotion(family, { packCount: 1 })
+    const progressRepository = new MemoryProgressRepository()
     render(
       <App
         dataSource={dataSource}
-        graphTrainingResource={{ status: 'ready', envelope: { contractId: GRAPH_TRAINING_CONTRACT_ID, graph } }}
+        repositorySelector={async () => ({ repository: progressRepository, warning: null })}
+        familyGraphResources={{ 'caro-kann': promotion.resources }}
       />,
     )
     expect(await screen.findByRole('heading', { name: 'Ready when you are.' })).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Repertoire' }))
+    await user.click(screen.getByRole('button', { name: /Caro/u }))
+    await user.click(await screen.findByRole('button', { name: 'Start full family' }))
     expect(await screen.findByRole('heading', { name: 'Practice every audited branch' })).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Start full repertoire' })).toBeEnabled()
+    await user.click(screen.getByRole('button', { name: 'Start full repertoire' }))
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Legal move picker' }), 'g1f3')
+    await user.click(screen.getByRole('button', { name: 'Play move' }))
+    const rootCardId = promotion.graphs[0]!.nodes
+      .find(({ id }) => id === promotion.graphs[0]!.pack.rootNodeId)?.cardId
+    if (!rootCardId) throw new Error('Synthetic promotion root card is missing')
+    await waitFor(async () => {
+      expect((await progressRepository.load())?.cards[rootCardId]).toMatchObject({
+        reviewCount: 1,
+        repetitions: 1,
+        intervalDays: 1,
+      })
+    })
+    expect(await screen.findByText(/good review saved for this due card/iu)).toBeVisible()
+  })
+
+  test('loads every pack in a selected family from a validated family-capable source', async () => {
+    const user = userEvent.setup()
+    const family = core.reviewFamilyCatalog.families.find(({ id }) => id === 'caro-kann')
+    if (!family) throw new Error('Required family is missing')
+    const promotion = await createSyntheticFamilyPromotion(family, { packCount: 2 })
+    const loadRepertoirePack = vi.fn(async (packRef: typeof promotion.manifest.packRefs[number]) => {
+      const graph = promotion.graphs.find(({ pack }) => pack.id === packRef.packId)
+      if (!graph) throw new Error('Unknown fixture pack')
+      return graph
+    })
+    const dataSource: FamilyOpeningDataSource = {
+      familySchemaVersion: 1,
+      initialize: vi.fn(async () => core),
+      loadPartition: vi.fn(async (eco) => eco === 'A00' ? a00 : c20),
+      loadAudit: vi.fn(async () => audit),
+      loadFamilyCatalog: vi.fn(async (): Promise<OpeningFamilyCatalogV1> => ({
+        schemaVersion: 1,
+        releaseId: promotion.manifest.releaseId,
+        generatedAt: '2026-07-28T12:00:00.000Z',
+        taxonomyLineCount: core.reviewFamilyCatalog.taxonomyLineCount,
+        familyCount: 1,
+        families: [{
+          schemaVersion: 1,
+          id: family.id,
+          canonicalName: family.canonicalName,
+          aliases: family.aliases,
+          ecoCodes: family.ecoCodes,
+          taxonomyLineCount: family.taxonomyLineIds.length,
+          packCount: promotion.manifest.packRefs.length,
+          cardCount: promotion.graphs.reduce(
+            (total, graph) => total + graph.nodes.filter(({ cardId }) => cardId !== undefined).length,
+            0,
+          ),
+          availableSides: ['white'],
+          manifestRef: promotion.manifest.provenanceRef,
+        }],
+      })),
+      loadFamilyManifest: vi.fn(async () => promotion.manifest),
+      loadRepertoirePack,
+      loadPuzzleShard: vi.fn(async () => { throw new Error('No promoted tactical shard in this fixture') }),
+    }
+
+    render(<App dataSource={dataSource} />)
+    expect(await screen.findByRole('heading', { name: 'Ready when you are.' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Repertoire' }))
+    await user.click(screen.getByRole('button', { name: /Caro/u }))
+    await waitFor(() => expect(loadRepertoirePack).toHaveBeenCalledTimes(2))
+    expect(new Set(loadRepertoirePack.mock.calls.map(([ref]) => ref.packId))).toEqual(
+      new Set(promotion.manifest.packRefs.map(({ packId }) => packId)),
+    )
+    expect(await screen.findByText('2 audited packs ready')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Start full family' })).toBeEnabled()
   })
 
   test('commits navigation independently of a hostile native View Transition implementation', async () => {

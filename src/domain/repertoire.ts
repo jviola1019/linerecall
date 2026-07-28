@@ -206,6 +206,27 @@ export const RepertoireGraphDocumentSchema = z.object({
   paths: z.array(RepertoirePathSchema).min(1).max(100_000),
 }).strict()
 
+/**
+ * Exact output of the reconciled source-evidence eligibility pass. Promotion
+ * compares it with the emitted graph because graph validation alone cannot
+ * detect an eligible source edge omitted before graph construction.
+ */
+export const EligibleSourceEdgeInventoryV1Schema = z.object({
+  schemaVersion: z.literal(1),
+  releaseId: z.string().min(1).max(160),
+  packId: PackIdSchema,
+  sourceReceiptSha256: z.string().regex(/^[a-f0-9]{64}$/u),
+  eligibleEdgeIds: z.array(EdgeIdSchema).min(1).max(200_000),
+}).strict().superRefine((inventory, context) => {
+  if (!unique(inventory.eligibleEdgeIds)) {
+    context.addIssue({
+      code: 'custom',
+      path: ['eligibleEdgeIds'],
+      message: 'Eligible source-edge IDs must be unique',
+    })
+  }
+})
+
 export const CoverageCycleStateSchema = z.object({
   schemaVersion: z.literal(REPERTOIRE_SCHEMA_VERSION),
   packId: PackIdSchema,
@@ -253,6 +274,7 @@ export type RepertoireEdge = z.infer<typeof RepertoireEdgeSchema>
 export type RepertoirePath = z.infer<typeof RepertoirePathSchema>
 export type RepertoirePack = z.infer<typeof RepertoirePackSchema>
 export type RepertoireGraphDocument = z.infer<typeof RepertoireGraphDocumentSchema>
+export type EligibleSourceEdgeInventoryV1 = z.infer<typeof EligibleSourceEdgeInventoryV1Schema>
 export type CoverageCycleState = z.infer<typeof CoverageCycleStateSchema>
 export type SessionPathSelection = z.infer<typeof SessionPathSelectionSchema>
 export type TrainingValueSummary = z.infer<typeof TrainingValueSummarySchema>
@@ -535,6 +557,36 @@ export async function validateRepertoireGraphDocument(input: unknown): Promise<R
 
   if (issues.length > 0) throw new Error(`Invalid repertoire graph:\n- ${issues.join('\n- ')}`)
   return graph
+}
+
+export function validateEligibleSourceEdgeInventory(
+  graphInput: unknown,
+  inventoryInput: unknown,
+): EligibleSourceEdgeInventoryV1 {
+  const graph = RepertoireGraphDocumentSchema.parse(graphInput)
+  const inventory = EligibleSourceEdgeInventoryV1Schema.parse(inventoryInput)
+  if (inventory.releaseId !== graph.releaseId) {
+    throw new Error('Eligible source-edge inventory belongs to another release')
+  }
+  if (inventory.packId !== graph.pack.id) {
+    throw new Error('Eligible source-edge inventory belongs to another pack')
+  }
+
+  const emitted = graph.edges
+    .filter(({ eligibleForDrill }) => eligibleForDrill)
+    .map(({ id }) => id)
+    .sort()
+  const source = [...inventory.eligibleEdgeIds].sort()
+  if (emitted.length !== source.length || emitted.some((edgeId, index) => edgeId !== source[index])) {
+    const emittedSet = new Set(emitted)
+    const sourceSet = new Set(source)
+    const omitted = source.filter((edgeId) => !emittedSet.has(edgeId))
+    const invented = emitted.filter((edgeId) => !sourceSet.has(edgeId))
+    throw new Error(
+      `Eligible source-edge inventory mismatch: ${omitted.length} omitted and ${invented.length} invented edge(s)`,
+    )
+  }
+  return inventory
 }
 
 function orderedCoverageCycle(paths: readonly RepertoirePath[], ordinal: number): RepertoirePath[] {

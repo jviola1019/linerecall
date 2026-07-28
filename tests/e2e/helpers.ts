@@ -1,4 +1,4 @@
-import { expect, type Locator, type Page, type TestInfo } from '@playwright/test'
+import { expect, type Page, type TestInfo } from '@playwright/test'
 import { AxeBuilder } from '@axe-core/playwright'
 
 export const APP_PATH = '/linerecall.html'
@@ -24,7 +24,7 @@ export async function openRepertoire(page: Page): Promise<void> {
 export async function openRepertoirePacks(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'Repertoire', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Repertoire', level: 1 })).toBeVisible({ timeout: 15_000 })
-  await expect(page.locator('.pack-library')).toBeVisible({ timeout: 15_000 })
+  await expect(page.locator('.family-card-grid')).toBeVisible({ timeout: 15_000 })
 }
 
 export async function openDataLicenses(page: Page): Promise<void> {
@@ -39,79 +39,41 @@ export async function openDataLicenses(page: Page): Promise<void> {
   await expect(page.getByRole('heading', { name: /Data.*licenses/iu })).toBeVisible({ timeout: 15_000 })
 }
 
-async function enabledStartButton(page: Page): Promise<Locator | null> {
-  const start = page.getByRole('button', { name: 'Start spaced-repetition drill' })
-  if (await start.isVisible().catch(() => false) && await start.isEnabled().catch(() => false)) return start
-  const tabs = page.getByRole('tablist', { name: 'Training side' }).getByRole('tab')
-  for (let index = 0; index < await tabs.count(); index += 1) {
-    await tabs.nth(index).click()
-    if (await start.isVisible().catch(() => false) && await start.isEnabled().catch(() => false)) return start
-  }
-  return null
-}
-
-async function waitForViewStageToSettle(page: Page, view: string): Promise<void> {
-  const stage = page.locator(`.view-stage[data-view="${view}"]`)
-  await expect(stage).toBeVisible()
-  await stage.evaluate(async (element) => {
-    await Promise.all(element.getAnimations({ subtree: true }).map(async (animation) => {
-      try {
-        await Promise.race([
-          animation.finished,
-          new Promise<void>((resolve) => setTimeout(resolve, 1_000)),
-        ])
-      } catch {
-        // A replaced keyed view cancels its entrance animation. The caller's
-        // subsequent visibility/actionability checks still fail closed.
-      }
-    }))
-  })
-}
-
 export async function startAnyDrill(page: Page): Promise<void> {
   const board = page.getByRole('grid', { name: /Chessboard/u })
-  if (await board.isVisible().catch(() => false)) return
-
-  let todayStart = page.getByRole('button', { name: /Start due review|Continue practice/u })
-  if (await todayStart.isVisible().catch(() => false) && await todayStart.isEnabled().catch(() => false)) {
-    await waitForViewStageToSettle(page, 'today')
-    await todayStart.click()
-    await expect(board).toBeVisible({ timeout: 10_000 })
-    return
-  }
-
-  await page.getByRole('button', { name: 'Today' }).click()
-  await expect(page.getByRole('heading', { name: 'Ready when you are.' })).toBeVisible()
-  await waitForViewStageToSettle(page, 'today')
-  todayStart = page.getByRole('button', { name: /Start due review|Continue practice/u })
-  if (await todayStart.isVisible().catch(() => false) && await todayStart.isEnabled().catch(() => false)) {
-    await todayStart.click()
-    await expect(board).toBeVisible({ timeout: 10_000 })
-    return
-  }
-
+  // The review snapshot contains several shallow lines. Browser interaction
+  // tests use one pinned, deeper fixture so move sequencing, full-line mode,
+  // castling-era positions, and progress assertions do not depend on catalog
+  // ordering or the Today recommendation.
   await openRepertoire(page)
-  const ecoOptions = page.locator('.eco-list [role="option"]')
-  const ecoCount = await ecoOptions.count()
-  let selectedEco: string | null = null
-  for (let index = 0; index < ecoCount; index += 1) {
-    const text = await ecoOptions.nth(index).innerText()
-    const match = text.match(/\b([1-9][0-9]*) drillable\b/u)
-    if (!match) continue
-    selectedEco = text.match(/\b[A-E][0-9]{2}\b/u)?.[0] ?? null
-    await ecoOptions.nth(index).click()
-    break
-  }
-  if (!selectedEco) throw new Error('The embedded catalog exposes no drillable ECO partition')
-  await expect(page.getByRole('heading', { name: `${selectedEco} lines` })).toBeVisible({ timeout: 15_000 })
+  const volumeC = page.getByRole('tablist', { name: 'ECO volumes' }).getByRole('tab', { name: /Volume C:/u })
+  await volumeC.click()
+  const c97 = page.locator('.eco-list [role="option"]').filter({ hasText: /^C97/u }).first()
+  await expect(c97).toContainText(/drillable/u)
+  await c97.click()
+  await expect(page.getByRole('heading', { name: 'C97 lines' })).toBeVisible({ timeout: 15_000 })
   await expect(page.locator('.line-list')).toBeVisible({ timeout: 15_000 })
 
-  const lineOptions = page.locator('.line-list [role="option"]')
-  await expect(lineOptions.first()).toBeVisible()
-  await lineOptions.first().click()
-  const start = await enabledStartButton(page)
-  if (!start) throw new Error('The selected ECO advertised drillable variants but its first sorted drillable line could not be opened')
+  const chigorin = page.locator('.line-list [role="option"]').filter({
+    hasText: /Ruy Lopez: Closed, Chigorin Defense.*N=569/isu,
+  })
+  await expect(chigorin).toHaveCount(1)
+  await chigorin.click()
+  await expect(page.getByRole('heading', {
+    name: 'Ruy Lopez: Closed, Chigorin Defense',
+    level: 2,
+  })).toBeVisible()
+
+  const trainBlack = page.getByRole('tablist', { name: 'Training side' }).getByRole('tab', { name: 'Train Black' })
+  await trainBlack.click()
+  const start = page.getByRole('button', { name: 'Start spaced-repetition drill' })
+  await expect(start).toBeEnabled()
   await start.click()
+  await expect(board).toBeVisible({ timeout: 10_000 })
+  const fullLine = page.getByRole('button', { name: 'Practice full line' })
+  await expect(fullLine).toBeEnabled()
+  await fullLine.click()
+  await expect(page.getByRole('button', { name: 'Full line active' })).toBeVisible()
   await expect(board).toBeVisible({ timeout: 10_000 })
 }
 

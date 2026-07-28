@@ -8,7 +8,7 @@ async function completeOneAutomaticReview(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'Play move' }).click()
   await expect(page.getByRole('region', { name: 'Last move recorded as hard' })).toBeVisible()
   await expect(page.getByRole('group', { name: /Choose recall grade/u })).toHaveCount(0)
-  await expect(page.getByText(/1 reviewed/u).first()).toBeVisible()
+  await expect(page.getByText(/1\s+(?:reviewed|learner-position reviews? completed)/iu).first()).toBeVisible()
 }
 
 test('default storage is visibly session-only and never probes browser durable storage', async ({ page }) => {
@@ -32,7 +32,9 @@ test('default storage is visibly session-only and never probes browser durable s
   })
 
   await loadReadyApp(page)
-  const storageWarning = page.locator('.global-storage-warning').filter({ hasText: /Session-only progress is active/u })
+  const storageWarning = page.locator('.global-storage-warning').filter({
+    hasText: /Session[-\u2010-\u2015 ]only progress is active/iu,
+  })
   await expect(storageWarning).toBeVisible()
   await expect(storageWarning).toHaveAttribute('aria-live', 'polite')
   expect(await page.evaluate(() =>
@@ -42,16 +44,16 @@ test('default storage is visibly session-only and never probes browser durable s
 
   await completeOneAutomaticReview(page)
   await page.getByRole('button', { name: 'Progress' }).click()
-  await expect(page.getByText(/Storage mode:/u)).toContainText('session only')
+  await expect(page.getByText(/Storage mode\s*:/iu)).toContainText(/session[-\u2010-\u2015 ]only/iu)
   await expect(page.getByText('Cards reviewed').locator('..').getByRole('strong')).not.toHaveText('0')
   await expect(page.getByRole('button', { name: 'Export progress JSON' })).toBeVisible()
 
   await page.getByRole('button', { name: 'Switch to light mode' }).click()
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
   await page.reload({ waitUntil: 'domcontentloaded' })
-  await waitForReadyApp(page)
+  await expect(page.getByRole('navigation', { name: 'Primary navigation' })).toBeVisible({ timeout: 20_000 })
+  await expect(page.getByRole('heading', { name: 'Your progress', level: 1 })).toBeVisible({ timeout: 20_000 })
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
-  await page.getByRole('button', { name: 'Progress' }).click()
   await expect(page.getByText('Cards reviewed').locator('..').getByRole('strong')).toHaveText('0')
   expect(await page.evaluate(() =>
     (window as Window & { __linerecallStorageProbes?: { indexedDb: number; localStorage: number } })

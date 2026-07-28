@@ -6,13 +6,19 @@ import {
   continueGraphTrainingSession,
   createAutonomousGraphTrainingPlan,
   createExplicitGraphSessionSelection,
+  createFamilyTrainingCursorSnapshot,
   createGraphTrainingPathCompletion,
   createGraphTrainingSession,
+  coverageCycleOrdinalFromId,
   expectedGraphTrainingMoves,
   graphTrainingFen,
   listGraphTrainingPaths,
   markGraphTrainingHint,
+  nextNonemptyGraphTrainingBatch,
   prepareGraphTrainingAdapter,
+  removeTransferredPathFromFutureBatches,
+  restoreGraphTrainingCycleFromCursor,
+  skipCurrentGraphTrainingPath,
   submitGraphTrainingMove,
   summarizeGraphTrainingCoverage,
   type AutonomousGraphTrainingPlan,
@@ -22,6 +28,10 @@ import {
   type GraphTrainingReviewInference,
   type GraphTrainingSessionState,
 } from '../../domain/graph-training-session.ts'
+import {
+  FamilyTrainingCursorWriteQueue,
+  type FamilyTrainingJournalRepository,
+} from '../../domain/family-training-journal.ts'
 import { ChessBoard, type BoardMoveStatus } from './ChessBoard.tsx'
 import { EmptyState, ErrorState, LoadingState } from './ResourceState.tsx'
 
@@ -43,6 +53,9 @@ export interface GraphTrainingBoundaryProps {
   onPathCompleted?: (completion: GraphTrainingPathCompletionV1) => void | Promise<void>
   onAnnouncement?: (message: string) => void
   onRetry?: () => void
+  familyId?: string
+  journalRepository?: FamilyTrainingJournalRepository
+  pathDisplayNameById?: Readonly<Record<string, string>>
 }
 
 interface PreparedResource {
@@ -55,14 +68,40 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : 'The graph could not be validated.'
 }
 
-function pathLabel(summary: ReturnType<typeof listGraphTrainingPaths>[number]): string {
-  const family = summary.familyTags.join(' / ')
-  return `${family} — ${summary.learnerDecisionCount} learner moves, terminal ply ${summary.terminalPly}`
+function pathDisplayName(
+  summary: ReturnType<typeof listGraphTrainingPaths>[number],
+  pathDisplayNameById: Readonly<Record<string, string>> | undefined,
+): string {
+  return pathDisplayNameById?.[summary.id] ?? summary.familyTags.join(' / ')
+}
+
+function pathLabel(
+  summary: ReturnType<typeof listGraphTrainingPaths>[number],
+  pathDisplayNameById: Readonly<Record<string, string>> | undefined,
+): string {
+  return `${pathDisplayName(summary, pathDisplayNameById)} — ${summary.learnerDecisionCount} learner moves, terminal ply ${summary.terminalPly}`
 }
 
 function acceptedMoveStatus(state: GraphTrainingSessionState): BoardMoveStatus | undefined {
   const classification = state.lastFeedback?.classification
   return classification === 'book' || classification === 'playable' ? classification : undefined
+}
+
+const PATH_PAGE_SIZE = 40
+
+function feedbackLabel(value: string): string {
+  const labels: Record<string, string> = {
+    book: 'Book move',
+    playable: 'Playable alternative',
+    inaccuracy: 'Inaccuracy',
+    mistake: 'Mistake',
+    unverified: 'Unverified move',
+    expected_move: 'Expected continuation',
+    accepted_transposition: 'Accepted transposition',
+    accepted_alternate_path: 'Alternate audited branch',
+    unsupported_move: 'Outside the audited graph',
+  }
+  return labels[value] ?? value.replaceAll('_', ' ').replace(/^./u, (character) => character.toUpperCase())
 }
 
 function GraphTrainingWorkspace({
@@ -75,17 +114,34 @@ function GraphTrainingWorkspace({
   onInferredReview,
   onPathCompleted,
   onAnnouncement,
+  familyId,
+  journalRepository,
+  pathDisplayNameById,
 }: Omit<GraphTrainingBoundaryProps, 'resource' | 'onRetry'> & { adapter: GraphTrainingAdapter }): React.JSX.Element {
   const paths = useMemo(() => listGraphTrainingPaths(adapter), [adapter])
   const [selectedPathId, setSelectedPathId] = useState(paths[0]?.id ?? '')
+  const [pathQuery, setPathQuery] = useState('')
+  const [visiblePathCount, setVisiblePathCount] = useState(PATH_PAGE_SIZE)
   const [session, setSession] = useState<GraphTrainingSessionState | null>(null)
   const [autonomousPlan, setAutonomousPlan] = useState<AutonomousGraphTrainingPlan | null>(null)
   const [activeBatchIndex, setActiveBatchIndex] = useState(0)
   const [completedBeforeBatch, setCompletedBeforeBatch] = useState<string[]>([])
+  const [authoritativeDueCardIds, setAuthoritativeDueCardIds] = useState<string[]>([])
+  const [nextCoverageCycleOrdinal, setNextCoverageCycleOrdinal] = useState(0)
   const [manualPacingEnabled, setManualPacingEnabled] = useState(manualPacing)
+  const [paused, setPaused] = useState(false)
+  const [analysisTab, setAnalysisTab] = useState<'line' | 'alternatives' | 'evidence'>('line')
   const [localAnnouncement, setLocalAnnouncement] = useState('')
+  const [restorePending, setRestorePending] = useState(Boolean(familyId && journalRepository))
+  const [restoreAttempt, setRestoreAttempt] = useState(0)
+  const [persistenceError, setPersistenceError] = useState<string | null>(null)
+  const [queuedCursorCount, setQueuedCursorCount] = useState(0)
   const reportedCompletionKeys = useRef(new Set<string>())
   const pendingCompletionKeys = useRef(new Set<string>())
+  const cursorWriter = useMemo(
+    () => journalRepository ? new FamilyTrainingCursorWriteQueue(journalRepository) : null,
+    [journalRepository],
+  )
   const announce = (value: string): void => {
     setLocalAnnouncement(value)
     onAnnouncement?.(value)
@@ -95,12 +151,105 @@ function GraphTrainingWorkspace({
     if (!paths.some(({ id }) => id === selectedPathId)) setSelectedPathId(paths[0]?.id ?? '')
   }, [paths, selectedPathId])
 
+  useEffect(() => setVisiblePathCount(PATH_PAGE_SIZE), [pathQuery])
+
   useEffect(() => setManualPacingEnabled(manualPacing), [manualPacing])
+
+  useEffect(() => {
+    let active = true
+    if (Boolean(familyId) !== Boolean(journalRepository)) {
+      setRestorePending(false)
+      setPersistenceError('Family progress needs both a family identifier and a progress repository.')
+      return () => { active = false }
+    }
+    if (!familyId || !journalRepository) {
+      setRestorePending(false)
+      return () => { active = false }
+    }
+    setRestorePending(true)
+    setPersistenceError(null)
+    void journalRepository.loadLatestCursor({
+      releaseId: adapter.graph.releaseId,
+      familyId,
+      side: adapter.graph.pack.side,
+    }).then((cursor) => {
+      if (!active) return
+      if (!cursor) {
+        setRestorePending(false)
+        return
+      }
+      const restored = restoreGraphTrainingCycleFromCursor({ adapter, familyId, cursor })
+      const ordinal = coverageCycleOrdinalFromId(adapter.graph.pack.id, cursor.coverageCycleId)
+      for (const pathId of cursor.completedPathIds) {
+        reportedCompletionKeys.current.add(
+          `${cursor.releaseId}\0${adapter.graph.pack.id}\0${cursor.coverageCycleId}\0${pathId}`,
+        )
+      }
+      setAutonomousPlan(restored.plan)
+      setSession(restored.session)
+      setActiveBatchIndex(restored.activeBatchIndex)
+      setCompletedBeforeBatch(restored.completedBeforeBatch)
+      setAuthoritativeDueCardIds(restored.authoritativeDueCardIds)
+      setNextCoverageCycleOrdinal(ordinal + 1)
+      setRestorePending(false)
+      announce(cursor.pendingPathIds.length > 0
+        ? `Resumed family coverage with ${cursor.pendingPathIds.length} unfinished paths.`
+        : 'Restored the completed family coverage cycle.')
+    }).catch((error: unknown) => {
+      if (!active) return
+      setRestorePending(false)
+      setPersistenceError(`Saved family coverage could not be restored: ${message(error)}`)
+      announce(`Saved family coverage could not be restored: ${message(error)}`)
+    })
+    return () => { active = false }
+  }, [adapter, familyId, journalRepository, restoreAttempt])
+
+  useEffect(() => {
+    if (
+      restorePending
+      || !cursorWriter
+      || !familyId
+      || !session
+      || !autonomousPlan
+    ) return
+    try {
+      const cursor = createFamilyTrainingCursorSnapshot({
+        adapter,
+        familyId,
+        plan: autonomousPlan,
+        activeBatchIndex,
+        completedBeforeBatch,
+        session,
+        authoritativeDueCardIds,
+      })
+      void cursorWriter.enqueue(cursor).then((result) => {
+        setQueuedCursorCount(result.pendingCount)
+        if (result.error) {
+          setPersistenceError(`Family progress is waiting to be saved: ${result.error.message}`)
+          announce(`Family progress is waiting to be saved. ${result.pendingCount} update${result.pendingCount === 1 ? '' : 's'} queued.`)
+        } else {
+          setPersistenceError(null)
+        }
+      })
+    } catch (error) {
+      setPersistenceError(`Family progress snapshot was rejected: ${message(error)}`)
+    }
+  }, [
+    activeBatchIndex,
+    adapter,
+    authoritativeDueCardIds,
+    autonomousPlan,
+    completedBeforeBatch,
+    cursorWriter,
+    familyId,
+    restorePending,
+    session,
+  ])
 
   useEffect(() => {
     if (!session || !onPathCompleted) return
     for (const pathId of session.completedPathIds) {
-      const key = `${session.releaseId}\0${session.packId}\0${pathId}`
+      const key = `${session.releaseId}\0${session.packId}\0${session.selection.coverageCycleId}\0${pathId}`
       if (reportedCompletionKeys.current.has(key) || pendingCompletionKeys.current.has(key)) continue
       try {
         const completion = createGraphTrainingPathCompletion({
@@ -124,7 +273,7 @@ function GraphTrainingWorkspace({
   }, [adapter, onPathCompleted, session?.completedPathIds, session?.releaseId])
 
   useEffect(() => {
-    if (manualPacingEnabled || session?.phase !== 'opponent_move_ready') return
+    if (paused || manualPacingEnabled || session?.phase !== 'opponent_move_ready') return
     const timeout = setTimeout(() => {
       setSession((current) => {
         if (!current || current.phase !== 'opponent_move_ready') return current
@@ -134,10 +283,10 @@ function GraphTrainingWorkspace({
       })
     }, reducedMotion ? 0 : 190)
     return () => clearTimeout(timeout)
-  }, [adapter, manualPacingEnabled, reducedMotion, session?.phase, session?.currentNodeId])
+  }, [adapter, manualPacingEnabled, paused, reducedMotion, session?.phase, session?.currentNodeId])
 
   useEffect(() => {
-    if (manualPacingEnabled || session?.phase !== 'path_complete') return
+    if (paused || manualPacingEnabled || session?.phase !== 'path_complete') return
     const timeout = setTimeout(() => {
       setSession((current) => {
         if (!current || current.phase !== 'path_complete') return current
@@ -147,25 +296,24 @@ function GraphTrainingWorkspace({
       })
     }, reducedMotion ? 0 : 240)
     return () => clearTimeout(timeout)
-  }, [adapter, manualPacingEnabled, reducedMotion, session?.phase, session?.activePathId])
+  }, [adapter, manualPacingEnabled, paused, reducedMotion, session?.phase, session?.activePathId])
 
   useEffect(() => {
-    if (manualPacingEnabled || session?.phase !== 'session_complete' || !autonomousPlan) return
-    const nextBatchIndex = activeBatchIndex + 1
-    const nextPathIds = autonomousPlan.pathIdBatches[nextBatchIndex]
-    if (!nextPathIds) return
+    if (paused || manualPacingEnabled || session?.phase !== 'session_complete' || !autonomousPlan) return
+    const nextBatch = nextNonemptyGraphTrainingBatch(autonomousPlan, activeBatchIndex)
+    if (!nextBatch) return
     const timeout = setTimeout(() => {
       const completed = [...new Set([...completedBeforeBatch, ...session.completedPathIds])]
       const selection = createExplicitGraphSessionSelection({
         adapter,
-        pathIds: nextPathIds,
+        pathIds: nextBatch.pathIds,
         dueCardIds: session.dueCardIds,
         coverageCycleOrdinal: autonomousPlan.coverageCycleOrdinal,
       })
       setCompletedBeforeBatch(completed)
-      setActiveBatchIndex(nextBatchIndex)
+      setActiveBatchIndex(nextBatch.batchIndex)
       setSession(createGraphTrainingSession({ adapter, selection }))
-      announce(`Continuing with audited path batch ${nextBatchIndex + 1} of ${autonomousPlan.pathIdBatches.length}.`)
+      announce(`Continuing with audited path batch ${nextBatch.batchIndex + 1} of ${autonomousPlan.pathIdBatches.length}.`)
     }, reducedMotion ? 0 : 240)
     return () => clearTimeout(timeout)
   }, [
@@ -174,23 +322,32 @@ function GraphTrainingWorkspace({
     autonomousPlan,
     completedBeforeBatch,
     manualPacingEnabled,
+    paused,
     reducedMotion,
     session,
   ])
 
   const startSelected = (): void => {
     try {
-      const selection = createExplicitGraphSessionSelection({ adapter, pathIds: [selectedPathId], dueCardIds })
+      const cycleOrdinal = nextCoverageCycleOrdinal
+      const selection = createExplicitGraphSessionSelection({
+        adapter,
+        pathIds: [selectedPathId],
+        dueCardIds,
+        coverageCycleOrdinal: cycleOrdinal,
+      })
       const plan: AutonomousGraphTrainingPlan = {
         releaseId: adapter.graph.releaseId,
         packId: adapter.graph.pack.id,
-        coverageCycleOrdinal: 0,
+        coverageCycleOrdinal: cycleOrdinal,
         totalPathIds: [...selection.includedPathIds],
         pathIdBatches: [[...selection.includedPathIds]],
       }
       setAutonomousPlan(plan)
       setActiveBatchIndex(0)
       setCompletedBeforeBatch([])
+      setAuthoritativeDueCardIds([...dueCardIds])
+      setNextCoverageCycleOrdinal(cycleOrdinal + 1)
       setSession(createGraphTrainingSession({ adapter, selection, preferredPathId: selectedPathId }))
       announce('One audited path is ready.')
     } catch (error) {
@@ -200,7 +357,12 @@ function GraphTrainingWorkspace({
 
   const startAll = (): void => {
     try {
-      const plan = createAutonomousGraphTrainingPlan({ adapter, dueCardIds })
+      const cycleOrdinal = nextCoverageCycleOrdinal
+      const plan = createAutonomousGraphTrainingPlan({
+        adapter,
+        dueCardIds,
+        coverageCycleOrdinal: cycleOrdinal,
+      })
       const firstPathIds = plan.pathIdBatches[0]
       if (!firstPathIds) throw new Error('No audited path is available for autonomous practice')
       const selection = createExplicitGraphSessionSelection({
@@ -212,6 +374,8 @@ function GraphTrainingWorkspace({
       setAutonomousPlan(plan)
       setActiveBatchIndex(0)
       setCompletedBeforeBatch([])
+      setAuthoritativeDueCardIds([...dueCardIds])
+      setNextCoverageCycleOrdinal(cycleOrdinal + 1)
       setSession(createGraphTrainingSession({ adapter, selection }))
       announce(`${plan.totalPathIds.length} audited paths queued. Branches will continue automatically.`)
     } catch (error) {
@@ -239,20 +403,50 @@ function GraphTrainingWorkspace({
 
   const continueBatch = (): void => {
     if (!session || session.phase !== 'session_complete' || !autonomousPlan) return
-    const nextBatchIndex = activeBatchIndex + 1
-    const nextPathIds = autonomousPlan.pathIdBatches[nextBatchIndex]
-    if (!nextPathIds) return
+    const nextBatch = nextNonemptyGraphTrainingBatch(autonomousPlan, activeBatchIndex)
+    if (!nextBatch) return
     const completed = [...new Set([...completedBeforeBatch, ...session.completedPathIds])]
     const selection = createExplicitGraphSessionSelection({
       adapter,
-      pathIds: nextPathIds,
+      pathIds: nextBatch.pathIds,
       dueCardIds: session.dueCardIds,
       coverageCycleOrdinal: autonomousPlan.coverageCycleOrdinal,
     })
     setCompletedBeforeBatch(completed)
-    setActiveBatchIndex(nextBatchIndex)
+    setActiveBatchIndex(nextBatch.batchIndex)
     setSession(createGraphTrainingSession({ adapter, selection }))
-    announce(`Continuing with audited path batch ${nextBatchIndex + 1} of ${autonomousPlan.pathIdBatches.length}.`)
+    announce(`Continuing with audited path batch ${nextBatch.batchIndex + 1} of ${autonomousPlan.pathIdBatches.length}.`)
+  }
+
+  const retryPersistence = (): void => {
+    if (cursorWriter?.pendingCount) {
+      void cursorWriter.flush().then((result) => {
+        setQueuedCursorCount(result.pendingCount)
+        if (result.error) {
+          setPersistenceError(`Family progress is waiting to be saved: ${result.error.message}`)
+        } else {
+          setPersistenceError(null)
+          announce('Queued family progress was saved.')
+        }
+      })
+      return
+    }
+    setRestoreAttempt((attempt) => attempt + 1)
+  }
+
+  const persistenceNotice = persistenceError ? (
+    <div className="inline-warning error-warning" role="alert">
+      <strong>Family progress is not fully saved.</strong>
+      <span>{persistenceError}</span>
+      {queuedCursorCount > 0 ? <span>{queuedCursorCount} cursor update{queuedCursorCount === 1 ? '' : 's'} queued in this session.</span> : null}
+      {(journalRepository && familyId) ? (
+        <button type="button" className="secondary-button" onClick={retryPersistence}>Retry saving progress</button>
+      ) : null}
+    </div>
+  ) : null
+
+  if (restorePending) {
+    return <LoadingState label="Restoring saved family coverageâ€¦" />
   }
 
   if (paths.length === 0) {
@@ -260,19 +454,56 @@ function GraphTrainingWorkspace({
   }
 
   if (!session) {
+    const normalizedQuery = pathQuery.trim().toLocaleLowerCase('en-US')
+    const filteredPaths = normalizedQuery === ''
+      ? paths
+      : paths.filter((path) => pathLabel(path, pathDisplayNameById).toLocaleLowerCase('en-US').includes(normalizedQuery))
+    const visiblePaths = filteredPaths.slice(0, visiblePathCount)
     return (
       <section className="graph-training-catalog" aria-labelledby="graph-path-title">
+        {persistenceNotice}
         <header>
           <p className="eyebrow">Validated family graph</p>
           <h2 id="graph-path-title">Practice every audited branch</h2>
           <p>Full repertoire practice continues through each branch without hiding less common continuations.</p>
         </header>
-        <label>
-          <span>Path</span>
-          <select value={selectedPathId} onChange={(event) => setSelectedPathId(event.currentTarget.value)}>
-            {paths.map((path) => <option key={path.id} value={path.id}>{pathLabel(path)}</option>)}
-          </select>
+        <label className="graph-path-search">
+          <span>Find a variation</span>
+          <input
+            type="search"
+            value={pathQuery}
+            maxLength={128}
+            placeholder="Name or branch"
+            onChange={(event) => setPathQuery(event.currentTarget.value)}
+          />
         </label>
+        <p className="field-help" role="status">
+          {filteredPaths.length.toLocaleString('en-US')} matching path{filteredPaths.length === 1 ? '' : 's'}.
+        </p>
+        <ul className="graph-path-picker" aria-label="Audited variation paths">
+          {visiblePaths.map((path) => (
+            <li key={path.id}>
+              <button
+                type="button"
+                className="graph-path-option"
+                aria-pressed={selectedPathId === path.id}
+                onClick={() => setSelectedPathId(path.id)}
+              >
+                <span>{pathDisplayName(path, pathDisplayNameById)}</span>
+                <small>{path.learnerDecisionCount} learner moves · terminal ply {path.terminalPly}</small>
+              </button>
+            </li>
+          ))}
+        </ul>
+        {visiblePaths.length < filteredPaths.length ? (
+          <button
+            type="button"
+            className="text-button"
+            onClick={() => setVisiblePathCount((count) => Math.min(count + PATH_PAGE_SIZE, filteredPaths.length))}
+          >
+            Show {Math.min(PATH_PAGE_SIZE, filteredPaths.length - visiblePaths.length)} more paths
+          </button>
+        ) : null}
         <dl className="graph-path-facts">
           <div><dt>Audited paths</dt><dd>{paths.length.toLocaleString('en-US')}</dd></div>
           <div><dt>Pack tier</dt><dd>{adapter.graph.pack.tier === 'core' ? 'Core' : 'Primer'}</dd></div>
@@ -295,15 +526,21 @@ function GraphTrainingWorkspace({
   const runPathIds = autonomousPlan?.totalPathIds ?? session.selection.includedPathIds
   const overallCompletedPathIds = [...new Set([...completedBeforeBatch, ...session.completedPathIds])]
   const coverage = summarizeGraphTrainingCoverage({ adapter, includedPathIds: runPathIds, completedPathIds: overallCompletedPathIds })
-  const hasNextBatch = Boolean(autonomousPlan?.pathIdBatches[activeBatchIndex + 1])
+  const hasNextBatch = autonomousPlan
+    ? nextNonemptyGraphTrainingBatch(autonomousPlan, activeBatchIndex) !== null
+    : false
 
   if (session.phase === 'session_complete' && !hasNextBatch) {
     return (
       <section className="graph-training-complete" aria-labelledby="graph-complete-title">
+        {persistenceNotice}
         <p className="eyebrow">Session complete</p>
         <h2 id="graph-complete-title">Every selected path is complete.</h2>
         <p>{coverage.completedPathCount.toLocaleString('en-US')} of {coverage.totalPathCount.toLocaleString('en-US')} audited paths completed. Warm-ups were not rescheduled.</p>
-        <button type="button" className="primary-action" onClick={() => { setSession(null); setAutonomousPlan(null) }}>Choose another repertoire</button>
+        <div className="inline-controls">
+          <button type="button" className="primary-action" onClick={startAll}>Start a new coverage cycle</button>
+          <button type="button" className="secondary-button" onClick={() => { setSession(null); setAutonomousPlan(null) }}>Choose paths</button>
+        </div>
         <p className="sr-only" aria-live="polite" aria-atomic="true">{localAnnouncement}</p>
       </section>
     )
@@ -312,6 +549,7 @@ function GraphTrainingWorkspace({
   if (session.phase === 'session_complete' && hasNextBatch) {
     return (
       <section className="graph-training-complete" aria-labelledby="graph-batch-title">
+        {persistenceNotice}
         <p className="eyebrow">Path batch complete</p>
         <h2 id="graph-batch-title">More audited paths are ready.</h2>
         <p>{coverage.completedPathCount.toLocaleString('en-US')} of {coverage.totalPathCount.toLocaleString('en-US')} paths completed.</p>
@@ -325,6 +563,14 @@ function GraphTrainingWorkspace({
 
   const path = adapter.pathsById.get(session.activePathId)!
   const expected = expectedGraphTrainingMoves(adapter, session)
+  const currentNode = adapter.nodesById.get(session.currentNodeId)!
+  const currentEdges = currentNode.outgoingEdgeIds
+    .map((edgeId) => adapter.edgesById.get(edgeId))
+    .filter((edge) => edge !== undefined)
+  const continuationEdges = path.edgeIds
+    .slice(session.activePathNodeIndex, session.activePathNodeIndex + 10)
+    .map((edgeId) => adapter.edgesById.get(edgeId))
+    .filter((edge) => edge !== undefined)
   const fen = graphTrainingFen(adapter, session)
   const waitingForLearner = session.phase === 'awaiting_learner_move' || session.phase === 'correction_required'
   const moveStatus = acceptedMoveStatus(session)
@@ -348,6 +594,13 @@ function GraphTrainingWorkspace({
       const next = submitGraphTrainingMove({ adapter, state: session, moveUci })
       setSession(next)
       const feedback = next.lastFeedback
+      if (feedback?.switchedPath && autonomousPlan) {
+        setAutonomousPlan((current) => current ? removeTransferredPathFromFutureBatches({
+          plan: current,
+          activeBatchIndex,
+          transferredPathId: next.activePathId,
+        }) : current)
+      }
       if (feedback?.review) onInferredReview?.(feedback.review)
       if (!feedback?.accepted) announce('That move is not an audited continuation here. Correct the position to continue.')
       else if (feedback.switchedPath) announce('Alternate audited branch accepted. Continuing from its exact resulting position.')
@@ -360,9 +613,10 @@ function GraphTrainingWorkspace({
 
   return (
     <section className="graph-training-workspace" aria-labelledby="graph-training-title" data-feature-contract={GRAPH_TRAINING_CONTRACT_ID}>
+      {persistenceNotice}
       <header className="graph-training-header">
         <div>
-          <p className="eyebrow">{path.familyTags.join(' / ')}</p>
+          <p className="eyebrow">{pathDisplayName(path, pathDisplayNameById)}</p>
           <h2 id="graph-training-title">Continuous graph practice</h2>
           <p>Path {activePathOrdinal} of {coverage.totalPathCount} · {statusText} · move {Math.min(session.activePathNodeIndex + 1, path.nodeIds.length)} of {path.nodeIds.length}</p>
         </div>
@@ -372,6 +626,33 @@ function GraphTrainingWorkspace({
               Flip board
             </button>
           ) : null}
+          <button
+            type="button"
+            className="secondary-button"
+            aria-pressed={paused}
+            onClick={() => {
+              setPaused((current) => !current)
+              announce(paused ? 'Training resumed.' : 'Training paused. The current position was kept.')
+            }}
+          >
+            {paused ? 'Resume' : 'Pause'}
+          </button>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={session.pendingPathIds.filter((pathId) =>
+              pathId !== session.activePathId && !session.completedPathIds.includes(pathId)).length === 0}
+            onClick={() => {
+              try {
+                setSession(skipCurrentGraphTrainingPath(adapter, session))
+                announce('Variation moved to the end of this coverage cycle.')
+              } catch (error) {
+                announce(message(error))
+              }
+            }}
+          >
+            Skip variation
+          </button>
           <button type="button" className="secondary-button" onClick={() => setSession(null)}>End session</button>
         </div>
       </header>
@@ -379,7 +660,7 @@ function GraphTrainingWorkspace({
         <ChessBoard
           fen={fen}
           orientation={orientation}
-          disabled={!waitingForLearner}
+          disabled={paused || !waitingForLearner}
           reducedMotion={reducedMotion}
           hintUci={session.usedHint ? expected[0]?.uci ?? null : null}
           lastMove={session.lastTransition && moveStatus ? { uci: session.lastTransition.moveUci, status: moveStatus } : null}
@@ -389,9 +670,91 @@ function GraphTrainingWorkspace({
       </div>
       <aside className="graph-training-context" aria-labelledby="graph-context-title">
         <p className="eyebrow">Current branch</p>
-        <h3 id="graph-context-title">{path.familyTags.join(' / ')}</h3>
-        <p>{statusText}</p>
-        {waitingForLearner ? (
+        <h3 id="graph-context-title">{pathDisplayName(path, pathDisplayNameById)}</h3>
+        <p>{paused ? 'Paused' : statusText}</p>
+        <div className="analysis-tabs" role="tablist" aria-label="Position analysis">
+          {(['line', 'alternatives', 'evidence'] as const).map((tab) => (
+            <button
+              type="button"
+              role="tab"
+              key={tab}
+              aria-selected={analysisTab === tab}
+              aria-controls={`graph-analysis-${tab}`}
+              onClick={() => setAnalysisTab(tab)}
+            >
+              {tab === 'line' ? 'Line' : tab === 'alternatives' ? 'Alternatives' : 'Evidence'}
+            </button>
+          ))}
+        </div>
+        <section
+          id={`graph-analysis-${analysisTab}`}
+          className="graph-analysis-panel"
+          role="tabpanel"
+          aria-label={`${analysisTab} analysis`}
+        >
+          {analysisTab === 'line' ? (
+            <>
+              <h4>Current audited continuation</h4>
+              {continuationEdges.length > 0 ? (
+                <ol className="graph-continuation-line">
+                  {continuationEdges.map((edge) => (
+                    <li key={edge.id}>
+                      <code>{edge.san}</code>
+                      <span>{edge.role === 'book' ? 'Book' : edge.role === 'playable' ? 'Playable' : 'Exploratory'}</span>
+                    </li>
+                  ))}
+                </ol>
+              ) : <p>This path has reached its evidence-defined end.</p>}
+              {path.edgeIds.length - session.activePathNodeIndex > continuationEdges.length ? (
+                <p className="field-help">Showing the next {continuationEdges.length} plies of this empirical path.</p>
+              ) : null}
+            </>
+          ) : analysisTab === 'alternatives' ? (
+            <>
+              <h4>Known moves from this position</h4>
+              {currentEdges.length > 0 ? (
+                <ul className="graph-alternative-list">
+                  {currentEdges.map((edge) => (
+                    <li key={edge.id}>
+                      <span><code>{edge.san}</code> · {edge.role === 'book' ? 'Book' : edge.role === 'playable' ? 'Playable' : 'Exploratory'}</span>
+                      <span>{Math.round(edge.evidence.conditionalUsage * 100)}% usage</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : <p>No sampled continuation is stored at this terminal.</p>}
+            </>
+          ) : (
+            <>
+              <h4>Audited move evidence</h4>
+              {currentEdges.length > 0 ? (
+                <div className="graph-evidence-scroll" tabIndex={0} aria-label="Move evidence table">
+                  <table className="graph-evidence-table">
+                    <thead>
+                      <tr><th scope="col">Move</th><th scope="col">Role</th><th scope="col">Games</th><th scope="col">Usage</th><th scope="col">Engine</th></tr>
+                    </thead>
+                    <tbody>
+                      {currentEdges.map((edge) => (
+                        <tr key={edge.id}>
+                          <th scope="row"><code>{edge.san}</code></th>
+                          <td>{edge.role === 'book' ? 'Book' : edge.role === 'playable' ? 'Playable' : 'Exploratory'}</td>
+                          <td>{edge.evidence.cohorts.reduce((total, cohort) => total + cohort.n, 0).toLocaleString('en-US')}</td>
+                          <td>{Math.round(edge.evidence.conditionalUsage * 100)}%</td>
+                          <td>{edge.evidence.engine.status === 'verified'
+                            ? `${edge.evidence.engine.centipawnLoss ?? 0} cp loss`
+                            : edge.evidence.engine.status === 'quarantined' ? 'Quarantined' : 'Unverified'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : <p>No empirical move evidence is stored at this terminal.</p>}
+              <p className="field-help">Game counts remain separated by source cohort in the signed graph. Percentages describe historical play, not a promised result.</p>
+            </>
+          )}
+        </section>
+        {paused ? (
+          <p role="status">Resume when you are ready. No move or review has been recorded.</p>
+        ) : waitingForLearner ? (
           <>
             <button
               type="button"
@@ -421,7 +784,7 @@ function GraphTrainingWorkspace({
         {session.lastFeedback ? (
           <div className={`graph-feedback graph-feedback-${session.lastFeedback.accepted ? 'accepted' : 'correction'}`} role={session.lastFeedback.accepted ? 'status' : 'alert'}>
             <strong>{session.lastFeedback.accepted ? 'Move accepted' : 'Correction required'}</strong>
-            <span>{session.lastFeedback.classification} · {session.lastFeedback.reason.replaceAll('_', ' ')}</span>
+            <span>{feedbackLabel(session.lastFeedback.classification)} · {feedbackLabel(session.lastFeedback.reason)}</span>
           </div>
         ) : null}
         <dl className="graph-session-facts">
@@ -459,6 +822,9 @@ export function GraphTrainingBoundary({
   onPathCompleted,
   onAnnouncement,
   onRetry,
+  familyId,
+  journalRepository,
+  pathDisplayNameById,
 }: GraphTrainingBoundaryProps): React.JSX.Element {
   const [prepared, setPrepared] = useState<PreparedResource | null>(null)
 
@@ -503,6 +869,9 @@ export function GraphTrainingBoundary({
       {...(onInferredReview ? { onInferredReview } : {})}
       {...(onPathCompleted ? { onPathCompleted } : {})}
       {...(onAnnouncement ? { onAnnouncement } : {})}
+      {...(familyId ? { familyId } : {})}
+      {...(journalRepository ? { journalRepository } : {})}
+      {...(pathDisplayNameById ? { pathDisplayNameById } : {})}
     />
   )
 }

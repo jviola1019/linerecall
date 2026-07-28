@@ -49,6 +49,7 @@ afterEach(() => {
   cleanup()
   vi.clearAllMocks()
   document.documentElement.dataset.theme = 'dark'
+  window.history.replaceState(null, '', '#/today')
 })
 
 function browserProps(partition: PartitionResource = { status: 'ready', value: c20, error: null }) {

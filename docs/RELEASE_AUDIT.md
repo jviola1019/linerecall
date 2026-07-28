@@ -1,14 +1,16 @@
-# LineRecall connected-redesign release audit
+# LineRecall unified-family release audit
 
 Current status: **not shippable**. This document records engineering evidence,
 not an ADA, WCAG, Section 508, privacy, license, trademark, or security
 certification.
 
-The current review candidate was generated on 2026-07-20 at 3,433,826 bytes
-with SHA-256
+The last retained exact-byte candidate evidence in this document was generated
+on 2026-07-20 at 3,433,826 bytes with SHA-256
 `e13d4fe0d3180a1409dacbec6e454a56791f456ed8f8ac28662c5bcc1fe06507`.
 Its exact-byte artifact audit passes the self-contained, size, offline, CSP,
-document, and embedded-snapshot checks. It remains review-only.
+document, and embedded-snapshot checks. It remains historical review-only
+evidence. A later working-tree candidate is not covered by that hash or those
+results unless its own generated audit records match its exact bytes.
 
 `dist/linerecall.html` and `dist/SHIPPABLE.json` remain absent. The complete
 schema-v3 corpus, production graph, Stockfish/Scid campaign, tactical-puzzle
@@ -21,7 +23,45 @@ older bytes remain historical evidence and cannot be relabeled as current. The
 final report-only release audit is expected to fail closed and must confirm
 that no production output exists.
 
-## Product and interface delivered in the candidate
+## Source changes after the recorded candidate
+
+The current source tree is ahead of the 2026-07-20 candidate and its retained
+evidence. These changes have not been promoted or published:
+
+- Repertoire now uses a validated review catalog with one entry per canonical
+  opening family. The generated catalog contains 149 primary families and
+  assigns each of the 3,790 taxonomy rows exactly once.
+- Caro–Kann (110 rows), Sicilian Defence (388 rows), and Ruy Lopez (234 rows)
+  each appear once and own both available learner-side tabs. These are taxonomy
+  counts, not audited path totals.
+- Family detail and training use hash routes. A promoted graph can advance
+  autonomously across every manifest-owned pack and unfinished path for one
+  learner side, preserve due cards beyond the bounded 1,000-path session batch,
+  admit a legal alternate graph path, and record idempotent family completion
+  events.
+- Family and side totals are accepted only after every referenced pack passes
+  release, root, ECO, and exact path-membership ownership checks. Branch names
+  and hierarchy come from the family manifest rather than free-text graph
+  labels. Duplicate reviewed labels collapse visually without deleting any
+  path.
+- A rejected completion write blocks local completion and the next-pack
+  transition and exposes an accessible retry. Cursor write/restore boundaries
+  are versioned, but durable provider-backed integration still needs staging.
+- Puzzles now has a separate nine-state tactical resource and separate,
+  idempotent progress. Without a promoted shard it shows an unavailable state;
+  it does not substitute opening recall.
+- Focused regressions cover family-card uniqueness, side tabs, family and
+  training deep links, browser history, mobile-first catalog ordering, and
+  tactical-route isolation.
+
+The implementation is documented in
+`docs/OPENING_FAMILY_ARCHITECTURE.md`. Because these source changes postdate the
+candidate, every old source digest, browser result, screenshot, performance
+measurement, coverage report, security review, and manual record must be
+regenerated or explicitly revalidated against new candidate bytes. The
+historical results below cannot approve this source tree.
+
+## Product and interface in the recorded candidate
 
 - Distinct **Today**, **Repertoire**, **Puzzles**, **Explore**, and
   **Progress** destinations, plus an on-demand **Data & Licenses** view.
@@ -85,7 +125,7 @@ retains every eligible audited practice branch and has no fixed branch cap.
 Therefore the current snapshot is categorically review-only even if its legacy
 checks pass; it cannot be promoted by editing manual evidence records.
 
-## Current 2026-07-20 automated engineering evidence
+## Historical 2026-07-20 automated engineering evidence
 
 - Offline-client, hosted-client, and connected-server TypeScript checks pass.
   The source-tree digest is generated after every source or documentation
@@ -167,7 +207,13 @@ analytics are not deployed or represented as production-ready.
    real-corpus path count, named-family count, or completion total. Synthetic
    graph fixtures prove autonomous traversal mechanics only. The review
    candidate must not claim or display an "all Caro-Kann variations" count,
-   and the Caro-Kann Core label remains blocked.
+   and the Caro-Kann Core label remains blocked. The 149-family review catalog
+   is not a substitute for this graph or for source-edge inventory equality.
+   The dedicated `release:family-promotion` audit is currently blocked because
+   `data/generated/v3/family-promotion-index.json` does not exist. Consequently
+   it has validated zero promotable families, packs, paths, eligible edges,
+   puzzle shards, and puzzles. Those zeros are an absent-input result, not an
+   opening-content statistic.
 3. **Puzzle verification:** the downloaded Lichess puzzle archive is
    302,111,223 bytes with locally computed SHA-256
    `5503bfaf5534518ffe3c4c3bb0ac1ae82350d117ad1a52947796096b75e6247e`,
@@ -176,7 +222,7 @@ analytics are not deployed or represented as production-ready.
    workspace owner on 2026-07-15 and is bound to the exact source and filter
    manifest. Tactical-shard publication remains prohibited because the complete
    compact v3 association graph and per-learner-node Stockfish 18 campaign do
-   not exist.
+   not exist. The source Puzzles route therefore remains explicitly unavailable.
 4. **New verification campaign:** deeper Core-pack Stockfish 18 analysis and
    the stratified Scid audit have not completed against the compact schema-v3
    graph.
@@ -194,6 +240,20 @@ analytics are not deployed or represented as production-ready.
    application/data licenses, privacy/terms, age handling, sharing/moderation,
    subprocessors, and seven production locales have not received qualified
    approval. Chess.com functionality remains disabled.
+
+## No-production and no-spend posture
+
+- `dist/linerecall.html`, `dist/SHIPPABLE.json`, GitHub Pages deployment,
+  production accounts, and cloud sync remain disabled.
+- The public GitHub repository may use standard no-cost runners for bounded
+  fixtures, static checks, audits, and candidate bundles only.
+- The full Q2 ingestion and engine campaign do not run in GitHub Actions. No
+  paid runner, paid object store, paid database, paid compute, metered API, or
+  connected production host is authorized.
+- AWS and OCI modules remain unapplied reference infrastructure. Local server
+  tests do not constitute a production deployment.
+- A billing event of one dollar or more is a stop condition unless the owner
+  makes a new written decision.
 
 ## Fail-closed launcher behavior
 

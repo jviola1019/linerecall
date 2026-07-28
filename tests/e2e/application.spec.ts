@@ -207,10 +207,16 @@ test.describe('production artifact interactions', () => {
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
 
     await startAnyDrill(page)
-    const board = page.getByRole('grid', { name: 'Chessboard, white orientation' })
+    const board = page.getByRole('grid', { name: /Chessboard, (?:white|black) orientation/u })
     await expect(board).toBeVisible()
+    const currentLabel = await board.getAttribute('aria-label')
+    const currentOrientation = currentLabel?.match(/Chessboard, (white|black) orientation/u)?.[1]
+    if (currentOrientation !== 'white' && currentOrientation !== 'black') {
+      throw new Error('The chessboard does not expose its current orientation')
+    }
+    const nextOrientation = currentOrientation === 'white' ? 'black' : 'white'
     await page.getByRole('button', { name: 'Flip board' }).click()
-    await expect(page.getByRole('grid', { name: 'Chessboard, black orientation' })).toBeVisible()
+    await expect(page.getByRole('grid', { name: `Chessboard, ${nextOrientation} orientation` })).toBeVisible()
 
     const expected = await revealExpectedMove(page)
     const select = page.getByRole('combobox', { name: 'Legal move picker' })

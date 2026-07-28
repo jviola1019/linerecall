@@ -171,3 +171,46 @@ test('debounced writer executes its scheduled timer without an explicit flush', 
   await writer.flush()
   assert.deepEqual(saved, [progress.updatedAt])
 })
+
+test('immediate writes supersede pending snapshots and do not resolve before persistence', async () => {
+  const saved: string[] = []
+  let release: (() => void) | undefined
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  const repository: ProgressRepository = {
+    kind: 'memory',
+    load: async () => null,
+    clear: async () => undefined,
+    save: async (progress) => {
+      await gate
+      saved.push(progress.updatedAt)
+    },
+  }
+  const writer = new DebouncedProgressWriter(repository, () => undefined, 60_000)
+  writer.schedule(createEmptyProgress(new Date('2026-07-11T04:00:00.000Z')))
+  const immediate = createEmptyProgress(new Date('2026-07-11T05:00:00.000Z'))
+  let resolved = false
+  const pending = writer.saveImmediately(immediate).then(() => { resolved = true })
+  await Promise.resolve()
+  assert.equal(resolved, false)
+  release?.()
+  await pending
+  await writer.flush()
+  assert.deepEqual(saved, [immediate.updatedAt])
+})
+
+test('immediate writes report and propagate repository failures', async () => {
+  const failure = new Error('durable save rejected')
+  const reported: Error[] = []
+  const repository: ProgressRepository = {
+    kind: 'memory',
+    load: async () => null,
+    clear: async () => undefined,
+    save: async () => { throw failure },
+  }
+  const writer = new DebouncedProgressWriter(repository, (error) => reported.push(error))
+  await assert.rejects(
+    writer.saveImmediately(createEmptyProgress(new Date('2026-07-11T06:00:00.000Z'))),
+    /durable save rejected/u,
+  )
+  assert.deepEqual(reported, [failure])
+})
