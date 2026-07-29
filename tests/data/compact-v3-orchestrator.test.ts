@@ -196,12 +196,14 @@ test('compact work boundaries reject writable POSIX roots and non-sticky writabl
     const protectedBoundary = await ensureSecureCompactWorkDirectory(container)
     const unsafeNested = join(protectedBoundary.v3Directory!, 'unsafe-nested')
     await mkdir(unsafeNested, { mode: 0o777 })
+    await chmod(unsafeNested, 0o777)
     await assert.rejects(
       compactRetainedStateBytes(container),
       /Retained schema-v3 directory must not be group- or world-writable/u,
     )
     await rm(unsafeNested, { recursive: true, force: true })
     await mkdir(unsafeParent, { mode: 0o777 })
+    await chmod(unsafeParent, 0o777)
     await mkdir(nestedRoot, { mode: 0o700 })
     await assert.rejects(
       ensureSecureCompactWorkDirectory(nestedRoot),
