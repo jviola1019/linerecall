@@ -59,6 +59,7 @@ async function validateDirectoryIdentity(path: string, label: string): Promise<s
     constants.O_RDONLY |
       (constants.O_DIRECTORY ?? 0) |
       (constants.O_NOFOLLOW ?? 0),
+    PRIVATE_DIRECTORY_MODE,
   )
   try {
     const opened = await handle.stat({ bigint: true })
@@ -178,6 +179,7 @@ export async function syncCompactParentDirectory(path: string): Promise<boolean>
     constants.O_RDONLY |
       (constants.O_DIRECTORY ?? 0) |
       (constants.O_NOFOLLOW ?? 0),
+    PRIVATE_DIRECTORY_MODE,
   )
   try {
     await handle.sync()
@@ -231,7 +233,11 @@ export async function openValidatedRegularFile(
     throw new Error(`${options.label} exact byte length is invalid`)
   }
 
-  const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+  const handle = await open(
+    path,
+    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+    0o600,
+  )
   try {
     const opened = await handle.stat({ bigint: true })
     if (!opened.isFile()) throw new Error(`${options.label} must be a regular file`)

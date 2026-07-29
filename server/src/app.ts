@@ -1,5 +1,6 @@
 import { context, SpanStatusCode, trace } from '@opentelemetry/api'
 import helmet from '@fastify/helmet'
+import fastifyRateLimit from '@fastify/rate-limit'
 import Fastify, { LogController, type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify'
 import { createHash, randomUUID } from 'node:crypto'
 import { z } from 'zod'
@@ -19,6 +20,19 @@ import type { AuthenticatedActor, ServiceDependencies } from './ports.js'
 
 const tracer = trace.getTracer('@linerecall/server')
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
+const AUTH_UPSTREAM_RESPONSE_HEADERS_DENYLIST = new Set([
+  'connection',
+  'content-length',
+  'ratelimit-limit',
+  'ratelimit-remaining',
+  'ratelimit-reset',
+  'retry-after',
+  'set-cookie',
+  'transfer-encoding',
+  'x-ratelimit-limit',
+  'x-ratelimit-remaining',
+  'x-ratelimit-reset',
+])
 
 export interface AppOptions {
   publicOrigin: string
@@ -37,6 +51,15 @@ interface RateLimitPolicy {
 
 function firstHeader(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value
+}
+
+function retryAfterSeconds(reply: FastifyReply): number {
+  const value = reply.getHeader('Retry-After')
+  const first = Array.isArray(value) ? value[0] : value
+  const numeric = typeof first === 'number' ? first : typeof first === 'string' ? Number(first) : Number.NaN
+  return Number.isFinite(numeric) && numeric > 0 && numeric <= 86_400
+    ? Math.ceil(numeric)
+    : 60
 }
 
 function parseBody<T>(schema: { safeParse(value: unknown): { success: true; data: T } | { success: false; error: import('zod').ZodError } }, value: unknown): T {
@@ -101,6 +124,9 @@ function sanitizeAuthSession(bytes: Buffer, contentType: string | null): Buffer 
 export async function createApp(dependencies: ServiceDependencies, options: AppOptions): Promise<FastifyInstance> {
   const publicOrigin = safePublicOrigin(options.publicOrigin)
   const serviceOrigin = safePublicOrigin(options.serviceOrigin ?? options.publicOrigin)
+  const isMagicLinkRequest = (request: Pick<FastifyRequest, 'method' | 'url'>): boolean =>
+    request.method === 'POST'
+      && new URL(request.url, serviceOrigin).pathname === '/api/auth/sign-in/magic-link'
   class OperationalOnlyLogController extends LogController {
     constructor() { super({ disableRequestLogging: true }) }
   }
@@ -135,6 +161,22 @@ export async function createApp(dependencies: ServiceDependencies, options: AppO
     crossOriginEmbedderPolicy: false,
     hsts: options.production ? { maxAge: 31_536_000, includeSubDomains: false, preload: false } : false,
     referrerPolicy: { policy: 'no-referrer' },
+  })
+
+  // This bounded in-process limiter is a defense-in-depth backstop for the
+  // identity gateway. The distributed RateLimiter below remains authoritative
+  // across API tasks and supplies the stricter magic-link/passkey policies.
+  // Magic-link requests are exempt here so every distributed-limit failure can
+  // retain the same generic success response and avoid account enumeration.
+  await app.register(fastifyRateLimit, {
+    global: false,
+    hook: 'onRequest',
+    max: 120,
+    timeWindow: 300_000,
+    cache: 10_000,
+    enableDraftSpec: true,
+    ipv6Subnet: 64,
+    allowList: (request) => isMagicLinkRequest(request),
   })
 
   app.addHook('onRequest', async (request) => {
@@ -175,10 +217,17 @@ export async function createApp(dependencies: ServiceDependencies, options: AppO
         errorClass: error instanceof Error ? error.name.slice(0, 64) : typeof error,
       }, 'request failed')
     }
+    const frameworkStatus = typeof error === 'object' && error !== null && 'statusCode' in error
+      ? error.statusCode
+      : null
     const safe = isApiError(error)
       ? error
-      : typeof error === 'object' && error !== null && 'statusCode' in error && error.statusCode === 413
+      : frameworkStatus === 413
         ? new ApiError(413, 'payload_too_large', 'Request payload exceeds the allowed size')
+        : frameworkStatus === 429
+          ? new ApiError(429, 'rate_limit_exceeded', 'Too many requests; retry after the indicated interval', {
+            retryAfterSeconds: retryAfterSeconds(reply),
+          })
         : new ApiError(500, 'internal_error', 'The service could not complete the request')
     sendError(reply, request, safe)
   })
@@ -243,20 +292,27 @@ export async function createApp(dependencies: ServiceDependencies, options: AppO
   }))
 
   if (dependencies.auth.handleWebRequest) {
-    app.all('/api/auth/*', async (request, reply) => {
+    app.all('/api/auth/*', {
+      config: {
+        rateLimit: {
+          max: 120,
+          timeWindow: 300_000,
+          groupId: 'auth-baseline',
+        },
+      },
+    }, async (request, reply) => {
       const authUrl = new URL(request.url, serviceOrigin)
-      const isMagicLinkRequest = request.method === 'POST'
-        && authUrl.pathname === '/api/auth/sign-in/magic-link'
+      const magicLinkRequest = isMagicLinkRequest(request)
       try {
         await rateLimit(request, reply, { name: 'auth-ip', limit: 120, windowMs: 300_000, subject: 'ip' })
       } catch (error) {
-        if (isMagicLinkRequest && isApiError(error) && ['rate_limit_exceeded', 'rate_limiter_unavailable'].includes(error.code)) {
+        if (magicLinkRequest && isApiError(error) && ['rate_limit_exceeded', 'rate_limiter_unavailable'].includes(error.code)) {
           return reply.code(200).send({ status: true })
         }
         throw error
       }
 
-      if (isMagicLinkRequest) {
+      if (magicLinkRequest) {
         try {
           await rateLimit(request, reply, { name: 'magic-link-ip', limit: 20, windowMs: 3_600_000, subject: 'ip' })
         } catch (error) {
@@ -295,7 +351,7 @@ export async function createApp(dependencies: ServiceDependencies, options: AppO
       ))
       reply.code(response.status)
       for (const [name, value] of response.headers) {
-        if (!['set-cookie', 'content-length', 'transfer-encoding', 'connection'].includes(name.toLowerCase())) reply.header(name, value)
+        if (!AUTH_UPSTREAM_RESPONSE_HEADERS_DENYLIST.has(name.toLowerCase())) reply.header(name, value)
       }
       const cookies = response.headers.getSetCookie()
       if (cookies.length > 0) reply.header('Set-Cookie', cookies)

@@ -63,7 +63,12 @@ describe('Fastify API decision branches', () => {
         if (request.url.endsWith('/empty')) return new Response(null, { status: 204 })
         return new Response('auth-ok', {
           status: 201,
-          headers: [['content-type', 'text/plain'], ['set-cookie', '__Host-session=opaque; Secure; HttpOnly; Path=/']],
+          headers: [
+            ['content-type', 'text/plain'],
+            ['ratelimit-limit', '999999'],
+            ['retry-after', '999999'],
+            ['set-cookie', '__Host-session=opaque; Secure; HttpOnly; Path=/'],
+          ],
         })
       },
     }
@@ -82,6 +87,8 @@ describe('Fastify API decision branches', () => {
     assert.equal(passkey.statusCode, 201)
     assert.equal(passkey.body, 'auth-ok')
     assert.match(String(passkey.headers['set-cookie']), /HttpOnly/u)
+    assert.equal(passkey.headers['ratelimit-limit'], '30')
+    assert.notEqual(passkey.headers['retry-after'], '999999')
     assert.equal(generic.statusCode, 201)
     assert.equal(empty.statusCode, 204)
     assert.equal(invalidEmail.statusCode, 201)
@@ -191,6 +198,53 @@ describe('Fastify API decision branches', () => {
     assert.equal(forwarded, 0)
     assert.equal(keys.length, 1)
     assert.match(keys[0]!, /^auth-ip:/u)
+  })
+
+  it('uses a real Fastify auth backstop while preserving generic magic-link responses', async () => {
+    const limiter: RateLimiter = {
+      consume: async (_key, limit) => ({
+        allowed: true,
+        limit,
+        remaining: Math.max(0, limit - 1),
+        resetAt: new Date(NOW.getTime() + 300_000),
+      }),
+    }
+    let forwarded = 0
+    const auth: Authenticator = {
+      authenticate: async () => null,
+      handleWebRequest: async () => {
+        forwarded += 1
+        return Response.json({ status: true })
+      },
+    }
+    const app = await createApp(dependencies({ auth, rateLimiter: limiter }), { publicOrigin: ORIGIN })
+    for (let index = 0; index < 120; index += 1) {
+      const accepted = await app.inject({ method: 'GET', url: '/api/auth/session' })
+      assert.equal(accepted.statusCode, 200)
+    }
+    const exhausted = await app.inject({ method: 'GET', url: '/api/auth/session' })
+    assert.equal(exhausted.statusCode, 429, exhausted.body)
+    const exhaustedBody = exhausted.json()
+    assert.equal(exhaustedBody.error.code, 'rate_limit_exceeded')
+    assert.equal(typeof exhaustedBody.error.requestId, 'string')
+    assert.equal(exhausted.headers['ratelimit-limit'], '120')
+    assert.equal(exhausted.headers['ratelimit-remaining'], '0')
+    assert.match(String(exhausted.headers['ratelimit-reset']), /^\d+$/u)
+    assert.match(String(exhausted.headers['retry-after']), /^\d+$/u)
+    assert.equal(exhaustedBody.error.retryAfterSeconds, Number(exhausted.headers['retry-after']))
+    assert.equal(forwarded, 120)
+
+    const magicLink = await app.inject({
+      method: 'POST',
+      url: '/api/auth/sign-in/magic-link',
+      headers: { origin: ORIGIN },
+      payload: { email: 'user@example.test' },
+    })
+    await app.close()
+
+    assert.equal(magicLink.statusCode, 200)
+    assert.deepEqual(magicLink.json(), { status: true })
+    assert.equal(forwarded, 121)
   })
 
   it('layers the stricter passkey limiter over the auth-route baseline', async () => {
