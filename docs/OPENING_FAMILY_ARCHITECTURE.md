@@ -152,6 +152,37 @@ Training starts from one promoted family and one learner side:
 8. Finish only when every eligible path in every pack for the selected side is
    complete.
 
+The family controller sends only a pack's own stable due-card IDs to that pack.
+Its cursor namespace includes the pack ID in addition to release, family, and
+learner side. This prevents two same-side packs from overwriting one another on
+save or restoring the wrong graph after a remount.
+
+Pack-local cursor ordinals are not treated as a family clock. An append-only
+family generation explicitly binds each pack to its own coverage-cycle ID, so
+one generation may validly contain pack A cycle 7 and pack B cycle 2. Restore
+matches completion events through that binding map. Starting a new family cycle
+first records a new empty generation; no pack binding or completion leaks in
+from the prior generation.
+
+An unbound pack never resumes an unrelated historical cursor. Its prior cursor
+is retained for audit, the next pack-local ordinal is selected, and that new
+cycle is bound to the active family generation before training begins. If a
+process stops after the generation start is saved but before its first pack
+binding, restore completes that pending start automatically.
+
+Full-family, named-variation, and single-path runs are distinct. A named
+variation contains every manifest path with that primary branch membership;
+duplicate display names do not merge different branch IDs or delete routes.
+Only a full-family run automatically starts the next pack. A branch-specific
+run ends after its assigned routes. Its path events remain in the append-only
+history, but they do not inflate the active full-family generation counter
+unless their pack cycle is explicitly bound to that generation.
+
+Leaving a bound full-family run for the path chooser preserves its cursor.
+Choosing **Start full repertoire** from there is an explicit fresh start: the
+controller appends a new family generation before binding a new pack-local
+cycle, so the prior binding is never overwritten.
+
 Ranking affects order, not visibility. A 1,000-path in-memory session guard
 partitions larger families into bounded batches while keeping the authoritative
 due-card set intact. A starvation guard ensures later and less common eligible
@@ -167,6 +198,11 @@ silently complete a path. Completion events are idempotent, and retries or
 remounts cannot increase the count twice. A rejected completion write does not
 advance the in-memory count or switch packs; the training view exposes an
 accessible error and explicit retry.
+
+Skip remains available at bounded-batch boundaries: the current path is moved
+behind all future batches without duplication. Choose variation and Stop drain
+the current cursor write queue before clearing or navigating. A failed drain
+keeps the board and session visible until the user retries.
 
 ## Persistence boundary
 
@@ -206,8 +242,11 @@ exists. Promotion remains blocked by:
 It requires a bounded `data/generated/v3/family-promotion-index.json`, exact
 content receipts for the family catalog, every manifest, provenance document,
 pack graph and eligible-edge inventory, every puzzle shard, and release-bound
-Q2, Stockfish, Scid, and puzzle-promotion receipts. It also enforces the
-`all-eligible-audited` policy with a null maximum branch count.
+broadcast, Q2, exact-evidence reconciliation, Stockfish, Scid, and
+puzzle-promotion receipts. The reconciliation receipt must bind the final
+exact-pass receipt for both corpora to every eligible-inventory source digest.
+It also enforces the `all-eligible-audited` policy with a null maximum branch
+count.
 
 That promotion index does not exist in the current workspace. The generated
 promotion report is therefore `blocked`, with zero families, packs, paths,

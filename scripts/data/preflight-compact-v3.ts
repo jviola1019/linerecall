@@ -1,8 +1,17 @@
 #!/usr/bin/env node
 import { readFile, statfs } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
 import { resolve } from 'node:path'
-import { CompactPreflightPlanSchema } from './compact-v3-contracts.ts'
-import { assessCompactV3Storage, compactPreflightExitCode } from './compact-v3-foundation.ts'
+import {
+  CompactPreflightPlanSchema,
+  type CompactPreflightPlan,
+} from './compact-v3-contracts.ts'
+import {
+  assessCompactV3Storage,
+  compactPreflightExitCode,
+  type CompactStorageAssessment,
+} from './compact-v3-foundation.ts'
+import { compactRetainedStateBytes } from './compact-v3-orchestrator.ts'
 
 function argumentsFor(argv: readonly string[]): { planPath: string; workDirectory: string } {
   const options = new Map<string, string>()
@@ -23,18 +32,37 @@ function argumentsFor(argv: readonly string[]): { planPath: string; workDirector
   return { planPath: resolve(planPath), workDirectory: resolve(workDirectory) }
 }
 
+export async function assessCompactV3WorkDirectory(
+  planValue: CompactPreflightPlan,
+  workDirectoryValue: string,
+  availableBytesOverride?: number,
+): Promise<CompactStorageAssessment> {
+  const plan = CompactPreflightPlanSchema.parse(planValue)
+  const workDirectory = resolve(workDirectoryValue)
+  let availableBytes = availableBytesOverride
+  if (availableBytes === undefined) {
+    const filesystem = await statfs(workDirectory, { bigint: true })
+    const available = filesystem.bavail * filesystem.bsize
+    if (available > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new Error('Available storage exceeds the safe integer range')
+    }
+    availableBytes = Number(available)
+  }
+  const retainedBytesAlreadyPresent = await compactRetainedStateBytes(workDirectory)
+  return assessCompactV3Storage(plan, availableBytes, { retainedBytesAlreadyPresent })
+}
+
 async function main(): Promise<void> {
   const args = argumentsFor(process.argv.slice(2))
   const plan = CompactPreflightPlanSchema.parse(JSON.parse(await readFile(args.planPath, 'utf8')) as unknown)
-  const filesystem = await statfs(args.workDirectory, { bigint: true })
-  const available = filesystem.bavail * filesystem.bsize
-  if (available > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('Available storage exceeds the safe integer range')
-  const assessment = assessCompactV3Storage(plan, Number(available))
+  const assessment = await assessCompactV3WorkDirectory(plan, args.workDirectory)
   process.stdout.write(`${JSON.stringify(assessment, null, 2)}\n`)
   process.exitCode = compactPreflightExitCode(assessment)
 }
 
-main().catch((error: unknown) => {
-  process.stderr.write(`Compact v3 preflight failed: ${(error as Error).message}\n`)
-  process.exitCode = 1
-})
+if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
+  main().catch((error: unknown) => {
+    process.stderr.write(`Compact v3 preflight failed: ${(error as Error).message}\n`)
+    process.exitCode = 1
+  })
+}

@@ -328,6 +328,10 @@ export const FamilyTrainingCursorV1Schema = z.object({
   pendingPathIds: z.array(FamilyPathIdSchema).max(100_000),
   batchIndex: z.number().int().nonnegative(),
 }).strict().superRefine((cursor, context) => {
+  const coveragePackId = cursor.coverageCycleId.slice(
+    0,
+    cursor.coverageCycleId.indexOf('::coverage:'),
+  )
   for (const [key, values] of [
     ['authoritativeDueCardIds', cursor.authoritativeDueCardIds],
     ['reviewedCardIds', cursor.reviewedCardIds],
@@ -350,6 +354,18 @@ export const FamilyTrainingCursorV1Schema = z.object({
       message: 'A path cannot be both completed and pending',
     })
   }
+  for (const [key, cardIds] of [
+    ['authoritativeDueCardIds', cursor.authoritativeDueCardIds],
+    ['reviewedCardIds', cursor.reviewedCardIds],
+  ] as const) {
+    if (cardIds.some((cardId) => !cardId.startsWith(`${coveragePackId}::pos_`))) {
+      context.addIssue({
+        code: 'custom',
+        path: [key],
+        message: `${key} must belong to the coverage-cycle graph pack`,
+      })
+    }
+  }
 })
 
 export const FamilyCoverageEventV1Schema = z.object({
@@ -361,7 +377,15 @@ export const FamilyCoverageEventV1Schema = z.object({
   pathId: FamilyPathIdSchema,
   coverageCycleId: z.string().regex(/^[a-z0-9][a-z0-9_-]{2,95}::coverage:[0-9]+$/u),
   completedAt: z.string().datetime({ offset: true }),
-}).strict()
+}).strict().superRefine((event, context) => {
+  if (!event.coverageCycleId.startsWith(`${event.packId}::coverage:`)) {
+    context.addIssue({
+      code: 'custom',
+      path: ['coverageCycleId'],
+      message: 'Coverage cycle must belong to the completed graph pack',
+    })
+  }
+})
 
 export const TacticalPuzzleShardV1Schema = z.object({
   schemaVersion: z.literal(OPENING_FAMILY_SCHEMA_VERSION),

@@ -21,6 +21,8 @@ type Receipt = {
 
 const RELEASE = 'synthetic-fixture-release-not-for-shipping'
 const HASH = 'a'.repeat(64)
+const BROADCAST_EXACT_RECEIPT = 'b'.repeat(64)
+const Q2_EXACT_RECEIPT = 'c'.repeat(64)
 
 async function writeJson(root: string, path: string, value: unknown, encoding: 'identity' | 'gzip'): Promise<Receipt> {
   const plain = Buffer.from(`${JSON.stringify(value)}\n`, 'utf8')
@@ -132,12 +134,30 @@ async function fixture(): Promise<{ root: string; index: any }> {
   }, 'gzip')
 
   const gates = {
+    broadcast: await writeJson(root, 'receipts/broadcast.json', {
+      schemaVersion: 1, releaseId: RELEASE, status: 'pass', completedAt: '2026-07-28T12:00:00.000Z',
+      gate: 'lichess-broadcasts-through-2026-06', archiveCount: 78,
+      archivesComplete: true, digestsVerified: true,
+      recordsSeen: 1_146_297, publishedRecords: 1_146_297,
+      accepted: 800_176, rejected: 346_121, deduplicated: 0, accountingReconciles: true,
+      finalExactReceiptSha256: BROADCAST_EXACT_RECEIPT,
+    }, 'identity'),
     q2: await writeJson(root, 'receipts/q2.json', {
       schemaVersion: 1, releaseId: RELEASE, status: 'pass', completedAt: '2026-07-28T12:00:00.000Z',
       gate: 'lichess-standard-q2-2026', archiveMonths: ['2026-04', '2026-05', '2026-06'],
       archiveCount: 3, archivesComplete: true, digestsVerified: true,
       recordsSeen: 267_333_507, publishedRecords: 267_333_507, publishedCompressedBytes: 87_256_474_116,
       accepted: 200_000_000, rejected: 67_333_507, deduplicated: 0, accountingReconciles: true,
+      finalExactReceiptSha256: Q2_EXACT_RECEIPT,
+    }, 'identity'),
+    evidence: await writeJson(root, 'receipts/evidence-reconciliation.json', {
+      schemaVersion: 1, releaseId: RELEASE, status: 'pass', completedAt: '2026-07-28T12:00:00.000Z',
+      gate: 'compact-v3-family-evidence-reconciliation',
+      broadcastExactReceiptSha256: BROADCAST_EXACT_RECEIPT,
+      q2ExactReceiptSha256: Q2_EXACT_RECEIPT,
+      eligibleInventorySourceSha256s: [HASH],
+      sourceEdgeInventoryComplete: true,
+      topNPracticeCutoffApplied: false,
     }, 'identity'),
     engine: await writeJson(root, 'receipts/engine.json', {
       schemaVersion: 1, releaseId: RELEASE, status: 'pass', completedAt: '2026-07-28T12:00:00.000Z',
@@ -189,7 +209,7 @@ test('promotion audit blocks absent hard-gate receipts, path traversal, and omit
   await writeJson(missing.root, 'missing-receipt-index.json', missing.index, 'identity')
   const missingReport = await auditFamilyPromotion({ root: missing.root, indexPath: 'missing-receipt-index.json' })
   assert.equal(missingReport.status, 'blocked')
-  for (const gate of ['q2', 'engine', 'scid', 'puzzles']) {
+  for (const gate of ['broadcast', 'q2', 'evidence', 'engine', 'scid', 'puzzles']) {
     assert.ok(missingReport.findings.some(({ code }) => code === `${gate}-promotion-receipt-absent`))
   }
 
@@ -211,4 +231,47 @@ test('promotion audit blocks absent hard-gate receipts, path traversal, and omit
   assert.equal(omittedReport.status, 'blocked')
   assert.ok(omittedReport.findings.some(({ code, message }) =>
     code === 'pack-promotion-invalid' && /omitted/u.test(message)))
+})
+
+test('promotion audit rejects an eligible inventory not bound to reconciled exact-corpus evidence', async () => {
+  const forged = await fixture()
+  const graph = await createSyntheticTranspositionGraph()
+  forged.index.packs[0].eligibleInventory = await writeJson(forged.root, 'resources/unbound-inventory.json', {
+    schemaVersion: 1,
+    releaseId: RELEASE,
+    packId: graph.pack.id,
+    sourceReceiptSha256: 'd'.repeat(64),
+    eligibleEdgeIds: graph.edges.filter(({ eligibleForDrill }) => eligibleForDrill).map(({ id }) => id),
+  }, 'identity')
+  await writeJson(forged.root, 'unbound-inventory-index.json', forged.index, 'identity')
+  const report = await auditFamilyPromotion({
+    root: forged.root,
+    indexPath: 'unbound-inventory-index.json',
+  })
+  assert.equal(report.status, 'blocked')
+  assert.ok(report.findings.some(({ code }) => code === 'source-edge-reconciliation-mismatch'))
+  assert.equal(report.gates.find(({ id }) => id === 'source-edge-evidence-chain')?.status, 'blocked')
+
+  const mismatchedExact = await fixture()
+  mismatchedExact.index.promotionReceipts.evidence = await writeJson(
+    mismatchedExact.root,
+    'receipts/mismatched-evidence-reconciliation.json',
+    {
+      schemaVersion: 1, releaseId: RELEASE, status: 'pass', completedAt: '2026-07-28T12:00:00.000Z',
+      gate: 'compact-v3-family-evidence-reconciliation',
+      broadcastExactReceiptSha256: 'e'.repeat(64),
+      q2ExactReceiptSha256: Q2_EXACT_RECEIPT,
+      eligibleInventorySourceSha256s: [HASH],
+      sourceEdgeInventoryComplete: true,
+      topNPracticeCutoffApplied: false,
+    },
+    'identity',
+  )
+  await writeJson(mismatchedExact.root, 'mismatched-exact-index.json', mismatchedExact.index, 'identity')
+  const mismatchedReport = await auditFamilyPromotion({
+    root: mismatchedExact.root,
+    indexPath: 'mismatched-exact-index.json',
+  })
+  assert.equal(mismatchedReport.status, 'blocked')
+  assert.ok(mismatchedReport.findings.some(({ code }) => code === 'source-edge-reconciliation-mismatch'))
 })

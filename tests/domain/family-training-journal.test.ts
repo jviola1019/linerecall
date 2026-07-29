@@ -2,11 +2,14 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   FamilyCoverageEventV1Schema,
+  FamilyCoverageCycleEventV1Schema,
   FamilyTrainingCursorWriteQueue,
   FamilyTrainingCursorV1Schema,
   MemoryFamilyTrainingJournalRepository,
   countUniqueCompletedFamilyPaths,
+  latestFamilyCoverageGeneration,
   type FamilyCoverageEventV1,
+  type FamilyCoverageCycleEventV1,
   type FamilyTrainingCursorV1,
 } from '../../src/domain/family-training-journal.ts'
 
@@ -45,12 +48,32 @@ function cursor(overrides: Partial<FamilyTrainingCursorV1> = {}): FamilyTraining
   }
 }
 
+function cycleEvent(
+  overrides: Record<string, unknown> = {},
+): FamilyCoverageCycleEventV1 {
+  return FamilyCoverageCycleEventV1Schema.parse({
+    schemaVersion: 1,
+    eventId: '20000000-0000-4000-8000-000000000001',
+    releaseId: 'release-2026-07-28',
+    familyId: 'caro-kann',
+    side: 'black',
+    generationId: '20000000-0000-4000-8000-000000000002',
+    generationOrdinal: 0,
+    kind: 'cycle_started',
+    occurredAt: '2026-07-28T11:59:00.000Z',
+    ...overrides,
+  })
+}
+
 test('family coverage and cursor contracts reject duplicate or inconsistent state', () => {
   assert.equal(FamilyCoverageEventV1Schema.safeParse(coverageEvent()).success, true)
   assert.equal(FamilyCoverageEventV1Schema.safeParse({
     ...coverageEvent(),
     eventId: '<script>',
   }).success, false)
+  assert.equal(FamilyCoverageEventV1Schema.safeParse(coverageEvent({
+    packId: 'another_pack',
+  })).success, false)
   assert.equal(FamilyTrainingCursorV1Schema.safeParse(cursor()).success, true)
   assert.equal(FamilyTrainingCursorV1Schema.safeParse(cursor({
     authoritativeDueCardIds: [CARD_A, CARD_A],
@@ -60,6 +83,9 @@ test('family coverage and cursor contracts reject duplicate or inconsistent stat
   })).success, false)
   assert.equal(FamilyTrainingCursorV1Schema.safeParse(cursor({
     pendingPathIds: [PATH_A],
+  })).success, false)
+  assert.equal(FamilyTrainingCursorV1Schema.safeParse(cursor({
+    coverageCycleId: 'another_pack::coverage:0',
   })).success, false)
 })
 
@@ -113,6 +139,69 @@ test('family completion totals count a path once across coverage cycles', () => 
   assert.equal(countUniqueCompletedFamilyPaths([firstCycle, laterCycle, secondPath]), 2)
 })
 
+test('family generation binds independent pack ordinals without discarding either pack', async () => {
+  const repository = new MemoryFamilyTrainingJournalRepository()
+  const started = cycleEvent()
+  const firstBinding = cycleEvent({
+    eventId: '20000000-0000-4000-8000-000000000003',
+    kind: 'pack_bound',
+    packId: 'caro_kann_black',
+    packCoverageCycleId: 'caro_kann_black::coverage:7',
+    occurredAt: '2026-07-28T12:00:00.000Z',
+  }) as Extract<FamilyCoverageCycleEventV1, { kind: 'pack_bound' }>
+  const secondBinding = cycleEvent({
+    eventId: '20000000-0000-4000-8000-000000000004',
+    kind: 'pack_bound',
+    packId: 'caro_kann_black_secondary',
+    packCoverageCycleId: 'caro_kann_black_secondary::coverage:2',
+    occurredAt: '2026-07-28T12:01:00.000Z',
+  }) as Extract<FamilyCoverageCycleEventV1, { kind: 'pack_bound' }>
+  for (const event of [started, firstBinding, secondBinding]) {
+    assert.equal(FamilyCoverageCycleEventV1Schema.safeParse(event).success, true)
+    assert.equal(await repository.appendCycleEvent(event), 'appended')
+  }
+  const events = await repository.listCycleEvents({
+    releaseId: started.releaseId,
+    familyId: started.familyId,
+    side: started.side,
+  })
+  assert.deepEqual(latestFamilyCoverageGeneration(events)?.packCycleIds, {
+    caro_kann_black: 'caro_kann_black::coverage:7',
+    caro_kann_black_secondary: 'caro_kann_black_secondary::coverage:2',
+  })
+  assert.equal(await repository.appendCycleEvent({
+    ...structuredClone(secondBinding),
+    eventId: '20000000-0000-4000-8000-000000000005',
+  }), 'duplicate')
+  await assert.rejects(
+    () => repository.appendCycleEvent({
+      ...structuredClone(secondBinding),
+      eventId: '20000000-0000-4000-8000-000000000006',
+      packCoverageCycleId: 'caro_kann_black_secondary::coverage:3',
+    }),
+    /rebound/u,
+  )
+})
+
+test('a new family generation starts empty instead of inheriting prior pack bindings', () => {
+  const first = cycleEvent()
+  const oldBinding = cycleEvent({
+    eventId: '20000000-0000-4000-8000-000000000007',
+    kind: 'pack_bound',
+    packId: 'caro_kann_black',
+    packCoverageCycleId: 'caro_kann_black::coverage:7',
+  })
+  const next = cycleEvent({
+    eventId: '20000000-0000-4000-8000-000000000008',
+    generationId: '20000000-0000-4000-8000-000000000009',
+    generationOrdinal: 1,
+    occurredAt: '2026-07-29T12:00:00.000Z',
+  })
+  const generation = latestFamilyCoverageGeneration([first, oldBinding, next])
+  assert.equal(generation?.generationOrdinal, 1)
+  assert.deepEqual(generation?.packCycleIds, {})
+})
+
 test('cursor snapshots append without overwriting history and exact retries are no-ops', async () => {
   const repository = new MemoryFamilyTrainingJournalRepository()
   const initial = cursor()
@@ -129,6 +218,7 @@ test('cursor snapshots append without overwriting history and exact retries are 
   const loaded = await repository.loadLatestCursor({
     releaseId: advanced.releaseId,
     familyId: advanced.familyId,
+    packId: 'caro_kann_black',
     side: advanced.side,
   })
   assert.deepEqual(loaded, advanced)
@@ -136,13 +226,53 @@ test('cursor snapshots append without overwriting history and exact retries are 
   assert.deepEqual(await repository.loadLatestCursor({
     releaseId: advanced.releaseId,
     familyId: advanced.familyId,
+    packId: 'caro_kann_black',
     side: advanced.side,
   }), advanced)
   assert.equal(await repository.loadLatestCursor({
     releaseId: advanced.releaseId,
     familyId: advanced.familyId,
+    packId: 'caro_kann_black',
     side: 'white',
   }), null)
+  await assert.rejects(
+    () => repository.loadLatestCursor({
+      releaseId: advanced.releaseId,
+      familyId: advanced.familyId,
+      packId: '<script>',
+      side: advanced.side,
+    }),
+    /Invalid string/u,
+  )
+})
+
+test('same-side graph packs keep independent latest cursors', async () => {
+  const repository = new MemoryFamilyTrainingJournalRepository()
+  const primary = cursor()
+  const secondaryPackId = 'caro_kann_black_secondary'
+  const secondaryCard = `${secondaryPackId}::pos_0000000000000003`
+  const secondary = cursor({
+    coverageCycleId: `${secondaryPackId}::coverage:0`,
+    authoritativeDueCardIds: [secondaryCard],
+    reviewedCardIds: [],
+    completedPathIds: [],
+    pendingPathIds: [PATH_B],
+  })
+  assert.equal(await repository.appendCursor(primary), 'appended')
+  assert.equal(await repository.appendCursor(secondary), 'appended')
+
+  assert.deepEqual(await repository.loadLatestCursor({
+    releaseId: primary.releaseId,
+    familyId: primary.familyId,
+    packId: 'caro_kann_black',
+    side: 'black',
+  }), primary)
+  assert.deepEqual(await repository.loadLatestCursor({
+    releaseId: secondary.releaseId,
+    familyId: secondary.familyId,
+    packId: secondaryPackId,
+    side: 'black',
+  }), secondary)
 })
 
 test('cursor writer retains failed snapshots in order and retries without losing updates', async () => {

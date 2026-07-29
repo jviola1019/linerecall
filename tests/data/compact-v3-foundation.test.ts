@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -28,6 +28,7 @@ import {
   shouldRetainExactObservation,
   type CompactEvidenceIdentity,
 } from '../../scripts/data/compact-v3-foundation.ts'
+import { assessCompactV3WorkDirectory } from '../../scripts/data/preflight-compact-v3.ts'
 
 const archive = {
   archiveId: 'standard-2026-04',
@@ -242,6 +243,56 @@ test('candidate hard caps fail closed instead of dropping a retained identity', 
   }
 })
 
+test('SQLite working-state byte caps apply during archive transactions without disk journal spill', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'linerecall-v3-byte-cap-'))
+  const candidatePath = join(directory, 'candidate.sqlite')
+  const exactPath = join(directory, 'exact.sqlite')
+  const maximumBytes = 64 * 1024
+  const candidate = new SqliteCandidateIndex(candidatePath, 10_000, maximumBytes)
+  const exact = new SqliteCompactExactStore(exactPath, maximumBytes)
+  try {
+    candidate.beginArchive()
+    assert.throws(() => {
+      for (let index = 0; index < 10_000; index += 1) {
+        candidate.retain(
+          index.toString(16).padStart(64, '0'),
+          'cohort_test-blitz',
+          'position',
+          100,
+        )
+      }
+    }, /full|byte hard cap/iu)
+    candidate.rollbackArchive()
+
+    exact.beginArchive()
+    assert.throws(() => {
+      for (let index = 0; index < 10_000; index += 1) {
+        exact.add({
+          identity: { kind: 'position', epd: `8/8/8/8/8/8/8/${index} w - -` },
+          cohortId: 'cohort_test-blitz',
+          ply: 1,
+          month: '2026-04',
+          timeControl: 'blitz',
+          ratingBand: '<1800',
+          ratingDetail: '<1200',
+          result: '1-0',
+        })
+      }
+    }, /full|byte hard cap/iu)
+    exact.rollbackArchive()
+
+    for (const path of [candidatePath, exactPath]) {
+      assert.ok((await stat(path)).size <= maximumBytes)
+      await assert.rejects(stat(`${path}-wal`), { code: 'ENOENT' })
+      await assert.rejects(stat(`${path}-journal`), { code: 'ENOENT' })
+    }
+  } finally {
+    candidate.close()
+    exact.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('candidate sketch snapshots preserve cross-archive threshold counts', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'linerecall-v3-resume-'))
   const index = new SqliteCandidateIndex(join(directory, 'candidates.sqlite'), 10)
@@ -410,6 +461,25 @@ test('preflight uses enforced caps, preserves 10 GiB, and documents exit 0/2', (
     ...approved,
     bounds: { ...approved.bounds, candidateSketchMaxBytes: 7 },
   }, Number.MAX_SAFE_INTEGER), /sketch byte cap/u)
+})
+
+test('preflight command assessment counts retained schema-v3 bytes before reporting ready', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'linerecall-v3-preflight-retained-'))
+  const plan = CompactPreflightPlanSchema.parse({
+    ...preflightPlan('approved'),
+    bounds: { ...bounds, retainedCorpusMaxBytes: 1 },
+  })
+  try {
+    await mkdir(join(directory, 'v3'))
+    await writeFile(join(directory, 'v3', 'retained.bin'), Buffer.from('xx'))
+    const assessment = await assessCompactV3WorkDirectory(plan, directory, Number.MAX_SAFE_INTEGER)
+    assert.equal(assessment.retainedBytesAlreadyPresent, 2)
+    assert.equal(assessment.safeToStart, false)
+    assert.equal(assessment.reasonCode, 'retained-state-cap-exceeded')
+    assert.equal(compactPreflightExitCode(assessment), 2)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
 })
 
 test('terminal status distinguishes empirical ends, sample exhaustion, quarantine, and ply-100 caps', () => {

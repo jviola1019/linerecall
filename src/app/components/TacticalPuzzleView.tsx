@@ -8,7 +8,10 @@ import {
   type PuzzleRecord,
   type TacticalPuzzleState,
 } from '../../domain/tactical-puzzles.ts'
-import type { PuzzleAttemptEventV1 } from '../../domain/puzzle-progress.ts'
+import {
+  MAX_PUZZLE_ATTEMPT_ELAPSED_MS,
+  type PuzzleAttemptEventV1,
+} from '../../domain/puzzle-progress.ts'
 import {
   TacticalPuzzleResourceSchema,
   type TacticalPuzzleResource,
@@ -74,6 +77,7 @@ function TacticalPuzzleSession({
   const [saving, setSaving] = useState(false)
   const [announcement, setAnnouncement] = useState('')
   const startedAtRef = useRef(Date.now())
+  const evidenceRef = useRef<HTMLElement>(null)
   const recordedRef = useRef(new Set<string>())
   const attemptsRef = useRef(new Map<string, PuzzleAttemptEventV1>())
   const inFlightSavesRef = useRef(new Map<string, Promise<boolean>>())
@@ -87,6 +91,17 @@ function TacticalPuzzleSession({
   const progressValue = state.completed
     ? puzzle.learnerNodes.length
     : Math.min(state.learnerIndex, puzzle.learnerNodes.length)
+
+  const openEvidence = (): void => {
+    const evidence = evidenceRef.current
+    if (!evidence) return
+    evidence.focus({ preventScroll: true })
+    evidence.scrollIntoView?.({
+      behavior: reducedMotion ? 'auto' : 'smooth',
+      block: 'start',
+    })
+    announce('Puzzle evidence opened.')
+  }
 
   const persistAttempt = (key: string, event: PuzzleAttemptEventV1): Promise<boolean> => {
     if (recordedRef.current.has(key)) return Promise.resolve(true)
@@ -131,7 +146,10 @@ function TacticalPuzzleSession({
         outcome,
         incorrectAttempts: completedState.incorrectAttempts,
         usedHint: completedState.usedHint,
-        elapsedMs: Math.max(0, now - startedAtRef.current),
+        elapsedMs: Math.min(
+          MAX_PUZZLE_ATTEMPT_ELAPSED_MS,
+          Math.max(0, now - startedAtRef.current),
+        ),
       }
       attemptsRef.current.set(key, event)
     }
@@ -245,7 +263,7 @@ function TacticalPuzzleSession({
           <ChessBoard
             fen={state.fen}
             orientation={orientation}
-            disabled={state.phase !== 'learner'}
+            disabled={state.phase !== 'learner' || saving}
             reducedMotion={reducedMotion}
             hintUci={state.usedHint ? expectedMove : null}
             lastMove={lastMoveUci ? { uci: lastMoveUci, status: 'book' } : null}
@@ -265,7 +283,14 @@ function TacticalPuzzleSession({
             >
               Hint
             </button>
-            <button type="button" className="secondary-button" aria-controls="puzzle-evidence">Why</button>
+            <button
+              type="button"
+              className="secondary-button"
+              aria-controls="puzzle-evidence"
+              onClick={openEvidence}
+            >
+              Why
+            </button>
             {state.completed ? (
               <button
                 type="button"
@@ -278,7 +303,13 @@ function TacticalPuzzleSession({
             ) : null}
           </div>
         </div>
-        <aside id="puzzle-evidence" className="tactical-evidence" aria-labelledby="puzzle-evidence-title">
+        <aside
+          ref={evidenceRef}
+          id="puzzle-evidence"
+          className="tactical-evidence"
+          aria-labelledby="puzzle-evidence-title"
+          tabIndex={-1}
+        >
           <p className="eyebrow">Evidence</p>
           <h2 id="puzzle-evidence-title">{state.completed ? 'Solution complete' : 'Your move'}</h2>
           <p role="status">{feedback}</p>

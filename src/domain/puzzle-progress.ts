@@ -7,6 +7,8 @@ import { z } from 'zod'
  */
 const PuzzleIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u)
 
+export const MAX_PUZZLE_ATTEMPT_ELAPSED_MS = 86_400_000
+
 export const PuzzleAttemptEventV1Schema = z.object({
   eventId: z.string().uuid(),
   puzzleId: PuzzleIdSchema,
@@ -14,7 +16,7 @@ export const PuzzleAttemptEventV1Schema = z.object({
   outcome: z.enum(['solved', 'abandoned']),
   incorrectAttempts: z.number().int().nonnegative().max(10_000),
   usedHint: z.boolean(),
-  elapsedMs: z.number().int().nonnegative().max(86_400_000).optional(),
+  elapsedMs: z.number().int().nonnegative().max(MAX_PUZZLE_ATTEMPT_ELAPSED_MS).optional(),
 }).strict()
 
 export const PuzzleProgressEntryV1Schema = z.object({

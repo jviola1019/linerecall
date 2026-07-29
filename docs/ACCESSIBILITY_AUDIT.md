@@ -33,7 +33,7 @@ recorded.
 - "Manual required" is a hard blocker. It cannot be cleared by axe, computed
   styles, Playwright's accessibility tree, or emulated touch.
 
-## Current automated observations
+## Historical exact-candidate automated observations
 
 The following exact-candidate observations are automated engineering evidence,
 not a WCAG conformance determination:
@@ -56,6 +56,37 @@ No automated observation supplies the unavailable NVDA, VoiceOver, TalkBack,
 physical-device, actual browser zoom, complete RTL, linguistic, or qualified
 visual/contrast reviews, and the manual record remains `not_run`.
 
+## Current source-tree observations, not candidate evidence
+
+The mutable source tree is ahead of the exact candidate described above.
+Focused component and review-harness checks currently exercise the following
+behavior, but they are not digest-bound release records and cannot be combined
+with the historical 39 axe attachments:
+
+- The semantic board remains an ARIA grid, including a read-only navigable state
+  during autoplay. Stable visual piece identities live in a separate absolute
+  layer.
+- Review-harness motion checks cover normal moves, captures, castling, en
+  passant, promotion, sequential learner/reply movement, orientation changes,
+  rapid FEN reset, and reduced motion. A paused midpoint geometry check places
+  the moving piece between source and destination, and transition event ordering
+  verifies that the reply does not start while the learner transform is active.
+- Exact `pointercancel` state cleanup is component-tested. The browser harness
+  covers an invalid drag plus keyboard and non-spatial move-picker alternatives;
+  it does not claim a genuine browser `pointercancel` dispatch.
+- Tactical fixtures exercise all nine visible resource states, special moves,
+  alternate mate-in-one handling, evidence focus, and a 320-by-800 thumb dock
+  above fixed navigation without horizontal overflow. The fixtures are
+  synthetic and are not evidence that a real puzzle shard is accessible.
+- Family side and pack choices are labelled native button groups with
+  `aria-pressed`. They are intentionally not tabs. The A-E ECO volume selector
+  remains a true roving tab set. Named-branch practice can advance across
+  same-side packs, but exact branch-cycle recovery after remount is not yet
+  durable.
+
+All of these behaviors require regeneration against exact candidate bytes and
+manual AT/device review before release.
+
 ## Criterion-by-criterion engineering crosswalk
 
 Only criteria with a concrete implementation or a defined LineRecall test are
@@ -65,7 +96,7 @@ must not be interpreted as not applicable or satisfied.
 | WCAG 2.2 success criterion | LineRecall implementation in scope | Evidence and remaining work | Section 508 relationship |
 | --- | --- | --- | --- |
 | 1.1.1 Non-text Content | Decorative glyphs are hidden; board squares expose piece, color, coordinate, selection, and legal-target text. | Component/axe coverage exists; NVDA, VoiceOver, and TalkBack output remains manual. | E205.4 -> WCAG 2.0 SC 1.1.1. |
-| 1.3.1 Info and Relationships | Landmarks, headings, labels, tables, grids, listboxes, tablists, tabs, and tabpanels are programmatic. | Component queries and axe cover structure; AT navigation remains manual. | E205.4 -> WCAG 2.0 SC 1.3.1. |
+| 1.3.1 Info and Relationships | Landmarks, headings, labels, tables, grids, listboxes, the A-E ECO tab set, and labelled family side/pack button groups are programmatic. | Component queries and axe cover structure; pressed-state and tab announcements with AT remain manual. | E205.4 -> WCAG 2.0 SC 1.3.1. |
 | 1.3.2 Meaningful Sequence | DOM order follows search, ECO selection, line detail, board, feedback, and progress flows. | Keyboard/component tests exist; reading sequence must be checked with each named AT. | E205.4 -> WCAG 2.0 SC 1.3.2. |
 | 1.3.4 Orientation | Responsive rules support portrait and landscape without locking orientation. | Viewport/reflow automation exists; physical-device rotation remains manual. | WCAG 2.1/2.2 product target; not separately incorporated by E205.4. |
 | 1.4.1 Use of Color | Move classifications use text, icons, borders/patterns, and announcements in addition to color. | Source/component checks exist; forced-colors and low-vision inspection remains manual. | E205.4 -> WCAG 2.0 SC 1.4.1. |
@@ -74,7 +105,7 @@ must not be interpreted as not applicable or satisfied.
 | 1.4.10 Reflow | The app is bounded to 320 CSS pixels without page-level two-dimensional scrolling; wide tables use named scroll regions. | Browser overflow and 320-pixel cases exist; manual zoom and text-spacing review remains. | WCAG 2.1/2.2 product target; not separately incorporated by E205.4. |
 | 1.4.11 Non-text Contrast | Focus, selected state, controls, board targets, and forced-color overrides have authored indicators. | Computed forced-color probes exist; comprehensive state-by-state visual review remains manual. | WCAG 2.1/2.2 product target; not separately incorporated by E205.4. |
 | 1.4.12 Text Spacing | Content uses flexible layout/height rules, wrapping ECO names, and no name ellipsis; a 320-pixel test applies the WCAG text-spacing override and checks clipping/overflow. | The current automated 320-pixel case reported no visible clipping; actual browser spacing controls and AT/manual review are still required. | WCAG 2.1/2.2 product target; not separately incorporated by E205.4. |
-| 2.1.1 Keyboard | Native controls, roving board/list focus, tab arrow keys, move picker, dialogs, and grading are keyboard operable. | Component and browser keyboard paths exist; a full manual forward/reverse transcript remains required. | E205.4 -> WCAG 2.0 SC 2.1.1. |
+| 2.1.1 Keyboard | Native controls, roving board/list focus, A-E ECO tab arrow keys, family pressed-button groups, move picker, dialogs, and grading are keyboard operable. | Component and browser keyboard paths exist; a full manual forward/reverse transcript remains required. | E205.4 -> WCAG 2.0 SC 2.1.1. |
 | 2.1.2 No Keyboard Trap | Dialogs provide Escape/close paths, contain focus while open, and restore focus. | Automated dialog and breakpoint tests exist; manual AT/keyboard confirmation remains. | E205.4 -> WCAG 2.0 SC 2.1.2. |
 | 2.4.1 Bypass Blocks | A skip link targets the focusable main region. | Document and browser checks exist; manual activation remains. | E205.4 -> WCAG 2.0 SC 2.4.1. |
 | 2.4.2 Page Titled | The static document has a descriptive title. | Artifact/document audit exists. | E205.4 -> WCAG 2.0 SC 2.4.2. |
@@ -83,7 +114,7 @@ must not be interpreted as not applicable or satisfied.
 | 2.4.7 Focus Visible | A high-contrast `:focus-visible` indicator is authored, with board-specific inset focus. | Computed/style and browser checks exist; all themes, forced colors, and sticky-control layouts remain manual. | E205.4 -> WCAG 2.0 SC 2.4.7. |
 | 2.4.11 Focus Not Obscured (Minimum) | Authored sticky/fixed controls, dialogs, responsive breakpoints, scroll padding/margins, and focus restoration are exercised by a dedicated browser case. | The current Chrome probe found no blocker for eight representative focus targets; physical mobile browser/AT confirmation remains manual. | WCAG 2.2 product target; not separately incorporated by E205.4. |
 | 2.5.1 Pointer Gestures | Dragging is not required: click-click, keyboard, and the legal-move picker provide non-path alternatives. | Component and Chrome touch paths exist; physical iOS/Android use remains manual. | WCAG 2.1/2.2 product target; not separately incorporated by E205.4. |
-| 2.5.2 Pointer Cancellation | Drag submission occurs on pointer-up; cancellation clears pending drag state, and click-click is available. | Pointer unit/browser paths exist; physical touch cancellation remains manual. | WCAG 2.0 has no direct counterpart incorporated by E205.4. |
+| 2.5.2 Pointer Cancellation | Drag submission occurs on pointer-up; cancellation clears pending drag state, and click-click is available. | Exact cancellation is component-tested; the browser harness covers invalid drag but not genuine `pointercancel`. Physical touch cancellation remains manual. | WCAG 2.0 has no direct counterpart incorporated by E205.4. |
 | 2.5.3 Label in Name | Visible labels such as volume codes, move controls, themes, and grades are included in accessible names. | Component accessible-name queries and axe coverage exist; speech-input review remains manual. | WCAG 2.1/2.2 product target; not separately incorporated by E205.4. |
 | 2.5.7 Dragging Movements | Every draggable chess move has click-click, keyboard, and non-spatial picker alternatives. | Chrome native touch-drag and alternative paths exist in source tests; physical-device confirmation remains manual. | WCAG 2.2 product target; not separately incorporated by E205.4. |
 | 2.5.8 Target Size (Minimum) | Spatial board squares target at least 24 by 24 CSS pixels; non-spatial controls and equivalent move controls target at least 44 by 44. | Current computed attachments found no undersized non-spatial control at 320, phone, tablet, or desktop sizes; the minimum measured board square was 35.5 CSS pixels. Physical-device confirmation remains manual. | WCAG 2.2 product target; not separately incorporated by E205.4. |
@@ -96,8 +127,8 @@ must not be interpreted as not applicable or satisfied.
 | 3.3.2 Labels or Instructions | Search, PGN, move picker, import, hints, and grades have labels/help text. | Component/axe checks exist; manual comprehension review remains. | E205.4 -> WCAG 2.0 SC 3.3.2. |
 | 3.3.3 Error Suggestion | Validation messages identify accepted formats/limits; retry and JSON export are offered where recovery is available. | Domain/component/browser recovery cases exist; manual clarity review remains. | E205.4 -> WCAG 2.0 SC 3.3.3. |
 | 3.3.4 Error Prevention (Legal, Financial, Data) | Validated progress import presents a review/confirm step before replacing user-controlled progress. | Component import-confirmation tests exist; full manual process review remains. | E205.4 -> WCAG 2.0 SC 3.3.4. |
-| 4.1.2 Name, Role, Value | Board gridcells, listboxes/options, tabs/panels, dialogs, toggles, and native controls expose state and value. | The current strict axe runs recorded zero violations and zero non-contrast incompletes; named AT testing remains required. | E205.4 -> WCAG 2.0 SC 4.1.2. |
-| 4.1.3 Status Messages | Loading, selection, move feedback, storage, errors, grade, and completion use live status/alert channels without forced focus. | Component/browser checks exist; announcement timing, ordering, and duplication remain manual. | WCAG 2.1/2.2 product target; not separately incorporated by E205.4. |
+| 4.1.2 Name, Role, Value | Board gridcells, listboxes/options, the ECO tabs/panels, family pressed-button groups, dialogs, toggles, and native controls expose state and value. | The historical strict axe runs recorded zero violations and zero non-contrast incompletes; current-source regeneration and named AT testing remain required. | E205.4 -> WCAG 2.0 SC 4.1.2. |
+| 4.1.3 Status Messages | Loading, selection, move feedback, storage, errors, grade, path/branch completion, puzzle state, and completion use live status/alert channels without forced focus. | Component/browser checks exist; announcement timing, ordering, and duplication remain manual. | WCAG 2.1/2.2 product target; not separately incorporated by E205.4. |
 
 ## ECO browser rendering and keyboard contract
 
@@ -125,6 +156,11 @@ environment, so each deliberately skips three touch-only cases. The compromise
 therefore requires physical VoiceOver/Safari/iOS and
 TalkBack/Chrome/Android review; the Chrome evidence must not be generalized to
 those platforms.
+
+For the newer source-tree board harness, exact `pointercancel` dispatch remains
+component evidence only. Its browser path deliberately verifies invalid-drag
+recovery and equivalent keyboard/move-picker operation instead of overstating
+the event that Playwright did not produce.
 
 ## Axe and contrast evidence policy
 
@@ -169,6 +205,15 @@ outage export, and recovery remain manual/provider-backed checks.
   move alternatives, modal containment/restoration, and JSON transfer.
 - TalkBack with Chrome on a current physical Android device: the equivalent
   linear/swipe, explore-by-touch, pan, drill, error, and storage flows.
+- Family coverage: side and pack pressed-button announcements, full-family and
+  named-branch pack transitions, `completed / total` status, pause/skip/stop,
+  error retry, and focus continuity across automatic pack changes.
+- Tactical puzzles: every loading/error/offline/rate-limit/corrupt state,
+  sequential learner/forced-reply announcements, special moves, evidence-sheet
+  focus, mobile dock clearance, abandonment/save state, and separate mastery.
+- Board motion: autoplay read-only navigation, source/destination semantics,
+  exact physical pointer cancellation, orientation/reset behavior, and the
+  reduced-motion alternative.
 - Keyboard-only: Tab/Shift+Tab, arrows, Home/End, Enter/Space, Escape, reverse
   order, sticky controls, 200% and 400% actual zoom, and no traps.
 - Visual/manual: 320 CSS-pixel reflow, 360 by 800, 390 by 844, tablet, desktop,

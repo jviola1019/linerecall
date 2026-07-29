@@ -42,3 +42,55 @@ html {
   border: 2px solid currentColor;
   font: 1rem/1.5 system-ui, sans-serif;
 }
+
+.board-motion-review {
+  width: min(100% - 1rem, 52rem);
+  margin-inline: auto;
+  padding-block: 1rem 3rem;
+}
+
+.board-motion-review > header {
+  margin-bottom: 1rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.board-motion-review > header p:last-child { color: var(--muted); }
+
+.board-motion-review-controls {
+  display: grid;
+  grid-template-columns: minmax(12rem, 1fr) repeat(3, auto);
+  align-items: end;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.board-motion-review-controls label {
+  display: grid;
+  gap: 0.35rem;
+  font-weight: 700;
+}
+
+.board-motion-review-status {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  margin-block: 0.75rem;
+  padding: 1px;
+  background: var(--border);
+}
+
+.board-motion-review-status div {
+  padding: 0.65rem;
+  background: var(--surface);
+}
+
+.board-motion-review-status dd {
+  margin: 0.2rem 0 0;
+  font-weight: 700;
+}
+
+@media (max-width: 760px) {
+  .board-motion-review-controls,
+  .board-motion-review-status { grid-template-columns: 1fr; }
+}

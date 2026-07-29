@@ -21,6 +21,60 @@ const COHORT_ID = /^cohort_[a-z0-9-]{3,64}$/u
 const UCI = /^[a-h][1-8][a-h][1-8][qrbn]?$/u
 const UINT32_MAX = 0xffff_ffff
 
+function pragmaInteger(database: DatabaseSync, name: 'page_count' | 'page_size' | 'max_page_count'): number {
+  const row = database.prepare(`PRAGMA ${name}`).get() as Record<string, unknown> | undefined
+  const value = row ? Object.values(row)[0] : undefined
+  const minimum = name === 'page_count' ? 0 : 1
+  if (!Number.isSafeInteger(value) || (value as number) < minimum) {
+    throw new Error(`SQLite ${name} did not return a safe integer of at least ${minimum}`)
+  }
+  return value as number
+}
+
+/**
+ * Adapter working databases are disposable copies: only a fully processed,
+ * hashed shard is promoted. Keeping their rollback journal on disk would let a
+ * single archive transaction grow beyond the advertised spill cap before the
+ * end-of-pass size check. Disable that disposable journal and let SQLite's
+ * max-page count enforce the main-file byte ceiling while writes are occurring.
+ *
+ * Standalone stores retain SQLite's durable WAL behavior when no byte cap is
+ * supplied.
+ */
+function configureWorkingDatabaseByteCap(
+  database: DatabaseSync,
+  maximumBytes: number | undefined,
+  label: string,
+): void {
+  if (maximumBytes === undefined) return
+  if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1) {
+    throw new Error(`${label} byte hard cap must be a positive safe integer`)
+  }
+  database.exec('PRAGMA journal_mode = OFF; PRAGMA synchronous = OFF; PRAGMA temp_store = MEMORY;')
+  const pageSize = pragmaInteger(database, 'page_size')
+  const currentPages = pragmaInteger(database, 'page_count')
+  const maximumPages = Math.floor(maximumBytes / pageSize)
+  if (maximumPages < currentPages || maximumPages < 1) {
+    throw new Error(`${label} existing state exceeds its byte hard cap`)
+  }
+  database.exec(`PRAGMA max_page_count = ${maximumPages}`)
+  const appliedMaximumPages = pragmaInteger(database, 'max_page_count')
+  if (appliedMaximumPages > maximumPages) {
+    throw new Error(`${label} SQLite page cap was not enforced`)
+  }
+}
+
+function rollbackSqliteTransaction(database: DatabaseSync): void {
+  try {
+    database.exec('ROLLBACK')
+  } catch (error) {
+    // SQLITE_FULL may already have rolled back the transaction. The entire
+    // working database is disposable, so an absent transaction is equivalent
+    // to the requested rollback; every other SQLite failure remains fatal.
+    if (!/no transaction is active/iu.test((error as Error).message)) throw error
+  }
+}
+
 export type CompactEvidenceKind = 'position' | 'edge'
 
 export interface PositionIdentity {
@@ -245,24 +299,35 @@ export class SqliteCandidateIndex {
   private count: number
   private transactionStartCount: number | null = null
 
-  constructor(path: string, private readonly maximumCandidates: number) {
+  constructor(
+    path: string,
+    private readonly maximumCandidates: number,
+    maximumBytes?: number,
+  ) {
     if (!Number.isSafeInteger(maximumCandidates) || maximumCandidates < 1) {
       throw new Error('maximumCandidates must be a positive safe integer')
     }
     this.database = new DatabaseSync(path)
-    this.database.exec(`
-      PRAGMA journal_mode = WAL;
-      PRAGMA synchronous = FULL;
-      PRAGMA temp_store = MEMORY;
-      CREATE TABLE IF NOT EXISTS candidates (
-        fingerprint TEXT NOT NULL CHECK(length(fingerprint) = 64),
-        cohort_id TEXT NOT NULL,
-        kind TEXT NOT NULL CHECK(kind IN ('position', 'edge')),
-        first_estimate INTEGER NOT NULL CHECK(first_estimate >= 1),
-        maximum_estimate INTEGER NOT NULL CHECK(maximum_estimate >= first_estimate),
-        PRIMARY KEY(fingerprint, cohort_id)
-      ) STRICT;
-    `)
+    try {
+      if (maximumBytes === undefined) {
+        this.database.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA temp_store = MEMORY;')
+      } else {
+        configureWorkingDatabaseByteCap(this.database, maximumBytes, 'Candidate index')
+      }
+      this.database.exec(`
+        CREATE TABLE IF NOT EXISTS candidates (
+          fingerprint TEXT NOT NULL CHECK(length(fingerprint) = 64),
+          cohort_id TEXT NOT NULL,
+          kind TEXT NOT NULL CHECK(kind IN ('position', 'edge')),
+          first_estimate INTEGER NOT NULL CHECK(first_estimate >= 1),
+          maximum_estimate INTEGER NOT NULL CHECK(maximum_estimate >= first_estimate),
+          PRIMARY KEY(fingerprint, cohort_id)
+        ) STRICT;
+      `)
+    } catch (error) {
+      this.database.close()
+      throw error
+    }
     this.findCandidate = this.database.prepare(
       'SELECT kind FROM candidates WHERE fingerprint = ? AND cohort_id = ?',
     )
@@ -297,7 +362,7 @@ export class SqliteCandidateIndex {
 
   rollbackArchive(): void {
     if (this.transactionStartCount === null) throw new Error('No candidate archive transaction is active')
-    this.database.exec('ROLLBACK')
+    rollbackSqliteTransaction(this.database)
     this.count = this.transactionStartCount
     this.transactionStartCount = null
   }
@@ -420,42 +485,50 @@ export class SqliteCompactExactStore {
   private readonly upsertOutcome: StatementSync
   private archiveTransactionActive = false
 
-  constructor(path: string) {
+  constructor(path: string, maximumBytes?: number) {
     this.database = new DatabaseSync(path)
-    this.database.exec(`
-      PRAGMA journal_mode = WAL;
-      PRAGMA synchronous = FULL;
-      PRAGMA foreign_keys = ON;
-      CREATE TABLE IF NOT EXISTS positions (
-        position_id INTEGER PRIMARY KEY,
-        fingerprint TEXT NOT NULL UNIQUE CHECK(length(fingerprint) = 64),
-        epd TEXT NOT NULL UNIQUE
-      ) STRICT;
-      CREATE TABLE IF NOT EXISTS edges (
-        edge_id INTEGER PRIMARY KEY,
-        fingerprint TEXT NOT NULL UNIQUE CHECK(length(fingerprint) = 64),
-        from_position_id INTEGER NOT NULL REFERENCES positions(position_id),
-        uci TEXT NOT NULL,
-        san TEXT NOT NULL,
-        to_position_id INTEGER NOT NULL REFERENCES positions(position_id),
-        UNIQUE(from_position_id, uci, to_position_id)
-      ) STRICT;
-      CREATE TABLE IF NOT EXISTS outcomes (
-        kind TEXT NOT NULL CHECK(kind IN ('position', 'edge')),
-        reference_id INTEGER NOT NULL,
-        cohort_id TEXT NOT NULL,
-        month TEXT NOT NULL,
-        time_control TEXT NOT NULL,
-        rating_band TEXT NOT NULL,
-        rating_detail TEXT NOT NULL,
-        min_ply INTEGER NOT NULL CHECK(min_ply BETWEEN 0 AND 100),
-        n INTEGER NOT NULL,
-        white_wins INTEGER NOT NULL,
-        draws INTEGER NOT NULL,
-        black_wins INTEGER NOT NULL,
-        PRIMARY KEY(kind, reference_id, cohort_id, month, time_control, rating_band, rating_detail)
-      ) WITHOUT ROWID, STRICT;
-    `)
+    try {
+      if (maximumBytes === undefined) {
+        this.database.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;')
+      } else {
+        configureWorkingDatabaseByteCap(this.database, maximumBytes, 'Exact evidence state')
+      }
+      this.database.exec(`
+        PRAGMA foreign_keys = ON;
+        CREATE TABLE IF NOT EXISTS positions (
+          position_id INTEGER PRIMARY KEY,
+          fingerprint TEXT NOT NULL UNIQUE CHECK(length(fingerprint) = 64),
+          epd TEXT NOT NULL UNIQUE
+        ) STRICT;
+        CREATE TABLE IF NOT EXISTS edges (
+          edge_id INTEGER PRIMARY KEY,
+          fingerprint TEXT NOT NULL UNIQUE CHECK(length(fingerprint) = 64),
+          from_position_id INTEGER NOT NULL REFERENCES positions(position_id),
+          uci TEXT NOT NULL,
+          san TEXT NOT NULL,
+          to_position_id INTEGER NOT NULL REFERENCES positions(position_id),
+          UNIQUE(from_position_id, uci, to_position_id)
+        ) STRICT;
+        CREATE TABLE IF NOT EXISTS outcomes (
+          kind TEXT NOT NULL CHECK(kind IN ('position', 'edge')),
+          reference_id INTEGER NOT NULL,
+          cohort_id TEXT NOT NULL,
+          month TEXT NOT NULL,
+          time_control TEXT NOT NULL,
+          rating_band TEXT NOT NULL,
+          rating_detail TEXT NOT NULL,
+          min_ply INTEGER NOT NULL CHECK(min_ply BETWEEN 0 AND 100),
+          n INTEGER NOT NULL,
+          white_wins INTEGER NOT NULL,
+          draws INTEGER NOT NULL,
+          black_wins INTEGER NOT NULL,
+          PRIMARY KEY(kind, reference_id, cohort_id, month, time_control, rating_band, rating_detail)
+        ) WITHOUT ROWID, STRICT;
+      `)
+    } catch (error) {
+      this.database.close()
+      throw error
+    }
     this.upsertPosition = this.database.prepare('INSERT OR IGNORE INTO positions(fingerprint, epd) VALUES (?, ?)')
     this.getPosition = this.database.prepare('SELECT position_id AS positionId, epd FROM positions WHERE fingerprint = ?')
     this.upsertEdge = this.database.prepare(`
@@ -503,7 +576,7 @@ export class SqliteCompactExactStore {
 
   rollbackArchive(): void {
     if (!this.archiveTransactionActive) throw new Error('No exact archive transaction is active')
-    this.database.exec('ROLLBACK')
+    rollbackSqliteTransaction(this.database)
     this.archiveTransactionActive = false
   }
 

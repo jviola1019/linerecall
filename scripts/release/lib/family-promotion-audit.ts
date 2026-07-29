@@ -23,6 +23,8 @@ const SAFE_RELATIVE_PATH = /^(?!\/)(?!.*(?:^|\/)\.{1,2}(?:\/|$))[a-zA-Z0-9][a-zA
 const MAX_INDEX_BYTES = 1 * 1024 * 1024
 const MAX_COMPRESSED_RESOURCE_BYTES = 64 * 1024 * 1024
 const MAX_UNCOMPRESSED_RESOURCE_BYTES = 256 * 1024 * 1024
+const EXPECTED_BROADCAST_GAMES = 1_146_297
+const EXPECTED_BROADCAST_ARCHIVES = 78
 const EXPECTED_Q2_GAMES = 267_333_507
 const EXPECTED_Q2_COMPRESSED_BYTES = 87_256_474_116
 const EXPECTED_TAXONOMY_LINES = 3_790
@@ -41,7 +43,9 @@ const FileReceiptSchema = z.object({
 })
 
 const GateFileMapSchema = z.object({
+  broadcast: FileReceiptSchema.optional(),
   q2: FileReceiptSchema.optional(),
+  evidence: FileReceiptSchema.optional(),
   engine: FileReceiptSchema.optional(),
   scid: FileReceiptSchema.optional(),
   puzzles: FileReceiptSchema.optional(),
@@ -97,6 +101,24 @@ const BaseGateSchema = z.object({
   completedAt: z.string().datetime({ offset: true }),
 }).strict()
 
+const BroadcastReceiptSchema = BaseGateSchema.extend({
+  gate: z.literal('lichess-broadcasts-through-2026-06'),
+  archiveCount: z.literal(EXPECTED_BROADCAST_ARCHIVES),
+  archivesComplete: z.literal(true),
+  digestsVerified: z.literal(true),
+  recordsSeen: z.literal(EXPECTED_BROADCAST_GAMES),
+  publishedRecords: z.literal(EXPECTED_BROADCAST_GAMES),
+  accepted: z.number().int().nonnegative(),
+  rejected: z.number().int().nonnegative(),
+  deduplicated: z.number().int().nonnegative(),
+  accountingReconciles: z.literal(true),
+  finalExactReceiptSha256: z.string().regex(SHA256),
+}).strict().superRefine((receipt, context) => {
+  if (receipt.accepted + receipt.rejected + receipt.deduplicated !== receipt.recordsSeen) {
+    context.addIssue({ code: 'custom', path: ['accountingReconciles'], message: 'Broadcast accepted, rejected, and deduplicated totals must reconcile exactly' })
+  }
+})
+
 const Q2ReceiptSchema = BaseGateSchema.extend({
   gate: z.literal('lichess-standard-q2-2026'),
   archiveMonths: z.tuple([z.literal('2026-04'), z.literal('2026-05'), z.literal('2026-06')]),
@@ -110,9 +132,23 @@ const Q2ReceiptSchema = BaseGateSchema.extend({
   rejected: z.number().int().nonnegative(),
   deduplicated: z.number().int().nonnegative(),
   accountingReconciles: z.literal(true),
+  finalExactReceiptSha256: z.string().regex(SHA256),
 }).strict().superRefine((receipt, context) => {
   if (receipt.accepted + receipt.rejected + receipt.deduplicated !== receipt.recordsSeen) {
     context.addIssue({ code: 'custom', path: ['accountingReconciles'], message: 'Q2 accepted, rejected, and deduplicated totals must reconcile exactly' })
+  }
+})
+
+const EvidenceReconciliationReceiptSchema = BaseGateSchema.extend({
+  gate: z.literal('compact-v3-family-evidence-reconciliation'),
+  broadcastExactReceiptSha256: z.string().regex(SHA256),
+  q2ExactReceiptSha256: z.string().regex(SHA256),
+  eligibleInventorySourceSha256s: z.array(z.string().regex(SHA256)).min(1).max(100_000),
+  sourceEdgeInventoryComplete: z.literal(true),
+  topNPracticeCutoffApplied: z.literal(false),
+}).strict().superRefine((receipt, context) => {
+  if (new Set(receipt.eligibleInventorySourceSha256s).size !== receipt.eligibleInventorySourceSha256s.length) {
+    context.addIssue({ code: 'custom', path: ['eligibleInventorySourceSha256s'], message: 'Eligible inventory source receipts must be unique' })
   }
 })
 
@@ -338,6 +374,7 @@ export async function auditFamilyPromotion(
   gateResult(gates, 'family-catalog-and-manifests', findings.every(({ code }) => !code.includes('family') && !code.includes('taxonomy')), `${manifests.size} family manifests validated`)
 
   const packMemberships = new Map<string, Set<string>>()
+  const eligibleInventorySourceSha256s = new Set<string>()
   for (const manifest of manifests.values()) {
     for (const membership of manifest.pathMemberships) {
       const values = packMemberships.get(membership.packId) ?? new Set<string>()
@@ -360,6 +397,7 @@ export async function auditFamilyPromotion(
       if (membership.size !== graph.paths.length || graph.paths.some(({ id }) => !membership.has(id))) {
         throw new Error('Family path membership is not exactly equal to the graph path inventory')
       }
+      eligibleInventorySourceSha256s.add(inventory.sourceReceiptSha256)
       counts.packs += 1
       counts.paths += graph.paths.length
       counts.eligibleEdges += inventory.eligibleEdgeIds.length
@@ -414,11 +452,16 @@ export async function auditFamilyPromotion(
   gateResult(gates, 'promoted-puzzle-shards', counts.puzzleShards === expectedPuzzleRefs.size && counts.puzzles > 0, `${counts.puzzles} promoted puzzles validated`)
 
   const gateDefinitions = [
+    ['broadcast', BroadcastReceiptSchema],
     ['q2', Q2ReceiptSchema],
+    ['evidence', EvidenceReconciliationReceiptSchema],
     ['engine', EngineReceiptSchema],
     ['scid', ScidReceiptSchema],
     ['puzzles', PuzzlePromotionReceiptSchema],
   ] as const
+  let broadcastReceipt: z.infer<typeof BroadcastReceiptSchema> | null = null
+  let q2Receipt: z.infer<typeof Q2ReceiptSchema> | null = null
+  let evidenceReceipt: z.infer<typeof EvidenceReconciliationReceiptSchema> | null = null
   for (const [id, schema] of gateDefinitions) {
     const receipt = index.promotionReceipts[id]
     if (!receipt) {
@@ -429,6 +472,9 @@ export async function auditFamilyPromotion(
     try {
       const value = schema.parse(await readIndexedJson(rootReal, receipt))
       if (value.releaseId !== index.releaseId) throw new Error('Promotion receipt belongs to another release')
+      if (value.gate === 'lichess-broadcasts-through-2026-06') broadcastReceipt = value
+      if (value.gate === 'lichess-standard-q2-2026') q2Receipt = value
+      if (value.gate === 'compact-v3-family-evidence-reconciliation') evidenceReceipt = value
       if (
         value.gate === 'lichess-puzzle-promotion'
         && (value.promotedShardCount !== counts.puzzleShards || value.promotedPuzzleCount !== counts.puzzles)
@@ -441,6 +487,30 @@ export async function auditFamilyPromotion(
       gateResult(gates, `${id}-promotion-receipt`, false, 'Receipt failed strict validation')
     }
   }
+  const expectedInventorySources = [...eligibleInventorySourceSha256s].sort()
+  const declaredInventorySources = [...(evidenceReceipt?.eligibleInventorySourceSha256s ?? [])].sort()
+  const evidenceChainValid = broadcastReceipt !== null
+    && q2Receipt !== null
+    && evidenceReceipt !== null
+    && evidenceReceipt.broadcastExactReceiptSha256 === broadcastReceipt.finalExactReceiptSha256
+    && evidenceReceipt.q2ExactReceiptSha256 === q2Receipt.finalExactReceiptSha256
+    && expectedInventorySources.length === declaredInventorySources.length
+    && expectedInventorySources.every((sha256, indexValue) => sha256 === declaredInventorySources[indexValue])
+  if (!evidenceChainValid) {
+    findings.push({
+      code: 'source-edge-reconciliation-mismatch',
+      path: index.promotionReceipts.evidence?.path ?? null,
+      message: 'Eligible source-edge inventories are not exactly bound to the promoted broadcast and Q2 exact evidence receipts',
+    })
+  }
+  gateResult(
+    gates,
+    'source-edge-evidence-chain',
+    evidenceChainValid,
+    evidenceChainValid
+      ? `${expectedInventorySources.length} eligible-inventory source receipt(s) are bound to both exact corpora`
+      : 'The exact-corpus-to-eligible-inventory evidence chain is incomplete or inconsistent',
+  )
 
   return {
     schemaVersion: 1,

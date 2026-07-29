@@ -28,14 +28,26 @@ aggregates its path totals, and mounts one validated pack boundary at a time.
   grade-confirmation step. The boundary shows the current pack's path ordinal
   and total/completed/remaining counts. The family layer aggregates completion
   across every pack owned by that side.
+- Due cards are partitioned by their stable pack prefix before a pack boundary
+  is mounted. Same-side sibling packs therefore cannot reject or accidentally
+  review one another's cards.
+- Selecting a named manifest variation queues every route assigned to that
+  branch. Selecting one route remains available as a narrower action, while
+  full-repertoire mode remains the only action that advances automatically
+  into another pack.
 - Finishing a path records it once and leaves the next unfinished path active.
   A retry, remount, or repeated event cannot increase `completed / total`
   twice.
-- Finishing every path in one pack advances to the next unfinished
-  manifest-owned pack. A rejected completion write leaves that pack active,
-  does not increase the family count, and exposes an accessible retry.
+- Finishing every path in one pack during full-repertoire mode mounts and
+  starts the next unfinished manifest-owned pack without another confirmation.
+  A rejected completion write leaves that pack active, does not increase the
+  family count, and exposes an accessible retry.
 - Pause and resume preserve the active node and queue. Skip path advances
-  without falsely completing the skipped path.
+  without falsely completing the skipped path, including when the current path
+  is the last path in a 1,000-path batch.
+- Choose variation and Stop first snapshot the current position and drain the
+  serialized cursor queue. If persistence fails, training stays mounted and an
+  accessible retry is shown.
 - Manual pacing pauses opponent replies and path boundaries behind explicit controls without changing inferred grades, warm-up handling, or failed-card repeats.
 - Board state is derived only from the active graph node's normalized EPD.
 - Learner and opponent transitions apply declared legal edges. Opponent moves are a separate state transition so the interface can finish the learner animation first.
@@ -53,12 +65,21 @@ aggregates its path totals, and mounts one validated pack boundary at a time.
   idempotent `FamilyCoverageEventV1` keyed by release, family, pack, path, and
   coverage cycle. This does not alter the legacy `ProgressV1` card schema or
   tactical-puzzle progress.
+- Cursor history is keyed by release, family, learner side, and graph pack.
+  Two same-side packs cannot overwrite or restore one another's cursor. On a
+  remount, idempotent coverage events restore the completed count and select
+  the first unfinished pack.
+- Family-wide restore uses an explicit append-only generation that maps each
+  pack to its pack-local cycle ID. It never assumes same-side packs have equal
+  ordinals, and a new generation begins with no inherited pack bindings.
 
 Synthetic fixtures prove that autonomous sessions advance through every
 supplied path and manifest-owned pack, preserve due cards beyond 1,000 paths,
-admit a legal alternate path without FEN snapback, cross bounded batches,
-reject cross-release and wrongly owned resources, and update completion counts
-idempotently. They do not establish how many real Caro–Kann or other opening
+admit a legal alternate path without FEN snapback, skip and restore across
+bounded batches, isolate same-side pack cursors, refuse to exit before a failed
+cursor flush is retried, reject cross-release and wrongly owned resources, and
+update completion counts idempotently. They do not establish how many real
+Caro–Kann or other opening
 paths exist. Those counts may be reported only from a promoted, digest-bound
 v3 graph built from the completed corpus and verification campaigns.
 

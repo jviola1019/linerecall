@@ -5,11 +5,13 @@ import {
   applyPendingOpponentGraphMove,
   continueGraphTrainingSession,
   createAutonomousGraphTrainingPlan,
+  createBoundedGraphTrainingPlan,
   createExplicitGraphSessionSelection,
   createFamilyTrainingCursorSnapshot,
   createGraphTrainingPathCompletion,
   createGraphTrainingSession,
   coverageCycleOrdinalFromId,
+  deferGraphTrainingPathToCycleEnd,
   expectedGraphTrainingMoves,
   graphTrainingFen,
   listGraphTrainingPaths,
@@ -32,6 +34,8 @@ import {
   FamilyTrainingCursorWriteQueue,
   type FamilyTrainingJournalRepository,
 } from '../../domain/family-training-journal.ts'
+import type { BoardAnnotation, BoardAnnotationTone } from '../../domain/board-annotations.ts'
+import { BoardAnnotationOverlay, BoardAnnotationPanel } from './BoardAnnotations.tsx'
 import { ChessBoard, type BoardMoveStatus } from './ChessBoard.tsx'
 import { EmptyState, ErrorState, LoadingState } from './ResourceState.tsx'
 
@@ -52,10 +56,34 @@ export interface GraphTrainingBoundaryProps {
   onInferredReview?: (review: GraphTrainingReviewInference) => void
   onPathCompleted?: (completion: GraphTrainingPathCompletionV1) => void | Promise<void>
   onAnnouncement?: (message: string) => void
+  onStop?: () => void
+  autoStartFull?: boolean
+  onAutoStartConsumed?: () => void
+  autoStartPathGroupId?: string | null
+  onAutoStartPathGroupConsumed?: () => void
+  onCoverageScopeChange?: (
+    scope: 'full' | 'selection',
+    detail?: { pathGroupId?: string; continuation?: boolean },
+  ) => void
+  onCoverageCycleStarted?: (cycle: {
+    packId: string
+    coverageCycleId: string
+  }) => void | Promise<void>
+  onRestartFullCoverage?: (options?: { autoStart?: boolean }) => void | Promise<void>
   onRetry?: () => void
   familyId?: string
   journalRepository?: FamilyTrainingJournalRepository
+  expectedCoverageCycleId?: string | null
   pathDisplayNameById?: Readonly<Record<string, string>>
+  pathGroupByPathId?: Readonly<Record<string, GraphTrainingPathGroup>>
+  pathGroups?: readonly GraphTrainingPathGroup[]
+}
+
+export interface GraphTrainingPathGroup {
+  id: string
+  label: string
+  pathIds: readonly string[]
+  familyPathCount?: number
 }
 
 interface PreparedResource {
@@ -114,12 +142,35 @@ function GraphTrainingWorkspace({
   onInferredReview,
   onPathCompleted,
   onAnnouncement,
+  onStop,
+  autoStartFull = false,
+  onAutoStartConsumed,
+  autoStartPathGroupId,
+  onAutoStartPathGroupConsumed,
+  onCoverageScopeChange,
+  onCoverageCycleStarted,
+  onRestartFullCoverage,
   familyId,
   journalRepository,
+  expectedCoverageCycleId,
   pathDisplayNameById,
+  pathGroupByPathId,
+  pathGroups,
 }: Omit<GraphTrainingBoundaryProps, 'resource' | 'onRetry'> & { adapter: GraphTrainingAdapter }): React.JSX.Element {
   const paths = useMemo(() => listGraphTrainingPaths(adapter), [adapter])
+  const availablePathGroups = useMemo(() => {
+    const candidates = pathGroups
+      ? [...pathGroups]
+      : [...new Map(Object.values(pathGroupByPathId ?? {}).map((group) => [group.id, group])).values()]
+    const seen = new Set<string>()
+    return candidates.filter((group) => {
+      if (seen.has(group.id)) return false
+      seen.add(group.id)
+      return group.pathIds.length > 0
+    })
+  }, [pathGroupByPathId, pathGroups])
   const [selectedPathId, setSelectedPathId] = useState(paths[0]?.id ?? '')
+  const [selectedPathGroupId, setSelectedPathGroupId] = useState(availablePathGroups[0]?.id ?? '')
   const [pathQuery, setPathQuery] = useState('')
   const [visiblePathCount, setVisiblePathCount] = useState(PATH_PAGE_SIZE)
   const [session, setSession] = useState<GraphTrainingSessionState | null>(null)
@@ -131,13 +182,24 @@ function GraphTrainingWorkspace({
   const [manualPacingEnabled, setManualPacingEnabled] = useState(manualPacing)
   const [paused, setPaused] = useState(false)
   const [analysisTab, setAnalysisTab] = useState<'line' | 'alternatives' | 'evidence'>('line')
+  const [annotationMode, setAnnotationMode] = useState(false)
+  const [annotations, setAnnotations] = useState<BoardAnnotation[]>([])
+  const [annotationTone, setAnnotationTone] = useState<BoardAnnotationTone>('study')
   const [localAnnouncement, setLocalAnnouncement] = useState('')
   const [restorePending, setRestorePending] = useState(Boolean(familyId && journalRepository))
   const [restoreAttempt, setRestoreAttempt] = useState(0)
   const [persistenceError, setPersistenceError] = useState<string | null>(null)
   const [queuedCursorCount, setQueuedCursorCount] = useState(0)
+  const [exitPending, setExitPending] = useState(false)
+  const [startPending, setStartPending] = useState(false)
+  const [generationRestoreBlocked, setGenerationRestoreBlocked] = useState(false)
   const reportedCompletionKeys = useRef(new Set<string>())
   const pendingCompletionKeys = useRef(new Set<string>())
+  const autoStartHandled = useRef(false)
+  const autoStartPathGroupHandled = useRef(false)
+  const analysisContextRef = useRef<HTMLElement>(null)
+  const availablePathGroupsRef = useRef(availablePathGroups)
+  availablePathGroupsRef.current = availablePathGroups
   const cursorWriter = useMemo(
     () => journalRepository ? new FamilyTrainingCursorWriteQueue(journalRepository) : null,
     [journalRepository],
@@ -147,9 +209,40 @@ function GraphTrainingWorkspace({
     onAnnouncement?.(value)
   }
 
+  const toggleAnnotationMode = (): void => {
+    setAnnotationMode((current) => {
+      announce(current
+        ? 'Annotation mode closed. Move input resumed.'
+        : 'Annotation mode opened. Move input is paused.')
+      return !current
+    })
+  }
+
+  const openMobileAnalysis = (tab: 'line' | 'alternatives' | 'evidence'): void => {
+    setAnalysisTab(tab)
+    const context = analysisContextRef.current
+    context?.focus({ preventScroll: true })
+    requestAnimationFrame(() => {
+      analysisContextRef.current?.scrollIntoView?.({
+        behavior: reducedMotion ? 'auto' : 'smooth',
+        block: 'start',
+      })
+    })
+    announce(tab === 'evidence'
+      ? 'Move evidence opened.'
+      : tab === 'alternatives'
+        ? 'Known alternative lines opened.'
+        : 'Current line opened.')
+  }
+
   useEffect(() => {
     if (!paths.some(({ id }) => id === selectedPathId)) setSelectedPathId(paths[0]?.id ?? '')
   }, [paths, selectedPathId])
+  useEffect(() => {
+    if (!availablePathGroups.some(({ id }) => id === selectedPathGroupId)) {
+      setSelectedPathGroupId(availablePathGroups[0]?.id ?? '')
+    }
+  }, [availablePathGroups, selectedPathGroupId])
 
   useEffect(() => setVisiblePathCount(PATH_PAGE_SIZE), [pathQuery])
 
@@ -167,14 +260,39 @@ function GraphTrainingWorkspace({
       return () => { active = false }
     }
     setRestorePending(true)
+    setGenerationRestoreBlocked(false)
     setPersistenceError(null)
-    void journalRepository.loadLatestCursor({
+    const cursorScope = {
       releaseId: adapter.graph.releaseId,
       familyId,
+      packId: adapter.graph.pack.id,
       side: adapter.graph.pack.side,
-    }).then((cursor) => {
+    } as const
+    const cursorRequest = typeof expectedCoverageCycleId === 'string'
+      ? journalRepository.loadCursor({
+          ...cursorScope,
+          coverageCycleId: expectedCoverageCycleId,
+        })
+      : journalRepository.loadLatestCursor(cursorScope)
+    void cursorRequest.then((cursor) => {
       if (!active) return
+      if (expectedCoverageCycleId === null) {
+        if (cursor) {
+          const ordinal = coverageCycleOrdinalFromId(adapter.graph.pack.id, cursor.coverageCycleId)
+          setNextCoverageCycleOrdinal(ordinal + 1)
+        }
+        setRestorePending(false)
+        announce(cursor
+          ? 'An older pack cursor was left untouched; this family generation will start a new pack cycle.'
+          : 'This pack is ready to join the active family generation.')
+        return
+      }
       if (!cursor) {
+        if (typeof expectedCoverageCycleId === 'string') {
+          setGenerationRestoreBlocked(true)
+          setPersistenceError('The active family generation references a pack cursor that is unavailable.')
+          announce('Family training is blocked because its bound pack cursor is unavailable.')
+        }
         setRestorePending(false)
         return
       }
@@ -191,6 +309,17 @@ function GraphTrainingWorkspace({
       setCompletedBeforeBatch(restored.completedBeforeBatch)
       setAuthoritativeDueCardIds(restored.authoritativeDueCardIds)
       setNextCoverageCycleOrdinal(ordinal + 1)
+      if (restored.plan.totalPathIds.length === adapter.graph.paths.length) {
+        onCoverageScopeChange?.('full')
+      } else {
+        const restoredPathIds = new Set(restored.plan.totalPathIds)
+        const restoredGroup = availablePathGroupsRef.current.find((group) =>
+          group.pathIds.length === restoredPathIds.size
+          && group.pathIds.every((pathId) => restoredPathIds.has(pathId)))
+        onCoverageScopeChange?.('selection', restoredGroup
+          ? { pathGroupId: restoredGroup.id, continuation: true }
+          : undefined)
+      }
       setRestorePending(false)
       announce(cursor.pendingPathIds.length > 0
         ? `Resumed family coverage with ${cursor.pendingPathIds.length} unfinished paths.`
@@ -198,11 +327,12 @@ function GraphTrainingWorkspace({
     }).catch((error: unknown) => {
       if (!active) return
       setRestorePending(false)
+      setGenerationRestoreBlocked(true)
       setPersistenceError(`Saved family coverage could not be restored: ${message(error)}`)
       announce(`Saved family coverage could not be restored: ${message(error)}`)
     })
     return () => { active = false }
-  }, [adapter, familyId, journalRepository, restoreAttempt])
+  }, [adapter, expectedCoverageCycleId, familyId, journalRepository, restoreAttempt])
 
   useEffect(() => {
     if (
@@ -349,13 +479,59 @@ function GraphTrainingWorkspace({
       setAuthoritativeDueCardIds([...dueCardIds])
       setNextCoverageCycleOrdinal(cycleOrdinal + 1)
       setSession(createGraphTrainingSession({ adapter, selection, preferredPathId: selectedPathId }))
+      onCoverageScopeChange?.('selection')
       announce('One audited path is ready.')
     } catch (error) {
       announce(message(error))
     }
   }
 
+  const startSelectedVariation = (
+    pathGroupId = selectedPathGroupId,
+    continuation = false,
+  ): boolean => {
+    const group = availablePathGroups.find(({ id }) => id === pathGroupId)
+      ?? pathGroupByPathId?.[selectedPathId]
+    const selectedPathIds = [...new Set(group?.pathIds ?? [selectedPathId])]
+    try {
+      const cycleOrdinal = nextCoverageCycleOrdinal
+      const plan = createBoundedGraphTrainingPlan({
+        adapter,
+        pathIds: selectedPathIds,
+        dueCardIds,
+        coverageCycleOrdinal: cycleOrdinal,
+      })
+      const firstPathIds = plan.pathIdBatches[0]
+      if (!firstPathIds) throw new Error('The selected variation has no audited paths')
+      const selection = createExplicitGraphSessionSelection({
+        adapter,
+        pathIds: firstPathIds,
+        dueCardIds,
+        coverageCycleOrdinal: cycleOrdinal,
+      })
+      setAutonomousPlan(plan)
+      setActiveBatchIndex(0)
+      setCompletedBeforeBatch([])
+      setAuthoritativeDueCardIds([...dueCardIds])
+      setNextCoverageCycleOrdinal(cycleOrdinal + 1)
+      setSession(createGraphTrainingSession({
+        adapter,
+        selection,
+        preferredPathId: selectedPathId,
+      }))
+      onCoverageScopeChange?.('selection', group
+        ? { pathGroupId: group.id, continuation }
+        : undefined)
+      announce(`${selectedPathIds.length} audited path${selectedPathIds.length === 1 ? '' : 's'} queued for ${group?.label ?? 'this variation'}.`)
+      return true
+    } catch (error) {
+      announce(message(error))
+      return false
+    }
+  }
+
   const startAll = (): void => {
+    if (startPending) return
     try {
       const cycleOrdinal = nextCoverageCycleOrdinal
       const plan = createAutonomousGraphTrainingPlan({
@@ -371,17 +547,81 @@ function GraphTrainingWorkspace({
         dueCardIds,
         coverageCycleOrdinal: plan.coverageCycleOrdinal,
       })
-      setAutonomousPlan(plan)
-      setActiveBatchIndex(0)
-      setCompletedBeforeBatch([])
-      setAuthoritativeDueCardIds([...dueCardIds])
-      setNextCoverageCycleOrdinal(cycleOrdinal + 1)
-      setSession(createGraphTrainingSession({ adapter, selection }))
-      announce(`${plan.totalPathIds.length} audited paths queued. Branches will continue automatically.`)
+      const begin = (): void => {
+        setAutonomousPlan(plan)
+        setActiveBatchIndex(0)
+        setCompletedBeforeBatch([])
+        setAuthoritativeDueCardIds([...dueCardIds])
+        setNextCoverageCycleOrdinal(cycleOrdinal + 1)
+        setSession(createGraphTrainingSession({ adapter, selection }))
+        onCoverageScopeChange?.('full')
+        announce(`${plan.totalPathIds.length} audited paths queued. Branches will continue automatically.`)
+      }
+      const replacesBoundCycle = typeof expectedCoverageCycleId === 'string'
+      if (replacesBoundCycle && !onRestartFullCoverage) {
+        throw new Error('A bound full-family cycle cannot be replaced without starting a new family generation')
+      }
+      if (!onCoverageCycleStarted && !replacesBoundCycle) {
+        begin()
+        return
+      }
+      setStartPending(true)
+      const restartGeneration = replacesBoundCycle
+        ? Promise.resolve(onRestartFullCoverage?.({ autoStart: false }))
+        : Promise.resolve()
+      void restartGeneration.then(() =>
+        onCoverageCycleStarted?.({
+          packId: adapter.graph.pack.id,
+          coverageCycleId: selection.coverageCycleId,
+        }),
+      ).then(() => {
+        setPersistenceError(null)
+        begin()
+      }).catch((error: unknown) => {
+        setPersistenceError(`Family coverage generation could not be saved: ${message(error)}`)
+        announce('Full-family training did not start because its coverage generation was not saved.')
+      }).finally(() => {
+        setStartPending(false)
+      })
     } catch (error) {
       announce(message(error))
     }
   }
+
+  useEffect(() => {
+    if (!autoStartFull) {
+      autoStartHandled.current = false
+      return
+    }
+    if (restorePending || generationRestoreBlocked || autoStartHandled.current) return
+    autoStartHandled.current = true
+    if (!session || session.phase === 'session_complete') startAll()
+    onAutoStartConsumed?.()
+  }, [autoStartFull, generationRestoreBlocked, onAutoStartConsumed, restorePending, session])
+
+  useEffect(() => {
+    if (!autoStartPathGroupId) {
+      autoStartPathGroupHandled.current = false
+      return
+    }
+    if (
+      restorePending
+      || generationRestoreBlocked
+      || autoStartPathGroupHandled.current
+      || (session && session.phase !== 'session_complete')
+    ) return
+    autoStartPathGroupHandled.current = true
+    setSelectedPathGroupId(autoStartPathGroupId)
+    if (startSelectedVariation(autoStartPathGroupId, true)) {
+      onAutoStartPathGroupConsumed?.()
+    }
+  }, [
+    autoStartPathGroupId,
+    generationRestoreBlocked,
+    onAutoStartPathGroupConsumed,
+    restorePending,
+    session,
+  ])
 
   const playOpponentMove = (): void => {
     setSession((current) => {
@@ -418,6 +658,48 @@ function GraphTrainingWorkspace({
     announce(`Continuing with audited path batch ${nextBatch.batchIndex + 1} of ${autonomousPlan.pathIdBatches.length}.`)
   }
 
+  const skipPath = (): void => {
+    if (!session) return
+    const hasPendingPathInBatch = session.pendingPathIds.some((pathId) =>
+      pathId !== session.activePathId && !session.completedPathIds.includes(pathId))
+    if (hasPendingPathInBatch) {
+      try {
+        setSession(skipCurrentGraphTrainingPath(adapter, session))
+        announce('Variation moved to the end of this coverage cycle.')
+      } catch (error) {
+        announce(message(error))
+      }
+      return
+    }
+    if (!autonomousPlan) {
+      announce('No unfinished variation is available to skip to.')
+      return
+    }
+    try {
+      const deferredPlan = deferGraphTrainingPathToCycleEnd({
+        plan: autonomousPlan,
+        activeBatchIndex,
+        pathId: session.activePathId,
+      })
+      const nextBatch = nextNonemptyGraphTrainingBatch(deferredPlan, activeBatchIndex)
+      if (!nextBatch) throw new Error('No unfinished variation is available to skip to')
+      const completed = [...new Set([...completedBeforeBatch, ...session.completedPathIds])]
+      const selection = createExplicitGraphSessionSelection({
+        adapter,
+        pathIds: nextBatch.pathIds,
+        dueCardIds: session.dueCardIds,
+        coverageCycleOrdinal: deferredPlan.coverageCycleOrdinal,
+      })
+      setAutonomousPlan(deferredPlan)
+      setCompletedBeforeBatch(completed)
+      setActiveBatchIndex(nextBatch.batchIndex)
+      setSession(createGraphTrainingSession({ adapter, selection }))
+      announce('Variation moved behind the remaining path batches.')
+    } catch (error) {
+      announce(message(error))
+    }
+  }
+
   const retryPersistence = (): void => {
     if (cursorWriter?.pendingCount) {
       void cursorWriter.flush().then((result) => {
@@ -434,6 +716,46 @@ function GraphTrainingWorkspace({
     setRestoreAttempt((attempt) => attempt + 1)
   }
 
+  const persistBeforeExit = async (
+    action: () => void | Promise<void>,
+    successAnnouncement: string,
+  ): Promise<void> => {
+    if (exitPending) return
+    if (!cursorWriter || !familyId || !session || !autonomousPlan) {
+      await action()
+      announce(successAnnouncement)
+      return
+    }
+    setExitPending(true)
+    try {
+      const cursor = createFamilyTrainingCursorSnapshot({
+        adapter,
+        familyId,
+        plan: autonomousPlan,
+        activeBatchIndex,
+        completedBeforeBatch,
+        session,
+        authoritativeDueCardIds,
+      })
+      const result = await cursorWriter.enqueue(cursor)
+      setQueuedCursorCount(result.pendingCount)
+      if (result.error || result.pendingCount > 0) {
+        const failure = result.error?.message ?? 'The latest cursor remains queued.'
+        setPersistenceError(`Family progress is waiting to be saved: ${failure}`)
+        announce('Training stayed open because the latest family progress was not saved.')
+        return
+      }
+      setPersistenceError(null)
+      await action()
+      announce(successAnnouncement)
+    } catch (error) {
+      setPersistenceError(`Family progress could not be prepared for exit: ${message(error)}`)
+      announce('Training stayed open because the latest family progress was not saved.')
+    } finally {
+      setExitPending(false)
+    }
+  }
+
   const persistenceNotice = persistenceError ? (
     <div className="inline-warning error-warning" role="alert">
       <strong>Family progress is not fully saved.</strong>
@@ -446,7 +768,7 @@ function GraphTrainingWorkspace({
   ) : null
 
   if (restorePending) {
-    return <LoadingState label="Restoring saved family coverageâ€¦" />
+    return <LoadingState label="Restoring saved family coverage…" />
   }
 
   if (paths.length === 0) {
@@ -509,8 +831,33 @@ function GraphTrainingWorkspace({
           <div><dt>Pack tier</dt><dd>{adapter.graph.pack.tier === 'core' ? 'Core' : 'Primer'}</dd></div>
           <div><dt>Coverage</dt><dd>{Math.round(adapter.graph.pack.coverage * 100)}%</dd></div>
         </dl>
+        {availablePathGroups.length > 0 ? (
+          <label className="graph-path-search">
+            <span>Named variation</span>
+            <select
+              value={selectedPathGroupId}
+              onChange={(event) => setSelectedPathGroupId(event.currentTarget.value)}
+            >
+              {availablePathGroups.map((group) => (
+                <option key={group.id} value={group.id}>
+                  {group.label} · {group.pathIds.length} in this pack
+                  {group.familyPathCount && group.familyPathCount !== group.pathIds.length
+                    ? ` · ${group.familyPathCount} across the family`
+                    : ''}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
         <div className="inline-controls">
-          <button type="button" className="primary-action" onClick={startAll}>Start full repertoire</button>
+          <button type="button" className="primary-action" disabled={startPending} onClick={startAll}>
+            {startPending ? 'Saving coverage cycle…' : 'Start full repertoire'}
+          </button>
+          {availablePathGroups.length > 0 ? (
+            <button type="button" className="secondary-button" onClick={() => { startSelectedVariation() }}>
+              Practice selected variation
+            </button>
+          ) : null}
           <button type="button" className="secondary-button" onClick={startSelected}>Practice selected path</button>
         </div>
         <label className="toggle-row">
@@ -538,8 +885,36 @@ function GraphTrainingWorkspace({
         <h2 id="graph-complete-title">Every selected path is complete.</h2>
         <p>{coverage.completedPathCount.toLocaleString('en-US')} of {coverage.totalPathCount.toLocaleString('en-US')} audited paths completed. Warm-ups were not rescheduled.</p>
         <div className="inline-controls">
-          <button type="button" className="primary-action" onClick={startAll}>Start a new coverage cycle</button>
-          <button type="button" className="secondary-button" onClick={() => { setSession(null); setAutonomousPlan(null) }}>Choose paths</button>
+          <button
+            type="button"
+            className="primary-action"
+            disabled={exitPending}
+            onClick={() => {
+              if (!onRestartFullCoverage) {
+                startAll()
+                return
+              }
+              void persistBeforeExit(
+                onRestartFullCoverage,
+                'The completed cycle was saved. Starting a new full-family cycle.',
+              )
+            }}
+          >
+            Start a new coverage cycle
+          </button>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={exitPending}
+            onClick={() => {
+              void persistBeforeExit(() => {
+                setSession(null)
+                setAutonomousPlan(null)
+              }, 'Variation chooser opened. The saved cursor was kept.')
+            }}
+          >
+            Choose paths
+          </button>
         </div>
         <p className="sr-only" aria-live="polite" aria-atomic="true">{localAnnouncement}</p>
       </section>
@@ -588,6 +963,9 @@ function GraphTrainingWorkspace({
               ? 'Due card'
               : 'Practice position'
   const activePathOrdinal = Math.max(0, runPathIds.indexOf(path.id)) + 1
+  const canSkipPath = session.pendingPathIds.some((pathId) =>
+    pathId !== session.activePathId && !session.completedPathIds.includes(pathId))
+    || Boolean(autonomousPlan && nextNonemptyGraphTrainingBatch(autonomousPlan, activeBatchIndex))
 
   const handleMove = (moveUci: string): void => {
     try {
@@ -640,35 +1018,99 @@ function GraphTrainingWorkspace({
           <button
             type="button"
             className="secondary-button"
-            disabled={session.pendingPathIds.filter((pathId) =>
-              pathId !== session.activePathId && !session.completedPathIds.includes(pathId)).length === 0}
-            onClick={() => {
-              try {
-                setSession(skipCurrentGraphTrainingPath(adapter, session))
-                announce('Variation moved to the end of this coverage cycle.')
-              } catch (error) {
-                announce(message(error))
-              }
-            }}
+            disabled={!canSkipPath}
+            onClick={skipPath}
           >
             Skip variation
           </button>
-          <button type="button" className="secondary-button" onClick={() => setSession(null)}>End session</button>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={exitPending}
+            onClick={() => {
+              void persistBeforeExit(() => {
+                setSession(null)
+                setAutonomousPlan(null)
+                setPaused(false)
+              }, 'Variation chooser opened. The saved cursor was kept.')
+            }}
+          >
+            Choose variation
+          </button>
+          {onStop ? (
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={exitPending}
+              onClick={() => { void persistBeforeExit(onStop, 'Training stopped after progress was saved.') }}
+            >
+              Stop training
+            </button>
+          ) : null}
         </div>
       </header>
       <div className="graph-training-board">
         <ChessBoard
           fen={fen}
           orientation={orientation}
-          disabled={paused || !waitingForLearner}
+          disabled={paused || !waitingForLearner || annotationMode}
           reducedMotion={reducedMotion}
           hintUci={session.usedHint ? expected[0]?.uci ?? null : null}
           lastMove={session.lastTransition && moveStatus ? { uci: session.lastTransition.moveUci, status: moveStatus } : null}
+          boardOverlay={(
+            <BoardAnnotationOverlay
+              annotations={annotations}
+              orientation={orientation}
+              editing={annotationMode}
+              tone={annotationTone}
+              onChange={setAnnotations}
+              onAnnouncement={announce}
+              onExitEditing={() => setAnnotationMode(false)}
+            />
+          )}
           onMove={handleMove}
           onAnnouncement={announce}
         />
+        <div className="graph-thumb-dock" role="toolbar" aria-label="Training tools">
+          <button
+            type="button"
+            disabled={!waitingForLearner || session.usedHint || expected.length === 0 || annotationMode}
+            onClick={() => {
+              setSession(markGraphTrainingHint(adapter, session))
+              announce(expected.length > 0 ? 'Hint route shown.' : 'No audited route is available.')
+            }}
+          >
+            Hint
+          </button>
+          <button type="button" onClick={() => openMobileAnalysis('alternatives')}>Lines</button>
+          <button type="button" onClick={() => openMobileAnalysis('evidence')}>Why</button>
+          <button
+            type="button"
+            aria-pressed={annotationMode}
+            disabled={!waitingForLearner}
+            onClick={toggleAnnotationMode}
+          >
+            {annotationMode ? 'Resume' : 'Annotate'}
+          </button>
+        </div>
+        {annotationMode ? (
+          <BoardAnnotationPanel
+            annotations={annotations}
+            orientation={orientation}
+            editing
+            tone={annotationTone}
+            onToneChange={setAnnotationTone}
+            onChange={setAnnotations}
+            onAnnouncement={announce}
+          />
+        ) : null}
       </div>
-      <aside className="graph-training-context" aria-labelledby="graph-context-title">
+      <aside
+        ref={analysisContextRef}
+        className="graph-training-context"
+        aria-labelledby="graph-context-title"
+        tabIndex={-1}
+      >
         <p className="eyebrow">Current branch</p>
         <h3 id="graph-context-title">{pathDisplayName(path, pathDisplayNameById)}</h3>
         <p>{paused ? 'Paused' : statusText}</p>
@@ -821,10 +1263,21 @@ export function GraphTrainingBoundary({
   onInferredReview,
   onPathCompleted,
   onAnnouncement,
+  onStop,
+  autoStartFull = false,
+  onAutoStartConsumed,
+  autoStartPathGroupId,
+  onAutoStartPathGroupConsumed,
+  onCoverageScopeChange,
+  onCoverageCycleStarted,
+  onRestartFullCoverage,
   onRetry,
   familyId,
   journalRepository,
+  expectedCoverageCycleId,
   pathDisplayNameById,
+  pathGroupByPathId,
+  pathGroups,
 }: GraphTrainingBoundaryProps): React.JSX.Element {
   const [prepared, setPrepared] = useState<PreparedResource | null>(null)
 
@@ -869,9 +1322,20 @@ export function GraphTrainingBoundary({
       {...(onInferredReview ? { onInferredReview } : {})}
       {...(onPathCompleted ? { onPathCompleted } : {})}
       {...(onAnnouncement ? { onAnnouncement } : {})}
+      {...(onStop ? { onStop } : {})}
+      autoStartFull={autoStartFull}
+      {...(onAutoStartConsumed ? { onAutoStartConsumed } : {})}
+      {...(autoStartPathGroupId ? { autoStartPathGroupId } : {})}
+      {...(onAutoStartPathGroupConsumed ? { onAutoStartPathGroupConsumed } : {})}
+      {...(onCoverageScopeChange ? { onCoverageScopeChange } : {})}
+      {...(onCoverageCycleStarted ? { onCoverageCycleStarted } : {})}
+      {...(onRestartFullCoverage ? { onRestartFullCoverage } : {})}
       {...(familyId ? { familyId } : {})}
       {...(journalRepository ? { journalRepository } : {})}
+      {...(expectedCoverageCycleId !== undefined ? { expectedCoverageCycleId } : {})}
       {...(pathDisplayNameById ? { pathDisplayNameById } : {})}
+      {...(pathGroupByPathId ? { pathGroupByPathId } : {})}
+      {...(pathGroups ? { pathGroups } : {})}
     />
   )
 }

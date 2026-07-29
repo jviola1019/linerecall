@@ -36,8 +36,11 @@ runtime. `--report-only` deliberately records all automated checks as
    `npm run release:family-promotion` additionally requires the bounded
    promotion index and exact receipts for the catalog, every family manifest
    and provenance document, every referenced pack graph and eligible-source-
-   edge inventory, every promoted puzzle shard, and the release-bound Q2,
-   Stockfish, Scid, and puzzle-promotion results. A missing index is a blocked
+   edge inventory, every promoted puzzle shard, and the release-bound
+   broadcast, Q2, exact-evidence reconciliation, Stockfish, Scid, and
+   puzzle-promotion results. Each eligible-edge inventory source digest must
+   appear exactly in the reconciliation receipt, which is itself bound to the
+   final broadcast and Q2 exact-pass receipts. A missing index is a blocked
    result with no promoted counts, never an implicit skip.
 6. Verbose release-snapshot and compact app-snapshot validation.
 7. Candidate CSP injection and exact inline hash verification.

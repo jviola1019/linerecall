@@ -184,7 +184,7 @@ test('tracked release configuration declares strict not-run templates for every 
   }
 })
 
-test('GitHub workflows build and audit connected code but cannot deploy Pages', async () => {
+test('GitHub workflows build, audit, and scan connected code but cannot deploy Pages', async () => {
   const root = join(import.meta.dirname, '../..')
   const ci = await readFile(join(root, '.github/workflows/ci.yml'), 'utf8')
   for (const command of [
@@ -200,6 +200,24 @@ test('GitHub workflows build and audit connected code but cannot deploy Pages', 
   assert.doesNotMatch(pages, /pages:\s*write|id-token:\s*write/u)
   assert.match(pages, /actions\/upload-artifact@/u)
   assert.match(pages, /Review bundle only/u)
+
+  const codeql = await readFile(join(root, '.github/workflows/codeql.yml'), 'utf8')
+  assert.match(codeql, /contents:\s*read/u)
+  assert.match(codeql, /security-events:\s*write/u)
+  assert.match(codeql, /github\/codeql-action\/init@[a-f0-9]{40}/u)
+  assert.match(codeql, /github\/codeql-action\/analyze@[a-f0-9]{40}/u)
+  assert.match(codeql, /languages:\s*javascript-typescript/u)
+  assert.match(codeql, /queries:\s*security-extended/u)
+  assert.doesNotMatch(codeql, /actions\/deploy-pages|pages:\s*write|id-token:\s*write/u)
+
+  for (const [name, workflow] of [['ci', ci], ['pages', pages], ['codeql', codeql]] as const) {
+    const actions = [...workflow.matchAll(/^\s*uses:\s*([^\s#]+)/gmu)].map((match) => match[1]!)
+    assert.ok(actions.length > 0, `${name} workflow does not invoke a reviewed action`)
+    for (const action of actions) {
+      if (action.startsWith('./')) continue
+      assert.match(action, /@[a-f0-9]{40}$/u, `${name} workflow action is not pinned: ${action}`)
+    }
+  }
 })
 
 test('completed evidence is invalidated when a referenced report is mutated', async () => {

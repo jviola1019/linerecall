@@ -93,6 +93,17 @@ test.describe('review-only unified-family fixture', () => {
     await expect(page.getByRole('combobox', { name: 'Legal move picker' })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Show hint' })).toBeVisible()
     await expect(page.getByRole('note')).toBeVisible()
+    await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }))
+    const [boardBox, toolBox, navigationBox] = await Promise.all([
+      page.getByRole('grid', { name: /Chessboard/u }).boundingBox(),
+      page.getByRole('toolbar', { name: 'Training tools' }).boundingBox(),
+      page.getByRole('navigation', { name: 'Primary navigation' }).boundingBox(),
+    ])
+    if (!boardBox || !toolBox || !navigationBox) {
+      throw new Error('The mobile board, training tools, and navigation must render together')
+    }
+    expect(boardBox.y).toBeGreaterThanOrEqual(0)
+    expect(toolBox.y + toolBox.height).toBeLessThanOrEqual(navigationBox.y + 1)
     await assertNoPageOverflow(page, 'review fixture mobile family training')
 
     const targets = await page.locator(

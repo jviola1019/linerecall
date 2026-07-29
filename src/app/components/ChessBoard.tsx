@@ -92,7 +92,10 @@ interface PromotionVisual extends VisualPromotion {
   phase: 'travel' | 'crossfade'
 }
 
-const MOVE_TRANSITION_MS = 170
+// The CSS translation lasts 170 ms. Hold each transition phase for the full
+// 180 ms interaction budget so a queued reply cannot start before the prior
+// browser transition has finished.
+const MOVE_TRANSITION_MS = 180
 const PROMOTION_CROSSFADE_MS = 90
 
 function optionUci(from: Square, to: Square, promotion?: PieceSymbol): string {
@@ -150,6 +153,7 @@ export function ChessBoard({
   const promotionReturnFocusRef = useRef<HTMLElement | null>(null)
   const visualStateRef = useRef({ fen, pieces: visualPiecesFromFen(fen) })
   const animationGenerationRef = useRef(0)
+  const spatialSuppressionGenerationRef = useRef(0)
   const previousOrientationRef = useRef(orientation)
   const [renderPieces, setRenderPieces] = useState<RenderVisualPiece[]>(() => visualStateRef.current.pieces)
   const [promotionVisual, setPromotionVisual] = useState<PromotionVisual | null>(null)
@@ -200,9 +204,23 @@ export function ChessBoard({
   useLayoutEffect(() => {
     if (previousOrientationRef.current === orientation) return
     previousOrientationRef.current = orientation
+    const suppressionGeneration = ++spatialSuppressionGenerationRef.current
     setSuppressSpatialMotion(true)
-    const frame = requestAnimationFrame(() => setSuppressSpatialMotion(false))
-    return () => cancelAnimationFrame(frame)
+    let secondFrame: number | null = null
+    const firstFrame = requestAnimationFrame(() => {
+      secondFrame = requestAnimationFrame(() => {
+        if (spatialSuppressionGenerationRef.current === suppressionGeneration) {
+          setSuppressSpatialMotion(false)
+        }
+      })
+    })
+    return () => {
+      cancelAnimationFrame(firstFrame)
+      if (secondFrame !== null) cancelAnimationFrame(secondFrame)
+      if (spatialSuppressionGenerationRef.current === suppressionGeneration) {
+        spatialSuppressionGenerationRef.current += 1
+      }
+    }
   }, [orientation])
 
   useEffect(() => {
@@ -215,17 +233,37 @@ export function ChessBoard({
       timers.clear()
       frames.clear()
     }
+    const prepareSpatialAnimation = (): void => {
+      // A rapid reset can cancel the two-frame static-paint release below.
+      // Explicitly invalidate that release and paint the current position with
+      // transitions enabled before applying the next legal move.
+      spatialSuppressionGenerationRef.current += 1
+      setSuppressSpatialMotion(false)
+    }
+    const releaseSpatialSuppressionAfterPaint = (): void => {
+      const suppressionGeneration = ++spatialSuppressionGenerationRef.current
+      setSuppressSpatialMotion(true)
+      const firstFrame = requestAnimationFrame(() => {
+        frames.delete(firstFrame)
+        const secondFrame = requestAnimationFrame(() => {
+          frames.delete(secondFrame)
+          if (
+            animationGenerationRef.current === generation
+            && spatialSuppressionGenerationRef.current === suppressionGeneration
+          ) {
+            setSuppressSpatialMotion(false)
+          }
+        })
+        frames.add(secondFrame)
+      })
+      frames.add(firstFrame)
+    }
     const commitReset = (): void => {
       const pieces = visualPiecesFromFen(fen)
       visualStateRef.current = { fen, pieces }
       setPromotionVisual(null)
-      setSuppressSpatialMotion(true)
       setRenderPieces(pieces)
-      const frame = requestAnimationFrame(() => {
-        frames.delete(frame)
-        if (animationGenerationRef.current === generation) setSuppressSpatialMotion(false)
-      })
-      frames.add(frame)
+      releaseSpatialSuppressionAfterPaint()
     }
 
     const current = visualStateRef.current
@@ -239,7 +277,10 @@ export function ChessBoard({
       commitReset()
       return clearPending
     }
-    if (sequence.length === 0) return clearPending
+    if (sequence.length === 0) {
+      prepareSpatialAnimation()
+      return clearPending
+    }
     if (motionDisabled) {
       // Reduced motion changes presentation, not identity. Replay the same
       // validated legal moves synchronously so pieces, captures, castling, and
@@ -252,13 +293,8 @@ export function ChessBoard({
         }
         visualStateRef.current = { fen, pieces: next.pieces }
         setPromotionVisual(null)
-        setSuppressSpatialMotion(true)
         setRenderPieces(next.pieces)
-        const frame = requestAnimationFrame(() => {
-          frames.delete(frame)
-          if (animationGenerationRef.current === generation) setSuppressSpatialMotion(false)
-        })
-        frames.add(frame)
+        releaseSpatialSuppressionAfterPaint()
       } catch {
         commitReset()
       }
@@ -310,7 +346,12 @@ export function ChessBoard({
       })
       frames.add(frame)
     }
-    runMove(0)
+    prepareSpatialAnimation()
+    const startFrame = requestAnimationFrame(() => {
+      frames.delete(startFrame)
+      if (animationGenerationRef.current === generation) runMove(0)
+    })
+    frames.add(startFrame)
     return clearPending
   }, [fen, lastMove?.uci, motionDisabled])
 
@@ -452,12 +493,14 @@ export function ChessBoard({
   }
 
   const handlePointerCancel = (): void => {
+    const hadActiveDrag = dragRef.current !== null
     dragRef.current = null
     suppressClickRef.current = false
     if (suppressClickTimerRef.current !== null) {
       clearTimeout(suppressClickTimerRef.current)
       suppressClickTimerRef.current = null
     }
+    if (hadActiveDrag) announce('Drag cancelled. The position was kept.')
   }
 
   const choosePromotion = (option: LegalMoveOption): void => {

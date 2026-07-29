@@ -43,6 +43,7 @@ export interface CopyFinding {
 
 const visibleAttributes = new Set(['aria-label', 'placeholder', 'title'])
 const copyPropertyNames = new Set(['description', 'emptyLabel', 'label', 'message', 'summary', 'title'])
+const mojibakePattern = /(?:[ÃÂ�]|â€)/u
 
 function normalizedText(value: string): string {
   return value.replace(/\s+/gu, ' ').trim()
@@ -113,6 +114,14 @@ export function analyzeCopy(
   const patterns = policy.prohibitedPatterns.map(({ id, pattern }) => ({ id, regex: new RegExp(pattern, 'iu') }))
   const duplicates = new Map<string, CopyEntry[]>()
   for (const entry of entries) {
+    if (mojibakePattern.test(entry.text)) {
+      findings.push({
+        rule: 'encoding-mojibake',
+        path: entry.path,
+        line: entry.line,
+        detail: 'Visible copy contains a common UTF-8 decoding artifact',
+      })
+    }
     const maximumCharacters = entry.kind === 'heading'
       ? policy.maximumHeadingCharacters
       : entry.kind === 'control'

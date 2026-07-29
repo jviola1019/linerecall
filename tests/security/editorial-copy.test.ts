@@ -31,9 +31,10 @@ test('copy inventory extracts headings, controls, and visible body text', () => 
   ])
 })
 
-test('copy audit blocks inflated claims, excessive length, and repeated long prose', () => {
+test('copy audit blocks encoding defects, inflated claims, excessive length, and repeated long prose', () => {
   const repeated = 'This sentence is deliberately long enough to trigger repetition review.'
   const findings = analyzeCopy([
+    { path: 'a.tsx', line: 1, kind: 'body', text: 'Loading family packsâ€¦' },
     { path: 'a.tsx', line: 1, kind: 'body', text: 'This move guarantees a win.' },
     { path: 'a.tsx', line: 2, kind: 'heading', text: 'x'.repeat(73) },
     { path: 'a.tsx', line: 3, kind: 'body', text: repeated },
@@ -41,6 +42,6 @@ test('copy audit blocks inflated claims, excessive length, and repeated long pro
     { path: 'c.tsx', line: 3, kind: 'body', text: repeated },
   ], policy)
   assert.deepEqual(new Set(findings.map(({ rule }) => rule)), new Set([
-    'unsupported-causality', 'heading-too-long', 'repetitive-long-copy',
+    'encoding-mojibake', 'unsupported-causality', 'heading-too-long', 'repetitive-long-copy',
   ]))
 })

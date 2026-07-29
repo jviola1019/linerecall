@@ -176,6 +176,7 @@ describe('chessboard interaction branches', () => {
     expect(e2).toHaveAttribute('aria-selected', 'false')
     fireEvent.pointerDown(e2, { button: 0, pointerId: 8, clientX: 450, clientY: 650 })
     fireEvent.pointerCancel(e2, { pointerId: 8 })
+    expect(announce).toHaveBeenCalledWith('Drag cancelled. The position was kept.')
     fireEvent.click(e2)
     expect(e2).toHaveAttribute('aria-selected', 'true')
     fireEvent.click(e2)

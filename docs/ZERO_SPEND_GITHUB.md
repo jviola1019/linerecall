@@ -14,6 +14,12 @@ Review the linked vendor terms before each production release.
 - Workflows use only `ubuntu-latest`, set timeouts, cancel superseded runs, and
   retain uploaded audit artifacts for one day. No larger runner, GPU runner,
   paid marketplace action, private package, or metered cloud service is used.
+- GitHub's standard public Linux runner currently provides 14 GB of SSD storage
+  and enforces a six-hour maximum per job. Those limits are materially smaller
+  than the 87,256,474,116-byte Q2 source corpus and do not provide enough time
+  or durable storage for the required candidate and exact replays. See the
+  [hosted-runner specification](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
+  and [Actions limits](https://docs.github.com/en/actions/reference/limits).
 - GitHub Pages deployment is disabled. The manual workflow can verify and
   upload a one-day, non-deploying review bundle, but it has no Pages write or
   OIDC permission. Pages cannot apply LineRecall's required exact response
@@ -22,7 +28,8 @@ Review the linked vendor terms before each production release.
   [Pages limits](https://docs.github.com/en/pages/getting-started-with-github-pages/github-pages-limits).
 - The full 87.2 GB corpus and engine campaign do not run on Actions. CI runs
   bounded fixtures, validators, coverage, security checks, and reproducibility
-  checks only.
+  checks only. Splitting the work into incomplete samples would not satisfy the
+  release contract and is not represented as backtest evidence.
 
 ## Cost and security controls
 

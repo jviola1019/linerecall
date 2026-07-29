@@ -2,15 +2,18 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { Chess } from 'chess.js'
 import {
+  GRAPH_TRAINING_BATCH_PATH_LIMIT,
   GRAPH_TRAINING_CONTRACT_ID,
   applyPendingOpponentGraphMove,
   continueGraphTrainingSession,
   createAutonomousGraphTrainingPlan,
+  createBoundedGraphTrainingPlan,
   createExplicitGraphSessionSelection,
   createFamilyTrainingCursorSnapshot,
   createGraphTrainingPathCompletion,
   createGraphTrainingSession,
   coverageCycleOrdinalFromId,
+  deferGraphTrainingPathToCycleEnd,
   expectedGraphTrainingMoves,
   graphTrainingFen,
   listGraphTrainingPaths,
@@ -154,6 +157,14 @@ test('an authoritative due-card set survives the 1,000-path batch boundary', asy
     dueCardIds: expanded.dueCardIds,
   })
   assert.deepEqual(plan.pathIdBatches.map(({ length }) => length), [1_000, 1])
+  const branchPlan = createBoundedGraphTrainingPlan({
+    adapter: expanded.adapter,
+    pathIds: plan.totalPathIds,
+    dueCardIds: expanded.dueCardIds,
+    coverageCycleOrdinal: 3,
+  })
+  assert.deepEqual(branchPlan.pathIdBatches.map(({ length }) => length), [1_000, 1])
+  assert.deepEqual(branchPlan.totalPathIds, plan.totalPathIds)
 
   const firstSelection = createExplicitGraphSessionSelection({
     adapter: expanded.adapter,
@@ -225,6 +236,213 @@ test('a path transferred from a future 1,001-path batch is claimed once and skip
     }),
     /invalid audited path identity/u,
   )
+})
+
+test('a skipped path at the 1,000-path boundary moves behind every future batch without duplication', async () => {
+  const fixture = await adapterFixture()
+  const expanded = expandAdapterForBatchBoundary(fixture.adapter, 1_001)
+  const plan = createAutonomousGraphTrainingPlan({
+    adapter: expanded.adapter,
+    dueCardIds: expanded.dueCardIds,
+  })
+  const deferredPathId = plan.pathIdBatches[0]!.at(-1)!
+  const deferred = deferGraphTrainingPathToCycleEnd({
+    plan,
+    activeBatchIndex: 0,
+    pathId: deferredPathId,
+  })
+
+  assert.equal(deferred.pathIdBatches[0]!.includes(deferredPathId), false)
+  assert.equal(deferred.pathIdBatches.at(-1)!.at(-1), deferredPathId)
+  assert.equal(deferred.pathIdBatches.flat().filter((pathId) => pathId === deferredPathId).length, 1)
+  assert.deepEqual(new Set(deferred.pathIdBatches.flat()), new Set(plan.totalPathIds))
+  assert.ok(deferred.pathIdBatches.every((batch) => batch.length <= 1_000))
+  assert.throws(
+    () => deferGraphTrainingPathToCycleEnd({
+      plan: { ...plan, pathIdBatches: [plan.pathIdBatches[0]!] },
+      activeBatchIndex: 0,
+      pathId: deferredPathId,
+    }),
+    /No unfinished variation/u,
+  )
+})
+
+test('bounded family planning rejects malformed limits and preserves every batch-helper boundary', async () => {
+  const { adapter } = await adapterFixture()
+  const path = listGraphTrainingPaths(adapter)[0]!
+  const otherPath = listGraphTrainingPaths(adapter)[1]!
+
+  assert.throws(
+    () => createBoundedGraphTrainingPlan({
+      adapter,
+      pathIds: [path.id],
+      dueCardIds: [],
+      coverageCycleOrdinal: -1,
+    }),
+    /nonnegative/u,
+  )
+  assert.throws(
+    () => createBoundedGraphTrainingPlan({
+      adapter,
+      pathIds: [path.id],
+      dueCardIds: [],
+      coverageCycleOrdinal: 1.5,
+    }),
+    /nonnegative/u,
+  )
+  for (const maximumPathsPerBatch of [0, 1.5, 1_001]) {
+    assert.throws(
+      () => createBoundedGraphTrainingPlan({
+        adapter,
+        pathIds: [path.id],
+        dueCardIds: [],
+        maximumPathsPerBatch,
+      }),
+      /1 through 1000/u,
+    )
+  }
+  assert.throws(
+    () => createBoundedGraphTrainingPlan({ adapter, pathIds: [], dueCardIds: [] }),
+    /at least one/u,
+  )
+  assert.throws(
+    () => createBoundedGraphTrainingPlan({ adapter, pathIds: [path.id, path.id], dueCardIds: [] }),
+    /must be unique/u,
+  )
+  assert.throws(
+    () => createBoundedGraphTrainingPlan({
+      adapter,
+      pathIds: Array.from(
+        { length: 100_001 },
+        (_, index) => `path_${index.toString(16).padStart(20, '0')}`,
+      ),
+      dueCardIds: [],
+    }),
+    /cursor path limit/u,
+  )
+  assert.throws(
+    () => createBoundedGraphTrainingPlan({
+      adapter,
+      pathIds: ['path_ffffffffffffffffffff'],
+      dueCardIds: [],
+    }),
+    /unavailable path/u,
+  )
+  assert.throws(
+    () => createBoundedGraphTrainingPlan({
+      adapter,
+      pathIds: [path.id],
+      dueCardIds: ['another_pack::pos_0000000000000000'],
+    }),
+    /selected graph pack/u,
+  )
+  assert.throws(
+    () => createBoundedGraphTrainingPlan({
+      adapter,
+      pathIds: [path.id],
+      dueCardIds: [`${adapter.graph.pack.id}::pos_0000000000000000`],
+    }),
+    /not a learner card/u,
+  )
+
+  const plan = createBoundedGraphTrainingPlan({
+    adapter,
+    pathIds: [path.id, otherPath.id],
+    dueCardIds: [],
+    maximumPathsPerBatch: 1,
+  })
+  assert.strictEqual(removeTransferredPathFromFutureBatches({
+    plan,
+    activeBatchIndex: 0,
+    transferredPathId: path.id,
+  }), plan)
+  assert.deepEqual(nextNonemptyGraphTrainingBatch(plan, 0), {
+    batchIndex: 1,
+    pathIds: [otherPath.id],
+  })
+
+  assert.throws(
+    () => deferGraphTrainingPathToCycleEnd({ plan, activeBatchIndex: -1, pathId: path.id }),
+    /nonnegative/u,
+  )
+  assert.throws(
+    () => deferGraphTrainingPathToCycleEnd({ plan, activeBatchIndex: 0.5, pathId: path.id }),
+    /nonnegative/u,
+  )
+  assert.throws(
+    () => deferGraphTrainingPathToCycleEnd({ plan, activeBatchIndex: 0, pathId: '<script>' }),
+    /invalid audited path identity/u,
+  )
+  assert.throws(
+    () => deferGraphTrainingPathToCycleEnd({
+      plan,
+      activeBatchIndex: 0,
+      pathId: 'path_ffffffffffffffffffff',
+    }),
+    /outside the active coverage plan/u,
+  )
+
+  const fullFutureBatch = Array.from(
+    { length: GRAPH_TRAINING_BATCH_PATH_LIMIT },
+    (_, index) => `path_e${index.toString(16).padStart(19, '0')}`,
+  )
+  const appendedBatch = deferGraphTrainingPathToCycleEnd({
+    plan: {
+      ...plan,
+      totalPathIds: [path.id, ...fullFutureBatch],
+      pathIdBatches: [[path.id], fullFutureBatch],
+    },
+    activeBatchIndex: 0,
+    pathId: path.id,
+  })
+  assert.deepEqual(appendedBatch.pathIdBatches.at(-1), [path.id])
+
+  const trailingEmptyBatch = deferGraphTrainingPathToCycleEnd({
+    plan: {
+      ...plan,
+      pathIdBatches: [[path.id], [otherPath.id], []],
+    },
+    activeBatchIndex: 0,
+    pathId: path.id,
+  })
+  assert.deepEqual(trailingEmptyBatch.pathIdBatches, [[], [otherPath.id, path.id], []])
+})
+
+test('a 1,001-path cursor remount preserves every due card and bounded pending batch', async () => {
+  const fixture = await adapterFixture()
+  const expanded = expandAdapterForBatchBoundary(fixture.adapter, 1_001)
+  const plan = createAutonomousGraphTrainingPlan({
+    adapter: expanded.adapter,
+    dueCardIds: expanded.dueCardIds,
+    coverageCycleOrdinal: 4,
+  })
+  const selection = createExplicitGraphSessionSelection({
+    adapter: expanded.adapter,
+    pathIds: plan.pathIdBatches[0]!,
+    dueCardIds: expanded.dueCardIds,
+    coverageCycleOrdinal: plan.coverageCycleOrdinal,
+  })
+  const session = createGraphTrainingSession({ adapter: expanded.adapter, selection })
+  const cursor = createFamilyTrainingCursorSnapshot({
+    adapter: expanded.adapter,
+    familyId: 'synthetic-family',
+    plan,
+    activeBatchIndex: 0,
+    completedBeforeBatch: [],
+    session,
+    authoritativeDueCardIds: expanded.dueCardIds,
+  })
+  const restored = restoreGraphTrainingCycleFromCursor({
+    adapter: expanded.adapter,
+    familyId: 'synthetic-family',
+    cursor,
+  })
+
+  assert.equal(cursor.pendingPathIds.length, 1_001)
+  assert.equal(restored.plan.totalPathIds.length, 1_001)
+  assert.deepEqual(restored.plan.pathIdBatches.map(({ length }) => length), [1_000, 1])
+  assert.deepEqual(restored.authoritativeDueCardIds, expanded.dueCardIds)
+  assert.deepEqual(restored.session.dueCardIds, expanded.dueCardIds)
 })
 
 test('family cursor snapshots restore authoritative due, pending, completed, batch, and cycle state', async () => {

@@ -286,7 +286,7 @@ export interface AppProps {
   familyTrainingJournal?: FamilyTrainingJournalRepository
   graphTrainingDueCardIds?: readonly string[]
   onGraphReviewInference?: (review: GraphTrainingReviewInference) => void
-  onGraphPathCompleted?: (completion: GraphTrainingPathCompletionV1) => void
+  onGraphPathCompleted?: (completion: GraphTrainingPathCompletionV1) => void | Promise<void>
 }
 
 const DEFAULT_TACTICAL_PUZZLE_RESOURCE: TacticalPuzzleResource = {
@@ -926,17 +926,23 @@ export function App({
       completedAt: completionRecord.completedAt,
     })
     const result = await activeFamilyTrainingJournal.appendCoverageEvent(event)
-    if (result === 'appended') {
-      const events = await activeFamilyTrainingJournal.listCoverageEvents({
-        releaseId: completionRecord.releaseId,
-        familyId,
-      })
-      setFamilyCompletionCount((current) => ({
-        ...current,
-        [familyId]: countUniqueCompletedFamilyPaths(events),
-      }))
+    if (result === 'duplicate') return
+    const events = await activeFamilyTrainingJournal.listCoverageEvents({
+      releaseId: completionRecord.releaseId,
+      familyId,
+    })
+    setFamilyCompletionCount((current) => ({
+      ...current,
+      [familyId]: countUniqueCompletedFamilyPaths(events),
+    }))
+    try {
+      await onGraphPathCompleted?.(completionRecord)
+    } catch (error) {
+      // The append-only family journal is authoritative. An optional host
+      // observer must not turn a committed completion into a retry that can
+      // repeat an external side effect.
+      setSaveError(`A connected completion observer failed: ${errorMessage(error)}. The local family completion remains saved.`)
     }
-    await onGraphPathCompleted?.(completionRecord)
   }
 
   const partition = state.partition.value
@@ -1258,7 +1264,7 @@ export function App({
         {appReady && (state.view === 'repertoire' || state.view === 'family' || state.view === 'train') ? (
           <>
             {state.selectedFamilyId && selectedFamilyLoadState.status === 'loading' ? (
-              <p className="resource-notice" role="status">Loading checksum-verified family packsâ€¦</p>
+              <p className="resource-notice" role="status">Loading checksum-verified family packs…</p>
             ) : null}
             {state.selectedFamilyId && selectedFamilyLoadState.status === 'error' ? (
               <div className="resource-notice error-warning" role="alert">

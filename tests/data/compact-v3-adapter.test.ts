@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdir, readFile, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -534,6 +534,44 @@ test('published archive accounting mismatch rolls back without a receipt', async
       stat(join(directory, 'v3', plan.archive.archiveId, 'checkpoint.json')),
       { code: 'ENOENT' },
     )
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('adapter enforces its SQLite spill cap during processing and promotes no checkpoint', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'linerecall-v3-adapter-byte-cap-'))
+  const first = archive(Array.from({ length: 61 }, (_, index) => pgn(gameId(index + 1))))
+  const archives = [first, archive([pgn('CAP00002')]), archive([pgn('CAP00003')])]
+  const manifest = manifestBytes(archives, [61, 1, 1])
+  const approved = planFor(manifest, first, '2026-04')
+  const cappedBounds = { ...approved.bounds, candidateIndexMaxBytes: 64 * 1024 }
+  const plan = CompactPreflightPlanSchema.parse({
+    ...approved,
+    bounds: cappedBounds,
+    benchmark: {
+      ...approved.benchmark,
+      peakAdditionalStorageBytes: Object.values(cappedBounds).reduce((sum, value) => sum + value, 0),
+    },
+  })
+  const archivePath = join(directory, plan.archive.filename)
+  await writeFile(archivePath, first)
+  try {
+    await assert.rejects(runCompactV3ArchiveAdapter({
+      pass: 'candidate',
+      plan,
+      corpus: approvedCompactCorpusFromBytes(manifest, 'lichess-standard-rated-q2-2026'),
+      archivePath,
+      workDirectory: directory,
+      toolchain,
+      availableBytes: async () => COMPACT_MINIMUM_FREE_RESERVE_BYTES + peakBound + 1,
+      now: fixedClock(),
+    }), /full|byte hard cap/iu)
+    await assert.rejects(
+      stat(join(directory, 'v3', plan.archive.archiveId, 'checkpoint.json')),
+      { code: 'ENOENT' },
+    )
+    assert.deepEqual(await readdir(join(directory, 'v3', '.adapter-working')), [])
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

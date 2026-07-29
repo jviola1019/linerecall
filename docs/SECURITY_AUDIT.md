@@ -31,6 +31,46 @@ be used to approve the current source or artifact.
   JavaScript URLs. Pieces are bundled locally and pinned by digest. Typography
   uses the operating-system stack; no remote or embedded font is shipped.
 
+## Current source-tree controls and unresolved boundaries
+
+The source tree is ahead of the exact 2026-07-20 candidate. The following are
+review-only implementation observations, not a current security approval:
+
+- Family catalog, manifest, graph-shard, pack, path-membership, release, root,
+  and content-address references are strict and fail closed. Pack-local card,
+  due-set, cursor, and family-cycle identities prevent one pack from silently
+  consuming another pack's state.
+- Full-family traversal records append-only `cycle_started` and `pack_bound`
+  events. Named-branch traversal resolves primary and secondary memberships
+  across same-side packs, but its cross-pack coordinator exists only in React
+  session state. There is no versioned append-only branch-cycle record from
+  which a reload can authenticate and rebuild the exact membership, completed
+  set, and next pack. Durable remount behavior remains a release and staging
+  blocker.
+- Tactical resources validate state and records independently, reject duplicate
+  IDs, replay chess moves through guarded logic, and keep puzzle progress
+  separate from recall progress. No real shard has passed digest, graph
+  association, and per-node Stockfish promotion; synthetic review fixtures
+  must never be accepted as puzzle evidence.
+- Board annotations accept fixed squares, bounded labels, and fixed semantic
+  styles. Arbitrary SVG, HTML, CSS, URLs, and executable content remain outside
+  the contract.
+- Compact-v3 disposable SQLite working copies apply live page caps and no
+  on-disk rollback journal. A full database rolls back and cannot checkpoint or
+  promote. These controls limit failure impact; the cumulative game ledger and
+  complete baseline still make full-Q2 capacity unproven.
+- `.github/workflows/codeql.yml` is configured for JavaScript/TypeScript with
+  SHA-pinned actions, `security-extended` queries, concurrency cancellation,
+  and only `contents: read` plus `security-events: write`. It has not yet
+  produced a successful result bound to the current pushed source snapshot and
+  is not counted as a scan pass.
+
+Current-source artifact, browser, dependency, SBOM, secret, CodeQL, server,
+infrastructure, and independent security evidence must be regenerated and
+digest-bound. Full promoted opening/puzzle data, durable branch recovery,
+manual accessibility, locale/editorial review, legal approval, and connected
+staging remain outside the approved boundary.
+
 ## Connected-service boundary
 
 - Validate every versioned API request and cap body, collection, token, import,

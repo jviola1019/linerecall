@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
+import { access, readFile } from 'node:fs/promises'
 import test from 'node:test'
 import {
   LichessPuzzleManifestSchema,
@@ -24,6 +24,15 @@ test('connected-source manifests pin approved licenses and exact published Q2 to
   assert.equal(puzzles.artifact.bytes, 302_111_223)
   assert.equal(puzzles.artifact.sha256, null)
   assert.equal(puzzles.artifact.integrityStatus, 'pending-local-digest')
+})
+
+test('every source-manifest path in the reproduction guide exists', async () => {
+  const guide = await readFile('docs/DATA_REPRODUCTION.md', 'utf8')
+  const paths = new Set(
+    [...guide.matchAll(/data\/manifests\/[A-Za-z0-9._-]+\.json/gu)].map((match) => match[0]),
+  )
+  assert.ok(paths.size > 0)
+  await Promise.all([...paths].map((path) => access(path)))
 })
 
 test('evidence bands keep the canonical rating cohort separate from Lichess beginner detail', () => {

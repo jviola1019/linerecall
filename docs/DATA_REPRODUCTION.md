@@ -264,6 +264,11 @@ capacity. Malformed plans, inaccessible paths, or arithmetic/configuration
 errors exit `1`. No override flag exists. Reaching a runtime cap invalidates
 the incomplete pass even if preflight previously returned `0`.
 
+The command inventories the existing `work-dir/v3` tree before assessment; it
+does not assume retained usage is zero. A `ready` result means enforced caps
+prevent the next pass from consuming the reserve. It does **not** prove that
+the full Q2 workload fits inside those caps or will complete.
+
 No approved benchmark plan or schema-v3 corpus output is currently committed.
 The complete broadcast replay and full Q2 processing remain release blockers;
 the contracts and fixture results do not claim otherwise.
@@ -309,8 +314,12 @@ free-space refusal, output hard caps, corruption detection, actual legal PGN
 replay, cumulative threshold crossings, exact SQLite outcomes, wrapped
 broadcast frames, cross-archive deduplication, rollback on a conflicting game
 key, retained-state accounting, and refusal before a promotion would cross the
-corpus-wide cap. Passing these tests does **not** approve a corpus benchmark or
-produce release evidence.
+corpus-wide cap. The current fixture suite also exercises live candidate and
+exact SQLite page limits inside transactions, `SQLITE_FULL` rollback, absence
+of disposable journal/WAL spill, and refusal to checkpoint after a cap failure.
+The bounded local run contained 34 passing fixture cases. It was not bound to a
+release source snapshot. Passing these tests does **not** approve a corpus
+benchmark or produce release evidence.
 
 The archive adapter is `scripts/data/ingest-compact-v3.ts`. It accepts one
 archive and one pass from either an exact local file or the archive's exact
@@ -385,12 +394,40 @@ Candidate and exact outputs are cumulative SQLite states. This makes every
 checkpoint independently recoverable and makes cross-archive deduplication
 auditable, but also means retained immutable states consume storage. Before a
 real broadcast replay, the approved benchmark must measure that retained-state
-growth, peak resident memory, WAL/temporary bytes, runtime, observations, and
+growth, peak resident memory, temporary bytes, runtime, observations, and
 accepted/rejected/deduplicated totals under the exact proposed caps. Every
 archive invocation recounts the complete schema-v3 tree, subtracts those bytes
 from the corpus-retention allowance, and rechecks current free bytes. Existing
 cumulative output therefore cannot be mistaken for free future capacity or
 silently consume the 10 GiB reserve.
+
+The adapter now applies SQLite `max_page_count` while each disposable working
+copy is being written and disables its on-disk rollback journal. The working
+copy can therefore fail with `SQLITE_FULL`, be discarded, and leave no
+checkpoint before its declared candidate/exact byte cap is exceeded. Durable
+standalone SQLite stores retain normal WAL behavior; only hash-before-promotion
+adapter copies use the disposable mode.
+
+The candidate working limit is `candidateIndexMaxBytes`. The exact working
+limit is the smaller of `exactWorkMaxBytes` and the combined declared baseline
+and adaptive shard caps. SQLite rounds enforcement to complete pages; the
+configured limit is therefore translated to a conservative page count rather
+than treated as permission to cross the byte ceiling.
+
+Completion feasibility remains unproven. `compact_adapter_games` currently
+stores the source ID, full text game key, 64-character corruption guard, and
+first-archive ID in both candidate and exact cumulative states. Every later
+archive copies and promotes the complete preceding database. In addition, ply
+0–30 evidence deliberately bypasses the candidate sketch because the exact
+pass must retain complete baseline aggregates. At 267,333,507 published Q2
+games, those fixed-width text ledgers, repeated cumulative snapshots, and the
+far broader baseline position set can exceed a plan derived only from the
+800,176-game broadcast corpus. No full-Q2 plan may be described as
+capacity-approved until conservative ledger/index/position bounds fit with the
+10 GiB reserve or the pipeline is redesigned around compact partitioned dedup
+keys, replay-decision shards, and audited superseded-state handoff. Runtime caps
+make the current implementation safe to attempt; they do not make it adequate
+to finish.
 
 The benchmark chicken-and-egg is handled by a separate, explicit bootstrap
 execution purpose. It accepts only the complete approved 78-archive broadcast
@@ -402,7 +439,7 @@ retained-state accounting, and 10 GiB reserve as evidence ingestion:
 npm run data:evidence-v3-benchmark -- \
   --run-id broadcast-v3-YYYYMMDD \
   --plans-dir <directory-with-78-broadcast-YYYY-MM.json-plans> \
-  --manifest data/manifests/lichess-broadcasts.source.json \
+  --manifest data/manifests/broadcasts.source.json \
   --archives-dir <directory-with-78-approved-local-archives> \
   --work-dir <new-empty-dedicated-benchmark-directory> \
   --source-snapshot-sha256 <treeSha256>
@@ -439,8 +476,27 @@ particular, no real Caro-Kann path, family, depth, or completion total is
 currently available. Any Caro-Kann graph used by tests is synthetic and must
 remain labeled non-production evidence.
 
+The synthetic family fixtures now demonstrate two separate mechanics:
+full-family cycles bind distinct pack-local coverage cycles through append-only
+`cycle_started` and `pack_bound` events, while named-branch sessions traverse
+both primary and secondary memberships across same-side packs. Those fixtures
+do not establish source-edge inventory equality, sample eligibility, engine
+soundness, Scid agreement, or a real path total. Named-branch cross-pack
+membership and completion are also session-only today; there is no durable
+branch-cycle journal that can reproduce the exact next path after remount.
+
 No schema-v3 command opens, converts, deletes, or cleans the read-only 18.7 GB
 schema-v2 database.
+
+On 2026-07-29 the local read-only schema-v2 database was compressed in place
+with NTFS filesystem compression to reclaim host storage without changing its
+logical contents. Its logical length remained 18,733,826,048 bytes, its
+allocated storage was reported as 5,659,254,784 bytes, and its SHA-256 was
+unchanged before and after the operation:
+`6ecd8d5e39d073e8e00398a52cc5c320af46f9fba1c783f62ac7816b5722456b`.
+This host-specific operation is not corpus evidence or a capacity approval.
+Windows paging growth consumed part of the reclaimed allocation, so the
+10 GiB-reserve preflight remains authoritative and the Q2 run remains blocked.
 
 The deterministic repertoire helpers still preserve this **historical v2
 selection contract** for regression tests:
@@ -498,3 +554,10 @@ The approved source digest does not make candidates release-ready. Promotion
 also requires the completed v3 graph association and Stockfish proof at every
 learner node. Neither exists for an official shipped puzzle subset, so no
 current puzzle count may be presented as production content.
+
+The tactical UI review harness uses strictly validated synthetic records to
+exercise resource states, special moves, forced replies, and separate progress.
+It does not write a promotion receipt and is not part of the source-data
+evidence chain. Puzzle promotion remains blocked until the approved source
+receipt, exact graph association inventory, per-learner-node engine results,
+content-addressed shard digest, and release-source snapshot all reconcile.

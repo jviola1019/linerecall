@@ -15,9 +15,14 @@ import {
   type FamilyPackRefV1,
   type OpeningFamilyManifestV1,
 } from '../../domain/opening-family.ts'
-import type { FamilyTrainingJournalRepository } from '../../domain/family-training-journal.ts'
+import {
+  latestFamilyCoverageGeneration,
+  type FamilyCoverageGenerationV1,
+  type FamilyTrainingJournalRepository,
+} from '../../domain/family-training-journal.ts'
 import {
   GraphTrainingBoundary,
+  type GraphTrainingPathGroup,
   type GraphTrainingResource,
 } from './GraphTrainingBoundary.tsx'
 import { EmptyState } from './ResourceState.tsx'
@@ -70,6 +75,10 @@ interface OpeningFamilyViewProps {
 const FAMILY_PAGE_SIZE = 36
 const BRANCH_PAGE_SIZE = 40
 
+function randomEventId(): string {
+  return globalThis.crypto.randomUUID()
+}
+
 function ecoRangeLabel(ecoCodes: readonly string[]): string {
   if (ecoCodes.length === 1) return ecoCodes[0]!
   const first = ecoCodes[0]!
@@ -121,6 +130,92 @@ function manifestPathDisplayNames(
     const total = totals.get(name) ?? 1
     return [pathId, total > 1 ? `${name} · Route ${ordinal} of ${total}` : name]
   }))
+}
+
+interface FamilyBranchPracticeScope {
+  id: string
+  label: string
+  pathIdsByPack: Readonly<Record<string, string[]>>
+  pathKeys: string[]
+}
+
+interface ActiveFamilyBranchCycle {
+  branchId: string
+  label: string
+  pathKeys: string[]
+  completedPathKeys: string[]
+}
+
+function manifestFamilyBranchPracticeScopes(
+  manifest: OpeningFamilyManifestV1,
+  side: 'white' | 'black',
+): FamilyBranchPracticeScope[] {
+  const branchesById = new Map(manifest.branches.map((branch) => [branch.id, branch]))
+  const sidePackIds = new Set(
+    manifest.packRefs.filter((pack) => pack.side === side).map((pack) => pack.packId),
+  )
+  const hierarchyName = (branchId: string): string => {
+    const names: string[] = []
+    const visited = new Set<string>()
+    let currentId: string | undefined = branchId
+    while (currentId && !visited.has(currentId)) {
+      visited.add(currentId)
+      const branch = branchesById.get(currentId)
+      if (!branch) break
+      names.unshift(branch.canonicalName)
+      currentId = branch.parentId
+    }
+    return names.join(' / ')
+  }
+  const pathsByBranchAndPack = new Map<string, Map<string, Set<string>>>()
+  for (const membership of manifest.pathMemberships) {
+    if (!sidePackIds.has(membership.packId)) continue
+    const branchIds = new Set([
+      membership.primaryBranchId,
+      ...membership.secondaryBranchIds,
+    ])
+    for (const branchId of branchIds) {
+      const pathsByPack = pathsByBranchAndPack.get(branchId) ?? new Map<string, Set<string>>()
+      const pathIds = pathsByPack.get(membership.packId) ?? new Set<string>()
+      pathIds.add(membership.pathId)
+      pathsByPack.set(membership.packId, pathIds)
+      pathsByBranchAndPack.set(branchId, pathsByPack)
+    }
+  }
+
+  return [...pathsByBranchAndPack.entries()].map(([branchId, pathsByPack]) => {
+    const pathIdsByPack = Object.fromEntries(
+      [...pathsByPack.entries()].map(([packId, pathIds]) => [packId, [...pathIds]]),
+    )
+    const pathKeys = Object.entries(pathIdsByPack).flatMap(([packId, pathIds]) =>
+      pathIds.map((pathId) => `${packId}\0${pathId}`))
+    return {
+      id: branchId,
+      label: hierarchyName(branchId),
+      pathIdsByPack,
+      pathKeys,
+    }
+  }).sort((left, right) =>
+    right.pathKeys.length - left.pathKeys.length
+    || left.label.localeCompare(right.label, 'en')
+    || left.id.localeCompare(right.id, 'en'))
+}
+
+function packPracticeGroups(
+  scopes: readonly FamilyBranchPracticeScope[],
+  packId: string,
+): GraphTrainingPathGroup[] {
+  return scopes.flatMap((scope) => {
+    const pathIds = scope.pathIdsByPack[packId]
+    return pathIds && pathIds.length > 0
+      ? [{
+          id: scope.id,
+          label: scope.label,
+          pathIds,
+          familyPathCount: scope.pathKeys.length,
+        }]
+      : []
+  })
 }
 
 interface ResolvedFamilyPack {
@@ -256,11 +351,21 @@ export function OpeningFamilyView({
   const [branchQuery, setBranchQuery] = useState('')
   const [visibleBranchCount, setVisibleBranchCount] = useState(BRANCH_PAGE_SIZE)
   const [selectedPackByScope, setSelectedPackByScope] = useState<Record<string, string>>({})
+  const [completedTrainingPathCount, setCompletedTrainingPathCount] = useState(0)
+  const [completionHistoryError, setCompletionHistoryError] = useState<string | null>(null)
+  const [completionHistoryHydrationKey, setCompletionHistoryHydrationKey] = useState<string | null>(null)
+  const [autoStartPackId, setAutoStartPackId] = useState<string | null>(null)
+  const [autoStartBranch, setAutoStartBranch] = useState<{ packId: string; branchId: string } | null>(null)
+  const [activeBranchCycle, setActiveBranchCycle] = useState<ActiveFamilyBranchCycle | null>(null)
+  const [, bumpFamilyGenerationRevision] = useState(0)
   const [completionPersistenceFailure, setCompletionPersistenceFailure] = useState<{
     completion: GraphTrainingPathCompletionV1
     message: string
   } | null>(null)
   const completedTrainingPathsRef = useRef(new Set<string>())
+  const fullFamilyCoverageActiveRef = useRef(false)
+  const activeBranchCycleRef = useRef<ActiveFamilyBranchCycle | null>(null)
+  const activeFamilyGenerationRef = useRef<FamilyCoverageGenerationV1 | null>(null)
   const pathCompletionHandlerRef = useRef<
     ((completion: GraphTrainingPathCompletionV1) => Promise<void>) | null
   >(null)
@@ -297,8 +402,106 @@ export function OpeningFamilyView({
   }, [selectedFamilyId, selectedSide])
   useEffect(() => {
     completedTrainingPathsRef.current = new Set<string>()
+    fullFamilyCoverageActiveRef.current = false
+    activeFamilyGenerationRef.current = null
+    setCompletedTrainingPathCount(0)
+    setCompletionHistoryError(null)
+    setCompletionHistoryHydrationKey(null)
+    setAutoStartPackId(null)
+    setAutoStartBranch(null)
+    activeBranchCycleRef.current = null
+    setActiveBranchCycle(null)
     setCompletionPersistenceFailure(null)
   }, [mode, selectedFamilyId, selectedSide])
+  useEffect(() => {
+    let active = true
+    if (mode !== 'training' || !selectedFamilyId || !familyTrainingJournal) {
+      return () => { active = false }
+    }
+    const family = families.find(({ id }) => id === selectedFamilyId)
+    const resources = resolvedResources.get(selectedFamilyId)
+    if (!family || !resources?.manifest || resources.issues.length > 0) {
+      return () => { active = false }
+    }
+    const promotedSides = [...new Set(resources.manifest.packRefs.map(({ side }) => side))]
+    const side = availableSide(
+      promotedSides.length > 0 ? promotedSides : family.availableSides,
+      selectedSide,
+    )
+    const packs = resources.packs.filter(({ ref }) => ref.side === side)
+    const hydrationKey = `${resources.manifest.releaseId}\0${family.id}\0${side}`
+    const pathIdsByPack = new Map(packs.map(({ ref, graph }) => [
+      ref.packId,
+      new Set((graph?.paths ?? []).map(({ id }) => id)),
+    ]))
+    void Promise.all([
+      familyTrainingJournal.listCoverageEvents({
+        releaseId: resources.manifest.releaseId,
+        familyId: family.id,
+      }),
+      familyTrainingJournal.listCycleEvents({
+        releaseId: resources.manifest.releaseId,
+        familyId: family.id,
+        side,
+      }),
+    ]).then(([events, cycleEvents]) => {
+      if (!active) return
+      const generation = latestFamilyCoverageGeneration(cycleEvents)
+      if (
+        generation
+        && (
+          generation.releaseId !== resources.manifest!.releaseId
+          || generation.familyId !== family.id
+          || generation.side !== side
+        )
+      ) throw new Error('Saved family coverage generation belongs to another family scope')
+      activeFamilyGenerationRef.current = generation
+      const completed = new Set(events
+        .filter((event) =>
+          generation !== null
+          && event.coverageCycleId === generation.packCycleIds[event.packId]
+          && pathIdsByPack.get(event.packId)?.has(event.pathId))
+        .map(({ pathId }) => pathId))
+      completedTrainingPathsRef.current = completed
+      fullFamilyCoverageActiveRef.current = generation !== null
+      setCompletedTrainingPathCount(completed.size)
+      setCompletionHistoryError(null)
+      setCompletionHistoryHydrationKey(hydrationKey)
+      const firstUnfinishedPack = packs.find(({ graph }) =>
+        graph?.paths.some(({ id }) => !completed.has(id)))
+      if (!firstUnfinishedPack) return
+      const completedBoundPackExists = packs.some(({ ref, graph }) =>
+        generation?.packCycleIds[ref.packId] !== undefined
+        && graph?.paths.every(({ id }) => completed.has(id)))
+      const unboundStartedGeneration = generation !== null
+        && Object.keys(generation.packCycleIds).length === 0
+      const packScope = `${family.id}:${side}`
+      setSelectedPackByScope((current) => {
+        const currentPack = packs.find(({ ref }) => ref.packId === current[packScope])
+        const currentHasUnfinishedPath = currentPack?.graph?.paths.some(({ id }) => !completed.has(id))
+        return currentHasUnfinishedPath
+          ? current
+          : { ...current, [packScope]: firstUnfinishedPack.ref.packId }
+      })
+      if (completedBoundPackExists || unboundStartedGeneration) {
+        fullFamilyCoverageActiveRef.current = true
+        setAutoStartPackId(firstUnfinishedPack.ref.packId)
+      }
+    }).catch((error: unknown) => {
+      if (!active) return
+      const detail = error instanceof Error ? error.message : 'The completion history repository failed.'
+      setCompletionHistoryError(`Saved family completion could not be read: ${detail}`)
+      setCompletionHistoryHydrationKey(null)
+    })
+    return () => { active = false }
+  }, [
+    families,
+    familyTrainingJournal,
+    mode,
+    resolvedResources,
+    selectedFamilyId,
+    selectedSide,
+  ])
 
   if (mode === 'catalog') {
     const visibleFamilies = filteredFamilies.slice(0, visibleCount)
@@ -405,10 +608,30 @@ export function OpeningFamilyView({
   const packScope = `${family.id}:${side}`
   const selectedPackId = selectedPackByScope[packScope]
   const selectedPack = sidePacks.find(({ ref }) => ref.packId === selectedPackId) ?? sidePacks[0] ?? null
+  const selectedPackDueCardIds = selectedPack
+    ? dueCardIds.filter((cardId) => cardId.startsWith(`${selectedPack.ref.packId}::`))
+    : []
+  const expectedPackCoverageCycleId = familyTrainingJournal && selectedPack
+    ? activeBranchCycle
+      ? null
+      : activeFamilyGenerationRef.current?.packCycleIds[selectedPack.ref.packId] ?? null
+    : undefined
+  const expectedHistoryHydrationKey = familyResources.manifest
+    ? `${familyResources.manifest.releaseId}\0${family.id}\0${side}`
+    : null
+  const completionHistoryPending = mode === 'training'
+    && Boolean(familyTrainingJournal)
+    && expectedHistoryHydrationKey !== null
+    && completionHistoryHydrationKey !== expectedHistoryHydrationKey
+    && completionHistoryError === null
   const status = selectedSideStatus(sidePacks, familyResources.issues)
-  const trainingResource: GraphTrainingResource = sideReady && selectedPack
-    ? selectedPack.resource
-    : familyResources.issues.length > 0
+  const trainingResource: GraphTrainingResource = completionHistoryError
+    ? { status: 'error', error: completionHistoryError }
+    : completionHistoryPending
+      ? { status: 'loading' }
+      : sideReady && selectedPack
+        ? selectedPack.resource
+        : familyResources.issues.length > 0
       ? { status: 'error', error: familyResources.issues[0]! }
       : {
           status: 'disabled',
@@ -417,6 +640,12 @@ export function OpeningFamilyView({
   const pathDisplayNameById = familyResources.manifest && selectedPack
     ? manifestPathDisplayNames(familyResources.manifest, selectedPack.ref.packId)
     : undefined
+  const familyBranchPracticeScopes = familyResources.manifest
+    ? manifestFamilyBranchPracticeScopes(familyResources.manifest, side)
+    : []
+  const selectedPackPathGroups = selectedPack
+    ? packPracticeGroups(familyBranchPracticeScopes, selectedPack.ref.packId)
+    : []
   let branchRoutes = familyResources.manifest && sideReady
     ? summarizeFamilyBranchRoutes({
         manifest: familyResources.manifest,
@@ -447,17 +676,189 @@ export function OpeningFamilyView({
     : []
 
   const selectPack = (packId: string): void => {
+    fullFamilyCoverageActiveRef.current = false
+    activeBranchCycleRef.current = null
+    setActiveBranchCycle(null)
+    setAutoStartPackId(null)
+    setAutoStartBranch(null)
     setSelectedPackByScope((current) => ({ ...current, [packScope]: packId }))
-    completedTrainingPathsRef.current = new Set<string>()
     onAnnouncement?.(`Selected repertoire pack ${sidePacks.findIndex(({ ref }) => ref.packId === packId) + 1}.`)
   }
 
+  const handleCoverageScopeChange = (
+    scope: 'full' | 'selection',
+    detail?: { pathGroupId?: string; continuation?: boolean },
+  ): void => {
+    if (scope === 'full') {
+      fullFamilyCoverageActiveRef.current = true
+      activeBranchCycleRef.current = null
+      setActiveBranchCycle(null)
+      setAutoStartBranch(null)
+      return
+    }
+    fullFamilyCoverageActiveRef.current = false
+    const branch = detail?.pathGroupId
+      ? familyBranchPracticeScopes.find(({ id }) => id === detail.pathGroupId)
+      : undefined
+    if (!branch) {
+      activeBranchCycleRef.current = null
+      setActiveBranchCycle(null)
+      setAutoStartBranch(null)
+      return
+    }
+    if (detail?.continuation && activeBranchCycleRef.current?.branchId === branch.id) return
+    const nextCycle: ActiveFamilyBranchCycle = {
+      branchId: branch.id,
+      label: branch.label,
+      pathKeys: [...branch.pathKeys],
+      completedPathKeys: [],
+    }
+    activeBranchCycleRef.current = nextCycle
+    setActiveBranchCycle(nextCycle)
+    setAutoStartBranch(null)
+  }
+
+  const bindPackToActiveGeneration = async (
+    packId: string,
+    packCoverageCycleId: string,
+  ): Promise<void> => {
+    if (!familyTrainingJournal || !familyResources.manifest) return
+    let generation = activeFamilyGenerationRef.current
+    if (!generation) {
+      const generationId = randomEventId()
+      const startedAt = new Date().toISOString()
+      await familyTrainingJournal.appendCycleEvent({
+        schemaVersion: 1,
+        eventId: randomEventId(),
+        releaseId: familyResources.manifest.releaseId,
+        familyId: family.id,
+        side,
+        generationId,
+        generationOrdinal: 0,
+        kind: 'cycle_started',
+        occurredAt: startedAt,
+      })
+      generation = {
+        releaseId: familyResources.manifest.releaseId,
+        familyId: family.id,
+        side,
+        generationId,
+        generationOrdinal: 0,
+        packCycleIds: {},
+      }
+      activeFamilyGenerationRef.current = generation
+    }
+    const priorBinding = generation.packCycleIds[packId]
+    if (priorBinding && priorBinding !== packCoverageCycleId) {
+      throw new Error('The active family generation already binds this pack to another cycle')
+    }
+    if (priorBinding === packCoverageCycleId) return
+    await familyTrainingJournal.appendCycleEvent({
+      schemaVersion: 1,
+      eventId: randomEventId(),
+      releaseId: generation.releaseId,
+      familyId: generation.familyId,
+      side: generation.side,
+      generationId: generation.generationId,
+      generationOrdinal: generation.generationOrdinal,
+      kind: 'pack_bound',
+      packId,
+      packCoverageCycleId,
+      occurredAt: new Date().toISOString(),
+    })
+    activeFamilyGenerationRef.current = {
+      ...generation,
+      packCycleIds: { ...generation.packCycleIds, [packId]: packCoverageCycleId },
+    }
+    bumpFamilyGenerationRevision((revision) => revision + 1)
+  }
+
+  const restartFullFamilyCoverage = async (
+    options?: { autoStart?: boolean },
+  ): Promise<void> => {
+    const firstPack = sidePacks.find(({ resource, graph }) =>
+      resource.status === 'ready' && graph !== null)
+    if (!firstPack) {
+      onAnnouncement?.('No audited pack is available for a new family coverage cycle.')
+      return
+    }
+    if (!familyTrainingJournal || !familyResources.manifest) {
+      throw new Error('A family progress repository is required to start a coherent coverage generation')
+    }
+    const previousGeneration = activeFamilyGenerationRef.current
+    const generationId = randomEventId()
+    const generationOrdinal = (previousGeneration?.generationOrdinal ?? -1) + 1
+    await familyTrainingJournal.appendCycleEvent({
+      schemaVersion: 1,
+      eventId: randomEventId(),
+      releaseId: familyResources.manifest.releaseId,
+      familyId: family.id,
+      side,
+      generationId,
+      generationOrdinal,
+      kind: 'cycle_started',
+      occurredAt: new Date().toISOString(),
+    })
+    activeFamilyGenerationRef.current = {
+      releaseId: familyResources.manifest.releaseId,
+      familyId: family.id,
+      side,
+      generationId,
+      generationOrdinal,
+      packCycleIds: {},
+    }
+    completedTrainingPathsRef.current = new Set<string>()
+    fullFamilyCoverageActiveRef.current = true
+    setCompletedTrainingPathCount(0)
+    setCompletionPersistenceFailure(null)
+    setSelectedPackByScope((current) => ({ ...current, [packScope]: firstPack.ref.packId }))
+    setAutoStartPackId(options?.autoStart === false ? null : firstPack.ref.packId)
+    onAnnouncement?.('Starting a new full-family coverage cycle.')
+  }
+
   const recordSuccessfulCompletion = (completion: GraphTrainingPathCompletionV1): void => {
+    const branchCycle = activeBranchCycleRef.current
+    if (branchCycle) {
+      const pathKey = `${completion.packId}\0${completion.pathId}`
+      if (!branchCycle.pathKeys.includes(pathKey) || branchCycle.completedPathKeys.includes(pathKey)) return
+      const updatedBranchCycle: ActiveFamilyBranchCycle = {
+        ...branchCycle,
+        completedPathKeys: [...branchCycle.completedPathKeys, pathKey],
+      }
+      activeBranchCycleRef.current = updatedBranchCycle
+      setActiveBranchCycle(updatedBranchCycle)
+      const branch = familyBranchPracticeScopes.find(({ id }) => id === branchCycle.branchId)
+      const completedKeys = new Set(updatedBranchCycle.completedPathKeys)
+      const currentPackFinished = (branch?.pathIdsByPack[completion.packId] ?? []).every((pathId) =>
+        completedKeys.has(`${completion.packId}\0${pathId}`))
+      if (!currentPackFinished || !branch) return
+      const nextPack = sidePacks.find(({ ref }) =>
+        (branch.pathIdsByPack[ref.packId] ?? []).some((pathId) =>
+          !completedKeys.has(`${ref.packId}\0${pathId}`)))
+      if (nextPack && nextPack.ref.packId !== completion.packId) {
+        setAutoStartBranch({ packId: nextPack.ref.packId, branchId: branch.id })
+        setSelectedPackByScope((current) => ({ ...current, [packScope]: nextPack.ref.packId }))
+        onAnnouncement?.(`Continuing ${branch.label} in the next audited pack.`)
+      }
+      return
+    }
+    const generation = activeFamilyGenerationRef.current
+    const boundPackCycleId = generation?.packCycleIds[completion.packId]
+    const countsTowardActiveFullCycle = fullFamilyCoverageActiveRef.current
+      && (
+        !familyTrainingJournal
+        || (
+          boundPackCycleId !== undefined
+          && boundPackCycleId === completion.coverageCycleId
+        )
+      )
+    if (!countsTowardActiveFullCycle) return
     completedTrainingPathsRef.current.add(completion.pathId)
+    setCompletedTrainingPathCount(completedTrainingPathsRef.current.size)
     const currentGraph = sidePacks.find(({ ref }) => ref.packId === completion.packId)?.graph
     const currentPackFinished = currentGraph?.paths.every(({ id }) =>
       completedTrainingPathsRef.current.has(id)) ?? false
-    if (!currentPackFinished) return
+    if (!currentPackFinished || !fullFamilyCoverageActiveRef.current) return
     const currentPackIndex = sidePacks.findIndex(({ ref }) => ref.packId === completion.packId)
     const orderedCandidates = [
       ...sidePacks.slice(currentPackIndex + 1),
@@ -466,6 +867,7 @@ export function OpeningFamilyView({
     const nextPack = orderedCandidates.find(({ graph }) =>
       graph?.paths.some(({ id }) => !completedTrainingPathsRef.current.has(id)))
     if (nextPack) {
+      setAutoStartPackId(nextPack.ref.packId)
       setSelectedPackByScope((current) => ({ ...current, [packScope]: nextPack.ref.packId }))
       onAnnouncement?.('Pack complete. Continuing with the next audited pack.')
     }
@@ -486,31 +888,49 @@ export function OpeningFamilyView({
   if (mode === 'training') {
     return (
       <section className="family-training-view" aria-labelledby="family-training-page-title">
-        <header className="family-detail-header">
-          <button type="button" className="text-button" onClick={() => onSelectFamily(family.id)}>← {family.canonicalName}</button>
+        <header className="family-detail-header family-training-header">
+          <button
+            type="button"
+            className="text-button"
+            aria-label={`Back to ${family.canonicalName}`}
+            onClick={() => onSelectFamily(family.id)}
+          >
+            <span aria-hidden="true">←</span>
+            <span className="family-training-back-label">{family.canonicalName}</span>
+          </button>
           <div>
             <p className="eyebrow">{ecoRangeLabel(family.ecoCodes)} · Train {side}</p>
             <h1 id="family-training-page-title">{family.canonicalName}</h1>
-            <p>
+            <p className="family-training-description">
               Paths continue automatically through {sidePacks.length} audited pack{sidePacks.length === 1 ? '' : 's'}.
               Every eligible branch remains available.
+            </p>
+            <p className="family-training-progress" role="status">
+              {activeBranchCycle
+                ? `${activeBranchCycle.completedPathKeys.length.toLocaleString('en-US')} of ${activeBranchCycle.pathKeys.length.toLocaleString('en-US')} ${activeBranchCycle.label} paths completed.`
+                : `${Math.min(completedTrainingPathCount, sidePaths.length).toLocaleString('en-US')} of ${sidePaths.length.toLocaleString('en-US')} variations completed in this coverage run.`}
             </p>
           </div>
         </header>
         {sidePacks.length > 1 ? (
-          <div className="family-pack-tabs" role="tablist" aria-label="Repertoire pack">
+          <div className="family-pack-tabs" role="group" aria-label="Repertoire pack">
             {sidePacks.map((pack, index) => (
               <button
                 type="button"
-                role="tab"
                 key={pack.ref.packId}
-                aria-selected={selectedPack?.ref.packId === pack.ref.packId}
+                aria-pressed={selectedPack?.ref.packId === pack.ref.packId}
                 disabled={pack.resource.status !== 'ready' || pack.graph === null}
                 onClick={() => selectPack(pack.ref.packId)}
               >
                 {packLabel(pack, index)}
               </button>
             ))}
+          </div>
+        ) : null}
+        {completionHistoryError ? (
+          <div className="inline-warning error-warning" role="alert">
+            <strong>Saved family completion is unavailable.</strong>
+            <span>{completionHistoryError}</span>
           </div>
         ) : null}
         {completionPersistenceFailure ? (
@@ -531,19 +951,40 @@ export function OpeningFamilyView({
         <GraphTrainingBoundary
           key={selectedPack?.ref.packId ?? `${family.id}:${side}:pending`}
           resource={trainingResource}
-          dueCardIds={dueCardIds}
+          dueCardIds={selectedPackDueCardIds}
           orientation={orientation}
           reducedMotion={reducedMotion}
           manualPacing={manualPacing}
           {...(onSetOrientation ? { onSetOrientation } : {})}
           {...(onInferredReview ? { onInferredReview } : {})}
           onPathCompleted={stablePathCompletionHandler}
+          onStop={() => onSelectFamily(family.id)}
+          autoStartFull={autoStartPackId === selectedPack?.ref.packId}
+          onAutoStartConsumed={() => {
+            if (autoStartPackId === selectedPack?.ref.packId) setAutoStartPackId(null)
+          }}
+          autoStartPathGroupId={
+            autoStartBranch?.packId === selectedPack?.ref.packId
+              ? autoStartBranch?.branchId ?? null
+              : null
+          }
+          onAutoStartPathGroupConsumed={() => {
+            if (autoStartBranch?.packId === selectedPack?.ref.packId) setAutoStartBranch(null)
+          }}
+          onCoverageScopeChange={handleCoverageScopeChange}
+          onCoverageCycleStarted={({ packId, coverageCycleId }) =>
+            bindPackToActiveGeneration(packId, coverageCycleId)}
+          onRestartFullCoverage={restartFullFamilyCoverage}
           {...(onAnnouncement ? { onAnnouncement } : {})}
           {...(familyTrainingJournal ? {
             familyId: family.id,
             journalRepository: familyTrainingJournal,
           } : {})}
+          {...(expectedPackCoverageCycleId !== undefined ? {
+            expectedCoverageCycleId: expectedPackCoverageCycleId,
+          } : {})}
           {...(pathDisplayNameById ? { pathDisplayNameById } : {})}
+          pathGroups={selectedPackPathGroups}
         />
       </section>
     )
@@ -574,13 +1015,12 @@ export function OpeningFamilyView({
           <p className="eyebrow">Learner side</p>
           <h2 id="family-side-title">Choose your repertoire</h2>
         </div>
-        <div className="family-side-tabs" role="tablist" aria-label="Learner side">
+        <div className="family-side-tabs" role="group" aria-label="Learner side">
           {availableSides.map((available) => (
             <button
               type="button"
-              role="tab"
               key={available}
-              aria-selected={side === available}
+              aria-pressed={side === available}
               onClick={() => onSelectSide(family.id, available)}
             >
               {available === 'white' ? 'White' : 'Black'}
@@ -599,13 +1039,12 @@ export function OpeningFamilyView({
           <button type="button" className="secondary-button" onClick={() => onOpenExplore(family)}>Browse all taxonomy lines</button>
         </div>
         {sidePacks.length > 1 ? (
-          <div className="family-pack-tabs" role="tablist" aria-label="Repertoire pack">
+          <div className="family-pack-tabs" role="group" aria-label="Repertoire pack">
             {sidePacks.map((pack, index) => (
               <button
                 type="button"
-                role="tab"
                 key={pack.ref.packId}
-                aria-selected={selectedPack?.ref.packId === pack.ref.packId}
+                aria-pressed={selectedPack?.ref.packId === pack.ref.packId}
                 disabled={pack.resource.status === 'error'}
                 onClick={() => selectPack(pack.ref.packId)}
               >

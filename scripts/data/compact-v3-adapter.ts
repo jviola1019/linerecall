@@ -175,6 +175,14 @@ function assertAccounting(accounting: PassAccounting): void {
   }
 }
 
+function rollbackDatabaseTransaction(database: DatabaseSync): void {
+  try {
+    database.exec('ROLLBACK')
+  } catch (error) {
+    if (!/no transaction is active/iu.test((error as Error).message)) throw error
+  }
+}
+
 function assertPublishedRecordTotals(
   database: DatabaseSync,
   pass: PassName,
@@ -929,7 +937,11 @@ async function processCandidate(
   let candidatePass: CompactCandidatePass | null = null
   let active = false
   try {
-    index = new SqliteCandidateIndex(workingPath, options.plan.limits.maximumCandidates)
+    index = new SqliteCandidateIndex(
+      workingPath,
+      options.plan.limits.maximumCandidates,
+      options.plan.bounds.candidateIndexMaxBytes,
+    )
     createAdapterTables(index.database, 'candidate')
     const metadata = readCandidateMetadata(index.database)
     assertPriorMetadata(metadata, options, archiveIndex, prior)
@@ -984,7 +996,7 @@ async function processCandidate(
       writeCandidateMetadata(index.database, options, archiveIndex, snapshot)
       index.database.exec('COMMIT')
     } catch (error) {
-      index.database.exec('ROLLBACK')
+      rollbackDatabaseTransaction(index.database)
       throw error
     }
     const candidateRows = (index.database.prepare('SELECT count(*) AS count FROM candidates').get() as { count: number }).count
@@ -1033,7 +1045,10 @@ async function processExact(
   let exactPass: CompactExactPass | null = null
   let active = false
   try {
-    store = new SqliteCompactExactStore(workingPath)
+    const shardBudget = options.plan.bounds.baselineShardMaxBytes + options.plan.bounds.adaptiveShardMaxBytes
+    if (!Number.isSafeInteger(shardBudget)) throw new Error('Combined exact shard cap exceeds the safe integer range')
+    const exactStateMaximumBytes = Math.min(options.plan.bounds.exactWorkMaxBytes, shardBudget)
+    store = new SqliteCompactExactStore(workingPath, exactStateMaximumBytes)
     createAdapterTables(store.database, 'exact')
     const metadata = readExactMetadata(store.database)
     assertPriorMetadata(metadata, options, archiveIndex, prior)
@@ -1094,7 +1109,7 @@ async function processExact(
       writeExactMetadata(store.database, options, archiveIndex, finalCandidateReceiptSha256)
       store.database.exec('COMMIT')
     } catch (error) {
-      store.database.exec('ROLLBACK')
+      rollbackDatabaseTransaction(store.database)
       throw error
     }
     const normalizedPositionRows = (store.database.prepare('SELECT count(*) AS count FROM positions').get() as { count: number }).count
@@ -1102,11 +1117,9 @@ async function processExact(
     store.database.exec('PRAGMA wal_checkpoint(TRUNCATE)')
     store.close()
     store = null
-    const shardBudget = options.plan.bounds.baselineShardMaxBytes + options.plan.bounds.adaptiveShardMaxBytes
-    if (!Number.isSafeInteger(shardBudget)) throw new Error('Combined exact shard cap exceeds the safe integer range')
     await checkedStateBytes(
       workingPath,
-      Math.min(options.plan.bounds.exactWorkMaxBytes, shardBudget),
+      exactStateMaximumBytes,
       'Exact',
     )
     await streamFileToSink(workingPath, context.output)

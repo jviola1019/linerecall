@@ -39,20 +39,44 @@ evidence. These changes have not been promoted or published:
   learner side, preserve due cards beyond the bounded 1,000-path session batch,
   admit a legal alternate graph path, and record idempotent family completion
   events.
+- Full-family coverage now records append-only `cycle_started` and `pack_bound`
+  events. Each pack receives a distinct pack-local coverage-cycle identity,
+  card and cursor lookups are pack-scoped, an unbound started cycle can recover
+  by binding its first pack, and a deliberately restarted full-family run
+  creates a new family generation before binding.
 - Family and side totals are accepted only after every referenced pack passes
   release, root, ECO, and exact path-membership ownership checks. Branch names
   and hierarchy come from the family manifest rather than free-text graph
   labels. Duplicate reviewed labels collapse visually without deleting any
   path.
+- Named-branch practice resolves primary and secondary branch memberships
+  across every same-side pack, keeps one branch-level `completed / total`
+  counter, and advances to the next sibling pack. The cross-pack branch
+  coordinator is currently React session state, however; it has no append-only
+  durable branch-cycle record from which an exact reload or remount can rebuild
+  membership and completion.
 - A rejected completion write blocks local completion and the next-pack
   transition and exposes an accessible retry. Cursor write/restore boundaries
   are versioned, but durable provider-backed integration still needs staging.
+- Family side and pack selectors are labelled native button groups with
+  `aria-pressed` state. They are not represented as tab widgets; the A-E ECO
+  browser remains the intentional roving-tab interface.
 - Puzzles now has a separate nine-state tactical resource and separate,
   idempotent progress. Without a promoted shard it shows an unavailable state;
   it does not substitute opening recall.
-- Focused regressions cover family-card uniqueness, side tabs, family and
-  training deep links, browser history, mobile-first catalog ordering, and
-  tactical-route isolation.
+- The board source now separates its semantic grid from stable, absolutely
+  positioned visual pieces. Review-harness checks cover normal moves, captures,
+  castling, en passant, promotion, queued replies, rapid reset, orientation
+  changes, reduced motion, and a paused mid-transition geometry sample.
+- The tactical review harness covers distinct resource states, sequential
+  learner/reply motion, castling, en passant, promotion, alternate mate-in-one
+  handling, evidence focus, and a 320-by-800 mobile dock that remains above the
+  fixed navigation. These records use synthetic fixtures and do not promote a
+  puzzle shard.
+- Focused regressions cover family-card uniqueness, side and pack selection,
+  multi-pack full-family and named-branch traversal, family and training deep
+  links, browser history, mobile-first catalog ordering, and tactical-route
+  isolation.
 
 The implementation is documented in
 `docs/OPENING_FAMILY_ARCHITECTURE.md`. Because these source changes postdate the
@@ -60,6 +84,42 @@ candidate, every old source digest, browser result, screenshot, performance
 measurement, coverage report, security review, and manual record must be
 regenerated or explicitly revalidated against new candidate bytes. The
 historical results below cannot approve this source tree.
+
+### Current working-tree observations, not release evidence
+
+On 2026-07-29, bounded local checks on the mutable working tree reported a
+passing TypeScript check, the 34-case compact-v3 fixture suite, focused
+family/graph tests, and all nine current board, tactical, family, and mobile
+review-harness cases. The queued-reply browser check records `transitionrun`
+and `transitionend` ordering, and the midpoint check pauses motion to confirm
+the piece is spatially between its source and destination.
+
+The fail-closed release controller then ran all 34 configured automated gates
+against a 3,666,600-byte review candidate with SHA-256
+`7e8e20b64d33e936a14f1b9e78fe74bb13683de54a01b34bb1342488a5928879`.
+Thirty-two automated gates passed, including the complete browser matrix,
+offline/artifact policy, CSP, SBOM, dependency/license/secret checks, hosted and
+server builds/tests, and coverage. The two expected data gates failed:
+`connected-data-foundation` and `evidence-complete-v3-production-data`.
+Three prior pass records were correctly rejected as bound to different
+candidate bytes, and eight manual/provider records remain `not_run`. The report
+is `audit/generated/release-gate.json`; it is a failed audit, not a release
+receipt. `dist/linerecall.html` and `dist/SHIPPABLE.json` are absent.
+
+Current coverage clears the configured code thresholds without exclusions:
+`graph-training-session.ts` has 92.44% branch coverage, the 11-file critical
+domain aggregate has 93.80% branches, and the 46-file runtime aggregate has
+80.86% branches.
+
+The release-controller results are bound to the candidate digest shown above,
+but the standalone review-harness observations are not separately approved
+screenshot evidence. Neither set is bound to a complete real corpus or promoted
+puzzle shard, and this post-run documentation update necessarily places the
+mutable source tree ahead of the captured source snapshot. They cannot be
+counted as a release pass. Exact `pointercancel` behavior is covered at
+component level; the browser harness exercises an invalid drag and the
+keyboard/non-spatial alternatives, not a genuine browser `pointercancel`.
+Physical touch cancellation remains manual work.
 
 ## Product and interface in the recorded candidate
 
@@ -197,9 +257,14 @@ analytics are not deployed or represented as production-ready.
    87,256,474,116 compressed bytes and 267,333,507 published games. It has not
    been fully processed. The compact-v3 adapter can now stream each exact
    approved archive separately for both passes without retaining source files,
-   but no real remote pass or approved complete-broadcast resource benchmark
-   has run. Output capacity, runtime, totals, and recommendations remain
-   unverified.
+   enforces live SQLite page caps on disposable candidate and exact working
+   copies, disables their on-disk rollback journals, inventories retained work
+   before preflight, and discards `SQLITE_FULL` output before checkpoint or
+   promotion. No real remote pass or approved complete-broadcast resource
+   benchmark has run. The cumulative game-key ledger, complete ply-0-to-30
+   baseline, and repeated immutable states can still exceed a broadcast-derived
+   plan at Q2 scale. The caps make a run fail safely; they do not establish
+   capacity, runtime, exact totals, or completion feasibility.
 2. **Production graph and embedded contract:** no complete schema-v3 readiness
    receipt or `linerecall-app-wire-v3` embedded manifest exists. The current
    shallow/top-three-era v2 snapshot is explicitly rejected for production.
@@ -231,12 +296,20 @@ analytics are not deployed or represented as production-ready.
    and covered locally. Provider-backed staging has not exercised PostgreSQL/RLS
    pooling, Redis failure, SES magic links, passkeys, OAuth, S3/KMS, Batch/jobs,
    Artifact storage, quotas, migrations, account deletion, backups, or restore.
-6. **Infrastructure validation:** the OpenTofu CLI is unavailable locally, so
+6. **Durable family and branch cycles:** full-family generation and pack binding
+   have append-only repository contracts, but only the in-memory application
+   adapter has been exercised here. Artifact, cloud, and JSON-backed family
+   cursor behavior still needs implementation or exact staging evidence.
+   Named-branch cross-pack state has no durable append-only cycle identity at
+   all, so a reload/remount cannot yet reconstruct the exact branch membership,
+   completed paths, and next pack. This is a release blocker even though the
+   live-session traversal tests pass.
+7. **Infrastructure validation:** the OpenTofu CLI is unavailable locally, so
    the reference infrastructure has not passed `tofu validate` or deployment.
-7. **Manual accessibility:** qualified NVDA/Chrome/Firefox,
+8. **Manual accessibility:** qualified NVDA/Chrome/Firefox,
    VoiceOver/Safari/iOS, TalkBack/Chrome/Android, actual zoom, contrast,
    forced-colors, touch, RTL, and complete keyboard evidence is `not_run`.
-8. **Legal/product approval:** trademark, accessibility representations,
+9. **Legal/product approval:** trademark, accessibility representations,
    application/data licenses, privacy/terms, age handling, sharing/moderation,
    subprocessors, and seven production locales have not received qualified
    approval. Chess.com functionality remains disabled.

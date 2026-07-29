@@ -124,6 +124,65 @@ describe('validated v3 graph-training boundary', () => {
     expect(reviews.mock.calls[0]?.[0]).toMatchObject({ grade: 'hard', source: 'due' })
   })
 
+  test('provides a mobile-equivalent training toolbar and pauses moves during keyboard annotations', async () => {
+    const user = userEvent.setup()
+    const announcements = vi.fn()
+    render(
+      <GraphTrainingBoundary
+        resource={{ status: 'ready', envelope: { contractId: GRAPH_TRAINING_CONTRACT_ID, graph } }}
+        dueCardIds={[]}
+        orientation="white"
+        reducedMotion
+        onAnnouncement={announcements}
+      />,
+    )
+    await user.click(await screen.findByRole('button', { name: 'Start full repertoire' }))
+    const tools = screen.getByRole('toolbar', { name: 'Training tools' })
+    expect(within(tools).getAllByRole('button')).toHaveLength(4)
+
+    await user.click(within(tools).getByRole('button', { name: 'Lines' }))
+    expect(screen.getByRole('tabpanel', { name: 'alternatives analysis' })).toBeVisible()
+    expect(screen.getByRole('complementary', { name: /Knight first/u })).toHaveFocus()
+
+    await user.click(within(tools).getByRole('button', { name: 'Why' }))
+    expect(screen.getByRole('tabpanel', { name: 'evidence analysis' })).toBeVisible()
+
+    await user.click(within(tools).getByRole('button', { name: 'Annotate' }))
+    expect(screen.getByRole('heading', { name: 'Board annotations' })).toBeVisible()
+    expect(screen.getByRole('group', { name: 'Non-spatial annotation controls' })).toBeVisible()
+    expect(screen.getByRole('gridcell', { name: /^g1,/u })).toHaveAttribute('aria-disabled', 'true')
+    expect(announcements).toHaveBeenCalledWith('Annotation mode opened. Move input is paused.')
+
+    await user.click(within(tools).getByRole('button', { name: 'Resume' }))
+    expect(screen.queryByRole('heading', { name: 'Board annotations' })).not.toBeInTheDocument()
+    expect(screen.getByRole('gridcell', { name: /^g1,/u })).not.toHaveAttribute('aria-disabled')
+  })
+
+  test('pause, choose-variation, and stop controls preserve an explicit user exit path', async () => {
+    const user = userEvent.setup()
+    const onStop = vi.fn()
+    render(
+      <GraphTrainingBoundary
+        resource={{ status: 'ready', envelope: { contractId: GRAPH_TRAINING_CONTRACT_ID, graph } }}
+        dueCardIds={[]}
+        orientation="white"
+        reducedMotion
+        onStop={onStop}
+      />,
+    )
+    await user.click(await screen.findByRole('button', { name: 'Start full repertoire' }))
+    const pause = screen.getByRole('button', { name: 'Pause' })
+    await user.click(pause)
+    expect(screen.getByRole('button', { name: 'Resume' })).toHaveAttribute('aria-pressed', 'true')
+
+    await user.click(screen.getByRole('button', { name: 'Choose variation' }))
+    expect(await screen.findByRole('heading', { name: 'Practice every audited branch' })).toBeVisible()
+
+    await user.click(screen.getByRole('button', { name: 'Start full repertoire' }))
+    await user.click(screen.getByRole('button', { name: 'Stop training' }))
+    expect(onStop).toHaveBeenCalledTimes(1)
+  })
+
   test('continues autonomously through every branch and emits one versioned completion per path', async () => {
     const user = userEvent.setup()
     const completions = vi.fn()
@@ -256,6 +315,7 @@ describe('validated v3 graph-training boundary', () => {
       const saved = await repository.loadLatestCursor({
         releaseId: graph.releaseId,
         familyId: 'synthetic-family',
+        packId: graph.pack.id,
         side: graph.pack.side,
       })
       expect(saved?.completedPathIds).toHaveLength(1)
@@ -278,12 +338,15 @@ describe('validated v3 graph-training boundary', () => {
     const repository: FamilyTrainingJournalRepository = {
       kind: 'memory',
       appendCoverageEvent: (event) => memory.appendCoverageEvent(event),
+      appendCycleEvent: (event) => memory.appendCycleEvent(event),
       appendCursor: async (cursor) => {
         if (!writable) throw new Error('storage adapter rejected the write')
         return memory.appendCursor(cursor)
       },
       listCoverageEvents: (scope) => memory.listCoverageEvents(scope),
+      listCycleEvents: (scope) => memory.listCycleEvents(scope),
       loadLatestCursor: (scope) => memory.loadLatestCursor(scope),
+      loadCursor: (scope) => memory.loadCursor(scope),
     }
     render(
       <GraphTrainingBoundary
@@ -305,7 +368,60 @@ describe('validated v3 graph-training boundary', () => {
     expect(await memory.loadLatestCursor({
       releaseId: graph.releaseId,
       familyId: 'synthetic-family',
+      packId: graph.pack.id,
       side: graph.pack.side,
     })).not.toBeNull()
+  })
+
+  test('does not stop or unmount the session until the latest cursor flush succeeds', async () => {
+    const user = userEvent.setup()
+    const memory = new MemoryFamilyTrainingJournalRepository()
+    let writable = true
+    const onStop = vi.fn()
+    const repository: FamilyTrainingJournalRepository = {
+      kind: 'memory',
+      appendCoverageEvent: (event) => memory.appendCoverageEvent(event),
+      appendCycleEvent: (event) => memory.appendCycleEvent(event),
+      appendCursor: async (cursor) => {
+        if (!writable) throw new Error('cursor store is unavailable')
+        return memory.appendCursor(cursor)
+      },
+      listCoverageEvents: (scope) => memory.listCoverageEvents(scope),
+      listCycleEvents: (scope) => memory.listCycleEvents(scope),
+      loadLatestCursor: (scope) => memory.loadLatestCursor(scope),
+      loadCursor: (scope) => memory.loadCursor(scope),
+    }
+    render(
+      <GraphTrainingBoundary
+        resource={{ status: 'ready', envelope: { contractId: GRAPH_TRAINING_CONTRACT_ID, graph } }}
+        dueCardIds={[]}
+        orientation="white"
+        reducedMotion
+        familyId="synthetic-family"
+        journalRepository={repository}
+        onStop={onStop}
+      />,
+    )
+    await user.click(await screen.findByRole('button', { name: 'Start full repertoire' }))
+    await waitFor(async () => {
+      expect(await memory.loadLatestCursor({
+        releaseId: graph.releaseId,
+        familyId: 'synthetic-family',
+        packId: graph.pack.id,
+        side: graph.pack.side,
+      })).not.toBeNull()
+    })
+
+    writable = false
+    await user.click(screen.getByRole('button', { name: 'Stop training' }))
+    expect(onStop).not.toHaveBeenCalled()
+    expect(screen.getByRole('heading', { name: 'Continuous graph practice' })).toBeVisible()
+    expect(await screen.findByRole('alert')).toHaveTextContent(/latest family progress was not saved|waiting to be saved/u)
+
+    writable = true
+    await user.click(screen.getByRole('button', { name: 'Retry saving progress' }))
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+    await user.click(screen.getByRole('button', { name: 'Stop training' }))
+    await waitFor(() => expect(onStop).toHaveBeenCalledTimes(1))
   })
 })

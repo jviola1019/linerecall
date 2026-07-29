@@ -329,6 +329,45 @@ export function createAutonomousGraphTrainingPlan(options: {
   }
 }
 
+/** Builds a bounded plan for one manifest branch or other explicit path set. */
+export function createBoundedGraphTrainingPlan(options: {
+  adapter: GraphTrainingAdapter
+  pathIds: readonly string[]
+  dueCardIds: readonly string[]
+  coverageCycleOrdinal?: number
+  maximumPathsPerBatch?: number
+}): AutonomousGraphTrainingPlan {
+  const ordinal = options.coverageCycleOrdinal ?? 0
+  const maximumPaths = options.maximumPathsPerBatch ?? GRAPH_TRAINING_BATCH_PATH_LIMIT
+  if (!Number.isSafeInteger(ordinal) || ordinal < 0) {
+    throw new Error('Coverage-cycle ordinal must be a nonnegative integer')
+  }
+  if (!Number.isSafeInteger(maximumPaths) || maximumPaths < 1 || maximumPaths > GRAPH_TRAINING_BATCH_PATH_LIMIT) {
+    throw new Error(`Explicit graph batches must contain from 1 through ${GRAPH_TRAINING_BATCH_PATH_LIMIT} paths`)
+  }
+  const totalPathIds = uniqueInOrder(options.pathIds)
+  if (totalPathIds.length === 0) throw new Error('Explicit graph planning requires at least one audited path')
+  if (totalPathIds.length !== options.pathIds.length) {
+    throw new Error('Explicit graph planning path IDs must be unique')
+  }
+  if (totalPathIds.length > 100_000) {
+    throw new Error('Explicit graph planning exceeds the versioned cursor path limit')
+  }
+  for (const pathId of totalPathIds) {
+    if (!options.adapter.pathsById.has(pathId)) {
+      throw new Error(`Explicit graph planning references unavailable path ${pathId}`)
+    }
+  }
+  assertAuthoritativeGraphCards(options.adapter, uniqueInOrder(options.dueCardIds))
+  return {
+    releaseId: options.adapter.graph.releaseId,
+    packId: options.adapter.graph.pack.id,
+    coverageCycleOrdinal: ordinal,
+    totalPathIds,
+    pathIdBatches: chunkPathIds(totalPathIds, maximumPaths),
+  }
+}
+
 export function coverageCycleOrdinalFromId(packId: string, coverageCycleId: string): number {
   const prefix = `${packId}::coverage:`
   if (!coverageCycleId.startsWith(prefix)) {
@@ -372,6 +411,54 @@ export function removeTransferredPathFromFutureBatches(options: {
     : options.plan
 }
 
+/**
+ * Moves the active path behind every future bounded batch. This keeps Skip
+ * meaningful at a batch boundary without dropping the path from the coverage
+ * cycle or creating a batch larger than the public 1,000-path limit.
+ */
+export function deferGraphTrainingPathToCycleEnd(options: {
+  plan: AutonomousGraphTrainingPlan
+  activeBatchIndex: number
+  pathId: string
+}): AutonomousGraphTrainingPlan {
+  if (!Number.isSafeInteger(options.activeBatchIndex) || options.activeBatchIndex < 0) {
+    throw new Error('Active graph batch index must be a nonnegative integer')
+  }
+  if (!/^path_[a-f0-9]{20}$/u.test(options.pathId)) {
+    throw new Error('Deferred path has an invalid audited path identity')
+  }
+  if (!options.plan.totalPathIds.includes(options.pathId)) {
+    throw new Error('Deferred path is outside the active coverage plan')
+  }
+  const pathIdBatches = options.plan.pathIdBatches.map((pathIds, batchIndex) =>
+    batchIndex < options.activeBatchIndex
+      ? [...pathIds]
+      : pathIds.filter((pathId) => pathId !== options.pathId))
+  const futurePathCount = pathIdBatches
+    .slice(options.activeBatchIndex + 1)
+    .reduce((total, pathIds) => total + pathIds.length, 0)
+  if (futurePathCount === 0) {
+    throw new Error('No unfinished variation is available after the active batch')
+  }
+  let destinationIndex = pathIdBatches.length - 1
+  while (destinationIndex > options.activeBatchIndex && pathIdBatches[destinationIndex]?.length === 0) {
+    destinationIndex -= 1
+  }
+  if (
+    destinationIndex <= options.activeBatchIndex
+    || (pathIdBatches[destinationIndex]?.length ?? 0) >= GRAPH_TRAINING_BATCH_PATH_LIMIT
+  ) {
+    pathIdBatches.push([options.pathId])
+  } else {
+    pathIdBatches[destinationIndex] = [...pathIdBatches[destinationIndex]!, options.pathId]
+  }
+  return {
+    ...options.plan,
+    totalPathIds: [...options.plan.totalPathIds],
+    pathIdBatches,
+  }
+}
+
 export function nextNonemptyGraphTrainingBatch(
   plan: AutonomousGraphTrainingPlan,
   activeBatchIndex: number,
@@ -402,7 +489,10 @@ function assertAuthoritativeGraphCards(
   }
 }
 
-function chunkPathIds(pathIds: readonly string[], maximumPaths = GRAPH_TRAINING_BATCH_PATH_LIMIT): string[][] {
+function chunkPathIds(
+  pathIds: readonly string[],
+  maximumPaths: number = GRAPH_TRAINING_BATCH_PATH_LIMIT,
+): string[][] {
   const chunks: string[][] = []
   for (let index = 0; index < pathIds.length; index += maximumPaths) {
     chunks.push(pathIds.slice(index, index + maximumPaths))
