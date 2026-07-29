@@ -1,9 +1,11 @@
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import type { CrosscheckLineInput } from '../../src/data/verification/contracts.ts';
+import { readVerifiedScidOracle } from '../../scripts/verification/crosscheck-scid.ts';
 import {
   buildScidPositionIndex,
   crosscheckLine,
@@ -32,6 +34,23 @@ function line(overrides: Partial<CrosscheckLineInput> = {}): CrosscheckLineInput
 }
 
 describe('Scid ECO parser and cross-check', () => {
+  it('validates and reads the oracle through one bound file handle', async () => {
+    const bytes = await readFile(fixturePath);
+    const sha256 = createHash('sha256').update(bytes).digest('hex');
+    assert.deepEqual(
+      await readVerifiedScidOracle(fixturePath, { size: bytes.byteLength, sha256 }),
+      { source: bytes.toString('utf8'), sha256 },
+    );
+    await assert.rejects(
+      readVerifiedScidOracle(fixturePath, { size: bytes.byteLength + 1, sha256 }),
+      /size mismatch/iu,
+    );
+    await assert.rejects(
+      readVerifiedScidOracle(fixturePath, { size: bytes.byteLength, sha256: '0'.repeat(64) }),
+      /SHA-256 mismatch/iu,
+    );
+  });
+
   it('parses inline and multiline entries into terminal positions', async () => {
     const { parsed } = await fixtureIndex();
     assert.equal(parsed.entries.length, 7);

@@ -1,7 +1,18 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -14,8 +25,14 @@ import {
 } from '../../scripts/data/compact-v3-contracts.ts'
 import { receiptDigest } from '../../scripts/data/compact-v3-foundation.ts'
 import {
+  compactRetainedStateBytes,
+  ensureSecureCompactWorkDirectory,
+  readBoundedRegularFile,
   readVerifiedCompactCheckpoint,
+  removeFileIfUnchanged,
   runCompactArchivePass,
+  syncCompactParentDirectory,
+  withValidatedRegularFile,
   type CompactArchivePassOptions,
   type CompactCandidatePassSummary,
   type CompactExactPassSummary,
@@ -142,6 +159,128 @@ async function consumeToOutput(
 ): Promise<void> {
   for await (const chunk of context.input) await context.output.write(chunk)
 }
+
+test('compact work boundaries create private v3 and SQLite directories before pathname reopen', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'linerecall-v3-private-boundary-'))
+  try {
+    const boundary = await ensureSecureCompactWorkDirectory(directory, { createAdapterWorking: true })
+    assert.equal(boundary.workDirectory, directory)
+    assert.equal(boundary.v3Directory, join(directory, 'v3'))
+    assert.equal(boundary.adapterWorkingDirectory, join(directory, 'v3', '.adapter-working'))
+    assert.equal(typeof await syncCompactParentDirectory(join(directory, 'v3', 'checkpoint.json')), 'boolean')
+    if (process.platform !== 'win32') {
+      assert.equal((await stat(boundary.v3Directory!)).mode & 0o077, 0)
+      assert.equal((await stat(boundary.adapterWorkingDirectory!)).mode & 0o077, 0)
+      assert.equal(boundary.windowsAclVerified, true)
+    } else {
+      assert.equal(boundary.windowsAclVerified, false)
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('compact work boundaries reject writable POSIX roots and non-sticky writable parents', {
+  skip: process.platform === 'win32',
+}, async () => {
+  const container = await mkdtemp(join(tmpdir(), 'linerecall-v3-unsafe-boundary-'))
+  const unsafeParent = join(container, 'unsafe-parent')
+  const nestedRoot = join(unsafeParent, 'work')
+  try {
+    await chmod(container, 0o777)
+    await assert.rejects(
+      ensureSecureCompactWorkDirectory(container),
+      /must not be group- or world-writable/u,
+    )
+    await chmod(container, 0o700)
+    const protectedBoundary = await ensureSecureCompactWorkDirectory(container)
+    const unsafeNested = join(protectedBoundary.v3Directory!, 'unsafe-nested')
+    await mkdir(unsafeNested, { mode: 0o777 })
+    await assert.rejects(
+      compactRetainedStateBytes(container),
+      /Retained schema-v3 directory must not be group- or world-writable/u,
+    )
+    await rm(unsafeNested, { recursive: true, force: true })
+    await mkdir(unsafeParent, { mode: 0o777 })
+    await mkdir(nestedRoot, { mode: 0o700 })
+    await assert.rejects(
+      ensureSecureCompactWorkDirectory(nestedRoot),
+      /writable non-sticky parent/u,
+    )
+  } finally {
+    await chmod(container, 0o700).catch(() => undefined)
+    await rm(container, { recursive: true, force: true })
+  }
+})
+
+test('compact work boundaries reject a symbolic-link root', {
+  skip: process.platform === 'win32',
+}, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'linerecall-v3-root-link-'))
+  const target = join(directory, 'target')
+  const linkedRoot = join(directory, 'linked-root')
+  await mkdir(target, { mode: 0o700 })
+  await symlink(target, linkedRoot, 'dir')
+  try {
+    await assert.rejects(
+      ensureSecureCompactWorkDirectory(linkedRoot),
+      /non-symbolic-link directory/u,
+    )
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('validated compact files stay handle-bound and atomic removal preserves a changed pathname', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'linerecall-v3-handle-bound-'))
+  const path = join(directory, 'evidence.json')
+  const moved = join(directory, 'opened-evidence.json')
+  const original = Buffer.from('approved evidence\n', 'utf8')
+  const replacement = Buffer.from('replacement evidence\n', 'utf8')
+  await writeFile(path, original)
+  try {
+    const observed = await withValidatedRegularFile(
+      path,
+      { label: 'Fixture evidence', maximumBytes: 1_024, minimumBytes: 1 },
+      async ({ handle, size }) => {
+        await rename(path, moved)
+        await writeFile(path, replacement)
+        const bytes = Buffer.alloc(size)
+        const result = await handle.read(bytes, 0, size, 0)
+        assert.equal(result.bytesRead, size)
+        return bytes
+      },
+    )
+    assert.deepEqual(observed, original)
+
+    await assert.rejects(
+      removeFileIfUnchanged(path, original, 1_024, 'Fixture evidence'),
+      /changed before its atomic removal claim/u,
+    )
+    assert.deepEqual(await readFile(path), replacement)
+    assert.deepEqual(await readBoundedRegularFile(path, 1_024, 'Fixture evidence', 1), replacement)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('validated compact files reject symbolic-link path entries where no-follow is supported', {
+  skip: process.platform === 'win32',
+}, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'linerecall-v3-no-follow-'))
+  const target = join(directory, 'target.json')
+  const path = join(directory, 'evidence.json')
+  await writeFile(target, 'approved evidence\n')
+  await symlink(target, path, 'file')
+  try {
+    await assert.rejects(
+      readBoundedRegularFile(path, 1_024, 'Fixture evidence', 1),
+      /symbolic link|ELOOP/iu,
+    )
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
 
 test('candidate orchestration hashes input in-stream and commits content-addressed shard, receipt, then checkpoint', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'linerecall-v3-orchestrator-'))

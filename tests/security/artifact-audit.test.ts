@@ -53,3 +53,31 @@ test('artifact audit requires both en-US language and left-to-right direction in
   const rules = check(results, 'document-basics').findings.map((finding) => finding.rule)
   assert.deepEqual(rules, ['language-missing', 'direction-missing'])
 })
+
+test('artifact audit detects browser-parsed hostile elements regardless of tag and attribute casing', async () => {
+  const results = await auditHtml(`<!doctype html>
+    <html lang="en-US" dir="ltr"><head>
+      <meta name="viewport" content="width=device-width">
+    </head><body>
+      <ScRiPt SrC=https://example.invalid/app.js></sCrIpT>
+      <button ONCLICK="void 0">Unsafe</button>
+    </body></html>`)
+  const offline = check(results, 'offline-self-contained')
+  assert.equal(offline.status, 'fail')
+  assert.equal(offline.findings.some((finding) => finding.rule === 'external-script'), true)
+  assert.equal(offline.findings.some((finding) => finding.rule === 'inline-handler'), true)
+  assert.equal(check(results, 'content-security-policy').status, 'fail')
+})
+
+test('artifact audit fails closed when the artifact cannot be opened', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'linerecall-artifact-missing-'))
+  const path = join(root, 'missing.html')
+  try {
+    const results = await auditArtifact(path)
+    const present = check(results, 'artifact-present')
+    assert.equal(present.status, 'fail')
+    assert.equal(present.findings[0]?.rule, 'artifact-missing')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})

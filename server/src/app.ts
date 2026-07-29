@@ -244,7 +244,19 @@ export async function createApp(dependencies: ServiceDependencies, options: AppO
 
   if (dependencies.auth.handleWebRequest) {
     app.all('/api/auth/*', async (request, reply) => {
-      if (request.method === 'POST' && request.url.startsWith('/api/auth/sign-in/magic-link')) {
+      const authUrl = new URL(request.url, serviceOrigin)
+      const isMagicLinkRequest = request.method === 'POST'
+        && authUrl.pathname === '/api/auth/sign-in/magic-link'
+      try {
+        await rateLimit(request, reply, { name: 'auth-ip', limit: 120, windowMs: 300_000, subject: 'ip' })
+      } catch (error) {
+        if (isMagicLinkRequest && isApiError(error) && ['rate_limit_exceeded', 'rate_limiter_unavailable'].includes(error.code)) {
+          return reply.code(200).send({ status: true })
+        }
+        throw error
+      }
+
+      if (isMagicLinkRequest) {
         try {
           await rateLimit(request, reply, { name: 'magic-link-ip', limit: 20, windowMs: 3_600_000, subject: 'ip' })
         } catch (error) {
@@ -264,7 +276,7 @@ export async function createApp(dependencies: ServiceDependencies, options: AppO
             return reply.code(200).send({ status: true })
           }
         }
-      } else if (request.url.includes('/passkey/')) {
+      } else if (authUrl.pathname.startsWith('/api/auth/passkey/')) {
         await rateLimit(request, reply, { name: 'passkey-ip', limit: 30, windowMs: 300_000, subject: 'ip' })
       }
       const headers = new Headers()
@@ -278,7 +290,7 @@ export async function createApp(dependencies: ServiceDependencies, options: AppO
         ? undefined
         : JSON.stringify(request.body)
       const response = await dependencies.auth.handleWebRequest!(new Request(
-        new URL(request.url, serviceOrigin),
+        authUrl,
         { method: request.method, headers, ...(body === undefined ? {} : { body }) },
       ))
       reply.code(response.status)

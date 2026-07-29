@@ -17,6 +17,21 @@ import {
 } from './broadcast-contracts.ts'
 
 const ARCHIVE_PATTERN = /^lichess_db_broadcast_(\d{4}-(?:0[1-9]|1[0-2]))\.pgn\.zst$/
+const APPROVED_BROADCAST_MONTHS = Object.freeze([
+  '2020-01', '2020-02', '2020-03', '2020-04', '2020-05', '2020-06',
+  '2020-07', '2020-08', '2020-09', '2020-10', '2020-11', '2020-12',
+  '2021-01', '2021-02', '2021-03', '2021-04', '2021-05', '2021-06',
+  '2021-07', '2021-08', '2021-09', '2021-10', '2021-11', '2021-12',
+  '2022-01', '2022-02', '2022-03', '2022-04', '2022-05', '2022-06',
+  '2022-07', '2022-08', '2022-09', '2022-10', '2022-11', '2022-12',
+  '2023-01', '2023-02', '2023-03', '2023-04', '2023-05', '2023-06',
+  '2023-07', '2023-08', '2023-09', '2023-10', '2023-11', '2023-12',
+  '2024-01', '2024-02', '2024-03', '2024-04', '2024-05', '2024-06',
+  '2024-07', '2024-08', '2024-09', '2024-10', '2024-11', '2024-12',
+  '2025-01', '2025-02', '2025-03', '2025-04', '2025-05', '2025-06',
+  '2025-07', '2025-08', '2025-09', '2025-10', '2025-11', '2025-12',
+  '2026-01', '2026-02', '2026-03', '2026-04', '2026-05', '2026-06',
+] as const)
 
 export type FetchLike = typeof fetch
 
@@ -72,6 +87,35 @@ function nextMonth(month: string): string {
   const monthNumber = Number(monthText)
   if (monthNumber === 12) return `${year + 1}-01`
   return `${year}-${String(monthNumber + 1).padStart(2, '0')}`
+}
+
+function assertApprovedMonthAllowlist(): void {
+  let expected = BROADCAST_START_MONTH
+  for (const month of APPROVED_BROADCAST_MONTHS) {
+    if (month !== expected) throw new Error(`Approved broadcast month allowlist is missing ${expected}`)
+    expected = nextMonth(expected)
+  }
+  if (expected !== nextMonth(BROADCAST_CUTOFF_MONTH)) {
+    throw new Error('Approved broadcast month allowlist does not end at the configured cutoff')
+  }
+}
+
+assertApprovedMonthAllowlist()
+
+function approvedArchiveIdentity(archive: BroadcastArchive): { filename: string; url: string } {
+  const approvedMonth = APPROVED_BROADCAST_MONTHS.find((month) => month === archive.month)
+  if (approvedMonth === undefined) {
+    throw new Error(`Broadcast archive month is outside the exact approved allowlist: ${archive.month}`)
+  }
+  const filename = `lichess_db_broadcast_${approvedMonth}.pgn.zst`
+  const url = `https://database.lichess.org/broadcast/${filename}`
+  if (archive.filename !== filename || archive.url !== url) {
+    throw new Error(`Broadcast archive is not the exact approved source for ${approvedMonth}`)
+  }
+  if (!/^[a-f0-9]{64}$/u.test(archive.sha256)) {
+    throw new Error(`Broadcast archive SHA-256 is invalid for ${approvedMonth}`)
+  }
+  return { filename, url }
 }
 
 function assertContiguousMonths(
@@ -184,24 +228,25 @@ export async function downloadArchive(
   destinationDirectory: string,
   fetchImpl: FetchLike = fetch,
 ): Promise<{ path: string; downloaded: boolean }> {
+  const approved = approvedArchiveIdentity(archive)
   await mkdir(destinationDirectory, { recursive: true })
-  const destination = join(destinationDirectory, archive.filename)
+  const destination = join(destinationDirectory, approved.filename)
   if (await existingVerified(destination, archive.sha256)) {
     return { path: destination, downloaded: false }
   }
 
   const partial = `${destination}.part`
   await rm(partial, { force: true })
-  const response = await fetchImpl(archive.url, {
+  const response = await fetchImpl(approved.url, {
     headers: { 'user-agent': 'LineRecall-data-pipeline/1.0' },
-    redirect: 'follow',
+    redirect: 'error',
   })
   if (!response.ok || !response.body) {
-    throw new Error(`Downloading ${archive.url} failed with HTTP ${response.status}`)
+    throw new Error(`Downloading ${approved.url} failed with HTTP ${response.status}`)
   }
-  const finalUrl = new URL(response.url || archive.url)
-  if (finalUrl.protocol !== 'https:' || finalUrl.hostname !== 'database.lichess.org') {
-    throw new Error(`Archive redirected to an unapproved host: ${finalUrl.toString()}`)
+  const finalUrl = response.url || approved.url
+  if (finalUrl !== approved.url) {
+    throw new Error(`Archive response URL is not the exact approved source: ${finalUrl}`)
   }
 
   const hash = createHash('sha256')
@@ -222,7 +267,7 @@ export async function downloadArchive(
   if (actual !== archive.sha256) {
     await rm(partial, { force: true })
     throw new Error(
-      `SHA-256 mismatch for ${archive.filename}: expected ${archive.sha256}, received ${actual}`,
+      `SHA-256 mismatch for ${approved.filename}: expected ${archive.sha256}, received ${actual}`,
     )
   }
   await rename(partial, destination)

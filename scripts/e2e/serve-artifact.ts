@@ -1,6 +1,6 @@
-import { readFile, stat } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { basename, resolve } from 'node:path'
+import { readHandleBoundRegularFile } from '../lib/handle-bound-file.ts'
 import { loadHostingPolicy, responseHeadersForAlias } from '../security/lib/hosting.ts'
 
 const root = resolve(process.env.LINERECALL_E2E_DIR ?? 'build/candidate')
@@ -14,10 +14,12 @@ if (!Number.isSafeInteger(portValue) || portValue < 1024 || portValue > 65_535) 
 if (!artifactPath.startsWith(`${root}\\`) && !artifactPath.startsWith(`${root}/`)) {
   throw new Error('The E2E artifact path escapes its configured directory')
 }
-const metadata = await stat(artifactPath)
-if (!metadata.isFile()) throw new Error(`${artifactPath} is not a regular file`)
-const artifactHtml = await readFile(artifactPath, 'utf8')
-const artifactBytes = Buffer.from(artifactHtml, 'utf8')
+const artifactBytes = await readHandleBoundRegularFile(
+  artifactPath,
+  'E2E artifact',
+  10 * 1024 * 1024,
+)
+const artifactHtml = artifactBytes.toString('utf8')
 const hostedHeaders = responseHeadersForAlias(artifactHtml, await loadHostingPolicy())
 
 function responseHeaders(overrides: Readonly<Record<string, string | number>> = {}): Record<string, string | number> {

@@ -88,11 +88,12 @@ historical results below cannot approve this source tree.
 ### Current working-tree observations, not release evidence
 
 On 2026-07-29, bounded local checks on the mutable working tree reported a
-passing TypeScript check, the 34-case compact-v3 fixture suite, focused
-family/graph tests, and all nine current board, tactical, family, and mobile
-review-harness cases. The queued-reply browser check records `transitionrun`
-and `transitionend` ordering, and the midpoint check pauses motion to confirm
-the piece is spatially between its source and destination.
+passing TypeScript check, 36 passing compact-v3 fixture cases plus three
+Windows capability skips, focused family/graph tests, and all nine current
+board, tactical, family, and mobile review-harness cases. The queued-reply
+browser check records `transitionrun` and `transitionend` ordering, and the
+midpoint check pauses motion to confirm the piece is spatially between its
+source and destination.
 
 The fail-closed release controller then ran all 34 configured automated gates
 against a 3,666,600-byte review candidate with SHA-256

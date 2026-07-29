@@ -17,7 +17,7 @@ const SnapshotPathSchema = z.string().min(1).refine(
   'Snapshot paths must be normalized workspace-relative paths',
 )
 
-export const CONNECTED_SOURCE_SELECTION_VERSION = 'connected-source-v2' as const
+export const CONNECTED_SOURCE_SELECTION_VERSION = 'connected-source-v3' as const
 
 /**
  * This list is deliberately explicit. Adding a new build/deployment surface is
@@ -55,6 +55,7 @@ export const CONNECTED_SOURCE_ROOTS = [
   'audit/schemas',
   'audit/templates',
   'config',
+  '.gitattributes',
   '.gitignore',
   '.npmrc',
   'LICENSE',

@@ -1,12 +1,23 @@
 import { createHash } from 'node:crypto'
-
-const CSP_META_PATTERN = /<meta\s+[^>]*http-equiv\s*=\s*["']Content-Security-Policy["'][^>]*>/giu
-const CSP_META_LINE_PATTERN = /^[\t ]*<meta\s+[^>]*http-equiv\s*=\s*["']Content-Security-Policy["'][^>]*>[\t ]*(?:\r?\n)?/gimu
-const SCRIPT_PATTERN = /<script\b([^>]*)>([\s\S]*?)<\/script\s*>/giu
-const STYLE_PATTERN = /<style\b[^>]*>([\s\S]*?)<\/style\s*>/giu
+import {
+  attribute,
+  elementsNamed,
+  hasAttribute,
+  parseHtmlSource,
+  rawTextContent,
+  sourceRange,
+  type HtmlElement,
+} from './html-source.ts'
 
 function cspHash(value: string): string {
   return `'sha256-${createHash('sha256').update(value, 'utf8').digest('base64')}'`
+}
+
+function browserInlineText(value: string): string {
+  // The HTML input stream normalizes CRLF and lone CR to LF before inline
+  // script/style text reaches CSP. Hash the browser-observed value rather than
+  // the platform-specific source slice.
+  return value.replace(/\r\n?/gu, '\n')
 }
 
 function uniqueSorted(values: readonly string[]): string[] {
@@ -14,21 +25,34 @@ function uniqueSorted(values: readonly string[]): string[] {
 }
 
 export function stripCspMeta(html: string): string {
-  return html.replace(CSP_META_LINE_PATTERN, '').replace(CSP_META_PATTERN, '')
+  const parsed = parseHtmlSource(html)
+  const ranges = elementsNamed(parsed, 'meta')
+    .filter(isCspMeta)
+    .map((element) => sourceRange(element))
+    .filter((range): range is { start: number; end: number } => range !== null)
+    .map((range) => expandWhitespaceOnlyLine(html, range))
+    .sort((left, right) => right.start - left.start)
+
+  let stripped = html
+  for (const range of ranges) {
+    stripped = `${stripped.slice(0, range.start)}${stripped.slice(range.end)}`
+  }
+  return stripped
 }
 
 export function buildCsp(htmlWithNoCsp: string): string {
+  const parsed = parseHtmlSource(htmlWithNoCsp)
   const scriptHashes: string[] = []
-  for (const match of htmlWithNoCsp.matchAll(SCRIPT_PATTERN)) {
-    const attributes = match[1] ?? ''
-    if (/\bsrc\s*=/iu.test(attributes)) {
+  for (const script of elementsNamed(parsed, 'script')) {
+    if (hasAttribute(script, 'src')) {
       throw new Error('A self-contained artifact cannot contain a script src attribute')
     }
-    scriptHashes.push(cspHash(match[2] ?? ''))
+    scriptHashes.push(cspHash(browserInlineText(rawTextContent(parsed, script).content)))
   }
 
   const styleHashes = uniqueSorted(
-    [...htmlWithNoCsp.matchAll(STYLE_PATTERN)].map((match) => cspHash(match[1] ?? '')),
+    elementsNamed(parsed, 'style')
+      .map((style) => cspHash(browserInlineText(rawTextContent(parsed, style).content))),
   )
   const scripts = uniqueSorted(scriptHashes)
 
@@ -57,25 +81,45 @@ function escapeAttribute(value: string): string {
 
 export function hardenHtml(html: string): { html: string; policy: string } {
   const withoutCsp = stripCspMeta(html)
-  if (!/<head(?:\s[^>]*)?>/iu.test(withoutCsp)) throw new Error('HTML has no head element')
+  const parsed = parseHtmlSource(withoutCsp)
+  const heads = elementsNamed(parsed, 'head').filter((head) => head.sourceCodeLocation?.startTag)
+  if (heads.length !== 1) throw new Error('HTML must have exactly one explicit head element')
+  const insertionOffset = heads[0]!.sourceCodeLocation!.startTag!.endOffset
   const policy = buildCsp(withoutCsp)
   const meta = `<meta http-equiv="Content-Security-Policy" content="${escapeAttribute(policy)}">`
   return {
-    html: withoutCsp.replace(/<head(?:\s[^>]*)?>/iu, (head) => `${head}\n    ${meta}`),
+    html: `${withoutCsp.slice(0, insertionOffset)}\n    ${meta}${withoutCsp.slice(insertionOffset)}`,
     policy,
   }
 }
 
 export function readCspMeta(html: string): string | null {
-  const tag = html.match(CSP_META_PATTERN)?.[0]
-  if (!tag) return null
-  const content = tag.match(/\bcontent\s*=\s*(["'])([\s\S]*?)\1/iu)?.[2]
-  if (!content) return null
-  return content.replaceAll('&quot;', '"').replaceAll('&amp;', '&')
+  const parsed = parseHtmlSource(html)
+  const metas = elementsNamed(parsed, 'meta').filter(isCspMeta)
+  if (metas.length !== 1) return null
+  return attribute(metas[0]!, 'content')
 }
 
 export function verifyCsp(html: string): { valid: boolean; expected: string; actual: string | null } {
   const actual = readCspMeta(html)
   const expected = buildCsp(stripCspMeta(html))
   return { valid: actual === expected, expected, actual }
+}
+
+function isCspMeta(element: HtmlElement): boolean {
+  return attribute(element, 'http-equiv')?.trim().toLowerCase() === 'content-security-policy'
+}
+
+function expandWhitespaceOnlyLine(
+  source: string,
+  range: { start: number; end: number },
+): { start: number; end: number } {
+  const lineStart = source.lastIndexOf('\n', Math.max(0, range.start - 1)) + 1
+  const nextNewline = source.indexOf('\n', range.end)
+  const lineEnd = nextNewline < 0 ? source.length : nextNewline + 1
+  const before = source.slice(lineStart, range.start)
+  const after = source.slice(range.end, nextNewline < 0 ? source.length : nextNewline)
+  return before.trim().length === 0 && after.trim().length === 0
+    ? { start: lineStart, end: lineEnd }
+    : range
 }

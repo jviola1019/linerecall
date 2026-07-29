@@ -280,6 +280,13 @@ and has no URL or filesystem authority of its own:
 - It runs the approved hard-cap/free-reserve preflight before opening an input
   stream. The default free-space probe uses the selected work filesystem, and
   an unsafe assessment fails before parser work begins.
+- Before any SQLite or shard pathname is opened, the work root is canonicalized
+  and verified as a non-symlink directory. POSIX runs require effective-user
+  ownership, reject group/world writes, and reject writable non-sticky parent
+  directories. The `v3` and `.adapter-working` directories are created with
+  mode `0700` and revalidated. This protected boundary contains SQLite's
+  unavoidable pathname reopen; a hostile process running as the same operating
+  system user remains outside the offline pipeline threat model.
 - The processor must consume a fresh compressed stream from byte zero. SHA-256
   and byte length are measured in that same stream; there is no unverified
   input copy or seek-based resume point.
@@ -291,9 +298,11 @@ and has no URL or filesystem authority of its own:
   corpus-wide budget, and promotion computes the exact permanent byte delta
   before it renames a shard, receipt, or checkpoint. A cumulative state cannot
   cross the cap even when each individual pass remains below its own cap.
-- A verified shard is renamed to a content-addressed path. Its canonical
+- A verified shard is linked to a content-addressed path. Its canonical
   receipt is then synced and promoted by its own SHA-256. The validated
-  checkpoint is replaced last and is the archive-pass commit marker.
+  checkpoint is replaced last and is the archive-pass commit marker. Parent
+  directories are fsynced after durable links and renames where the filesystem
+  supports directory fsync.
 - Resume verifies the stored receipt and shard bytes rather than trusting the
   checkpoint JSON alone. An interruption before checkpoint replacement
   replays the archive from byte zero and safely reuses matching immutable
@@ -317,9 +326,11 @@ key, retained-state accounting, and refusal before a promotion would cross the
 corpus-wide cap. The current fixture suite also exercises live candidate and
 exact SQLite page limits inside transactions, `SQLITE_FULL` rollback, absence
 of disposable journal/WAL spill, and refusal to checkpoint after a cap failure.
-The bounded local run contained 34 passing fixture cases. It was not bound to a
-release source snapshot. Passing these tests does **not** approve a corpus
-benchmark or produce release evidence.
+The bounded Windows run contained 36 passing fixture cases and three
+platform-capability skips for POSIX ownership, symlink, and permission checks.
+Linux CI must execute those three cases. The run was not bound to a release
+source snapshot. Passing these tests does **not** approve a corpus benchmark or
+produce release evidence.
 
 The archive adapter is `scripts/data/ingest-compact-v3.ts`. It accepts one
 archive and one pass from either an exact local file or the archive's exact
@@ -327,6 +338,14 @@ manifest-approved HTTPS URL. The plan must hash the exact approved manifest
 bytes, contain an approved benchmark proof, and pass the same 10 GiB reserve
 and hard-cap assessment used by the orchestration layer. Generate and retain
 the connected source snapshot before a measured run. A local-file run is:
+
+On Windows, Node does not expose a portable ACL-owner check or durable directory
+fsync. The adapter still rejects a symlink/junction at the selected root,
+canonicalizes the path, validates open-handle identity, uses exclusive
+owner-mode file creation, and reports directory fsync as unsupported. Place the
+work root on a local NTFS directory whose ACL grants modification only to the
+operator and trusted administrators; network shares and broadly writable ACLs
+are not approved evidence environments.
 
 ```text
 npm run security:source-snapshot

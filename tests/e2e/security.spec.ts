@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { hardenHtml } from '../../scripts/security/lib/csp.ts'
 import { APP_PATH, waitForReadyApp } from './helpers.ts'
 
 test('hash-only CSP blocks injected inline code and the loaded app requests no subresources', async ({ page }) => {
@@ -26,6 +27,19 @@ test('hash-only CSP blocks injected inline code and the loaded app requests no s
     /content security policy|script-src|refused to execute inline script/iu.test(message)
   )).toBe(true)
   expect(requests.filter((request) => request.type !== 'document')).toEqual([])
+})
+
+test('hash-only CSP executes inline code after browser newline normalization', async ({ page }) => {
+  const source = '<!doctype html><html><head></head><body>'
+    + '<script>document.documentElement.dataset.cspNewline = "ready";\r\n'
+    + 'document.documentElement.dataset.cspSecond = "ready";\r</script>'
+    + '</body></html>'
+  const hardened = hardenHtml(source)
+
+  await page.goto(`data:text/html;charset=utf-8,${encodeURIComponent(hardened.html)}`)
+
+  await expect(page.locator('html')).toHaveAttribute('data-csp-newline', 'ready')
+  await expect(page.locator('html')).toHaveAttribute('data-csp-second', 'ready')
 })
 
 test('hosted response delivers the build-bound CSP and complete security/privacy headers', async ({ page }) => {

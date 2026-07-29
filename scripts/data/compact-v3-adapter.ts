@@ -1,13 +1,7 @@
-import { createHash } from 'node:crypto'
-import { createReadStream } from 'node:fs'
+import { createHash, randomBytes } from 'node:crypto'
 import {
-  copyFile,
-  mkdir,
   open,
-  readdir,
-  readFile,
   rm,
-  stat,
   statfs,
 } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
@@ -34,9 +28,14 @@ import {
   receiptDigest,
 } from './compact-v3-foundation.ts'
 import {
+  ensureSecureCompactWorkDirectory,
   readVerifiedCompactCheckpoint,
   runCompactArchivePass,
   compactRetainedStateBytes,
+  openValidatedRegularFile,
+  readBoundedRegularFile,
+  removeFileIfUnchanged,
+  withValidatedRegularFile,
   type CompactArchivePassResult,
   type CompactArtifactSink,
   type CompactToolchainReceipt,
@@ -230,7 +229,6 @@ function processExists(pid: number): boolean {
 
 async function acquireAdapterLock(workDirectory: string): Promise<() => Promise<void>> {
   const path = join(resolve(workDirectory), 'v3', 'adapter-corpus.lock')
-  await mkdir(join(resolve(workDirectory), 'v3'), { recursive: true })
   const record: AdapterLockRecord = {
     schemaVersion: 1,
     pid: process.pid,
@@ -249,8 +247,7 @@ async function acquireAdapterLock(workDirectory: string): Promise<() => Promise<
       }
       return async () => {
         try {
-          const current = await readFile(path)
-          if (current.equals(bytes)) await rm(path, { force: true })
+          await removeFileIfUnchanged(path, bytes, 2_048, 'Compact adapter corpus lock')
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
         }
@@ -260,9 +257,7 @@ async function acquireAdapterLock(workDirectory: string): Promise<() => Promise<
       let existing: AdapterLockRecord
       let observed: Buffer
       try {
-        const details = await stat(path)
-        if (!details.isFile() || details.size > 2_048) throw new Error('invalid lock file')
-        observed = await readFile(path)
+        observed = await readBoundedRegularFile(path, 2_048, 'Compact adapter corpus lock', 1)
         existing = JSON.parse(observed.toString('utf8')) as AdapterLockRecord
       } catch {
         throw new Error('Compact adapter corpus lock is corrupt; inspect it before resuming')
@@ -273,10 +268,7 @@ async function acquireAdapterLock(workDirectory: string): Promise<() => Promise<
       ) {
         throw new Error('Another compact-v3 archive pass holds the corpus lock')
       }
-      if (!(await readFile(path)).equals(observed!)) {
-        throw new Error('Compact adapter corpus lock changed while checking stale ownership')
-      }
-      await rm(path, { force: true })
+      await removeFileIfUnchanged(path, observed, 2_048, 'Compact adapter corpus lock')
     }
   }
   throw new Error('Could not acquire the compact-v3 corpus lock')
@@ -285,10 +277,17 @@ async function acquireAdapterLock(workDirectory: string): Promise<() => Promise<
 async function readCheckpointSeed(
   workDirectory: string,
   archiveId: string,
+  maximumBytes: number,
 ): Promise<CompactArchiveCheckpoint | null> {
   try {
+    const bytes = await readBoundedRegularFile(
+      checkpointPath(workDirectory, archiveId),
+      maximumBytes,
+      'Compact checkpoint seed',
+      1,
+    )
     return CompactArchiveCheckpointSchema.parse(
-      JSON.parse(await readFile(checkpointPath(workDirectory, archiveId), 'utf8')) as unknown,
+      JSON.parse(bytes.toString('utf8')) as unknown,
     )
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
@@ -317,7 +316,7 @@ async function verifiedPassState(
   const archiveId = currentPlan.archive.sourceId === 'lichess-broadcasts'
     ? `broadcast-${approved.month}`
     : `standard-${approved.month}`
-  const seed = await readCheckpointSeed(workDirectory, archiveId)
+  const seed = await readCheckpointSeed(workDirectory, archiveId, currentPlan.bounds.checkpointMaxBytes)
   if (!seed) return null
   approvedArchiveIndex(corpus, seed.archive)
   if (
@@ -438,7 +437,11 @@ async function enforcePassOrdering(
   expectedCandidateAccounting: ExpectedCandidateAccounting | null
 }> {
   const { corpus, pass, plan, workDirectory } = options
-  const currentSeed = await readCheckpointSeed(workDirectory, plan.archive.archiveId)
+  const currentSeed = await readCheckpointSeed(
+    workDirectory,
+    plan.archive.archiveId,
+    plan.bounds.checkpointMaxBytes,
+  )
   if (
     (pass === 'candidate' && currentSeed?.candidateReceipt?.pass === 'candidate') ||
     (pass === 'exact' && currentSeed?.exactReceipt?.pass === 'exact')
@@ -476,7 +479,7 @@ async function enforcePassOrdering(
       const laterId = plan.archive.sourceId === 'lichess-broadcasts'
         ? `broadcast-${approved.month}`
         : `standard-${approved.month}`
-      const later = await readCheckpointSeed(workDirectory, laterId)
+      const later = await readCheckpointSeed(workDirectory, laterId, plan.bounds.checkpointMaxBytes)
       if (later?.candidateReceipt) {
         throw new Error('Candidate pass order is inconsistent because a later archive is already committed')
       }
@@ -520,7 +523,7 @@ async function enforcePassOrdering(
     const laterId = plan.archive.sourceId === 'lichess-broadcasts'
       ? `broadcast-${approved.month}`
       : `standard-${approved.month}`
-    const later = await readCheckpointSeed(workDirectory, laterId)
+    const later = await readCheckpointSeed(workDirectory, laterId, plan.bounds.checkpointMaxBytes)
     if (later?.exactReceipt) {
       throw new Error('Exact pass order is inconsistent because a later archive is already committed')
     }
@@ -668,8 +671,43 @@ function pgnRecords(input: AsyncIterable<Uint8Array>): AsyncIterable<PgnRecord> 
   return splitPgnStream(Readable.from(decompressedPgnBytes(input)), PGN_LIMITS)
 }
 
-async function streamFileToSink(path: string, sink: CompactArtifactSink): Promise<void> {
-  for await (const chunk of createReadStream(path)) await sink.write(Buffer.from(chunk))
+async function streamCheckedStateToSink(
+  path: string,
+  maximumBytes: number,
+  label: string,
+  sink: CompactArtifactSink,
+): Promise<number> {
+  for (const suffix of ['-wal', '-shm']) {
+    try {
+      await withValidatedRegularFile(
+        `${path}${suffix}`,
+        { label: `${label} SQLite ${suffix} sidecar`, maximumBytes: Number.MAX_SAFE_INTEGER },
+        async ({ size }) => {
+          if (size > 0) throw new Error(`${label} state retained an uncheckpointed SQLite ${suffix} file`)
+        },
+      )
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+  }
+  return withValidatedRegularFile(
+    path,
+    { label: `${label} state`, maximumBytes, minimumBytes: 1 },
+    async ({ handle, size, changed }) => {
+      const stream = handle.createReadStream({ autoClose: false, start: 0 })
+      let streamed = 0
+      for await (const chunkValue of stream) {
+        const chunk = Buffer.from(chunkValue)
+        streamed += chunk.byteLength
+        if (!Number.isSafeInteger(streamed) || streamed > maximumBytes) {
+          throw new Error(`${label} state exceeded its byte hard cap while streaming`)
+        }
+        await sink.write(chunk)
+      }
+      if (streamed !== size || await changed()) throw new Error(`${label} state changed while streaming`)
+      return size
+    },
+  )
 }
 
 function createAdapterTables(database: DatabaseSync, pass: PassName): void {
@@ -822,21 +860,6 @@ function storeArchiveAccounting(
   )
 }
 
-async function checkedStateBytes(path: string, maximumBytes: number, label: string): Promise<number> {
-  const details = await stat(path)
-  if (!details.isFile() || details.size < 1) throw new Error(`${label} state is not a nonempty regular file`)
-  if (details.size > maximumBytes) throw new Error(`${label} state exceeds its ${maximumBytes}-byte hard cap`)
-  for (const suffix of ['-wal', '-shm']) {
-    try {
-      const sidecar = await stat(`${path}${suffix}`)
-      if (sidecar.size > 0) throw new Error(`${label} state retained an uncheckpointed SQLite ${suffix} file`)
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-    }
-  }
-  return details.size
-}
-
 function writeCandidateMetadata(
   database: DatabaseSync,
   options: CompactV3AdapterOptions,
@@ -908,15 +931,52 @@ async function prepareWorkingState(
   prior: VerifiedPassState | null,
 ): Promise<string> {
   const directory = join(resolve(workDirectory), 'v3', '.adapter-working')
-  await mkdir(directory, { recursive: true })
-  const prefix = `${archiveId}.${pass}.`
-  for (const entry of await readdir(directory)) {
-    if (entry.startsWith(prefix) && /\.sqlite(?:-wal|-shm)?$/u.test(entry)) {
-      await rm(join(directory, entry), { force: true })
-    }
+  const path = join(
+    directory,
+    `${archiveId}.${pass}.${process.pid}.${randomBytes(16).toString('hex')}.sqlite`,
+  )
+  if (prior) {
+    await withValidatedRegularFile(
+      prior.absoluteOutputPath,
+      {
+        label: `Prior ${pass} compact state`,
+        maximumBytes: prior.receipt.output.bytes,
+        minimumBytes: prior.receipt.output.bytes,
+        exactBytes: prior.receipt.output.bytes,
+      },
+      async ({ handle: source, size, changed }) => {
+        const destination = await open(path, 'wx', 0o600)
+        const hash = createHash('sha256')
+        try {
+          let offset = 0
+          const chunk = Buffer.alloc(64 * 1024)
+          while (offset < size) {
+            const result = await source.read(chunk, 0, Math.min(chunk.byteLength, size - offset), offset)
+            if (result.bytesRead < 1) throw new Error(`Prior ${pass} compact state changed while copying`)
+            const bytes = chunk.subarray(0, result.bytesRead)
+            hash.update(bytes)
+            let written = 0
+            while (written < bytes.byteLength) {
+              const output = await destination.write(bytes, written, bytes.byteLength - written, null)
+              if (output.bytesWritten < 1) throw new Error(`Prior ${pass} compact state copy made no progress`)
+              written += output.bytesWritten
+            }
+            offset += result.bytesRead
+          }
+          if (await changed()) throw new Error(`Prior ${pass} compact state changed while copying`)
+          if (hash.digest('hex') !== prior.receipt.output.sha256) {
+            throw new Error(`Prior ${pass} compact state failed its content-addressed digest`)
+          }
+          await destination.sync()
+        } catch (error) {
+          await destination.close()
+          await rm(path, { force: true })
+          throw error
+        }
+        await destination.close()
+      },
+    )
   }
-  const path = join(directory, `${archiveId}.${pass}.${process.pid}.sqlite`)
-  if (prior) await copyFile(prior.absoluteOutputPath, path)
   return path
 }
 
@@ -1003,8 +1063,12 @@ async function processCandidate(
     index.database.exec('PRAGMA wal_checkpoint(TRUNCATE)')
     index.close()
     index = null
-    await checkedStateBytes(workingPath, options.plan.bounds.candidateIndexMaxBytes, 'Candidate')
-    await streamFileToSink(workingPath, context.output)
+    await streamCheckedStateToSink(
+      workingPath,
+      options.plan.bounds.candidateIndexMaxBytes,
+      'Candidate',
+      context.output,
+    )
     return {
       pass: 'candidate',
       priorCandidateStateSha256: prior?.receipt.output.sha256 ?? null,
@@ -1117,12 +1181,12 @@ async function processExact(
     store.database.exec('PRAGMA wal_checkpoint(TRUNCATE)')
     store.close()
     store = null
-    await checkedStateBytes(
+    await streamCheckedStateToSink(
       workingPath,
       exactStateMaximumBytes,
       'Exact',
+      context.output,
     )
-    await streamFileToSink(workingPath, context.output)
     return {
       pass: 'exact',
       finalCandidateSetReceiptSha256: finalCandidateReceiptSha256,
@@ -1145,14 +1209,22 @@ async function processExact(
   }
 }
 
-async function assertLocalArchiveShape(options: CompactV3AdapterOptions): Promise<void> {
-  const path = resolve(options.archivePath)
-  const details = await stat(path)
-  if (!details.isFile() || details.size !== options.plan.archive.compressedBytes) {
-    throw new Error('Local compact archive byte length does not match the approved plan')
-  }
-  // The orchestrator hashes this exact stream while it is parsed and refuses
-  // promotion on a digest mismatch. Avoid a redundant full archive read here.
+function openLocalArchiveStream(options: CompactV3AdapterOptions): AsyncIterable<Uint8Array> {
+  return (async function* (): AsyncGenerator<Uint8Array> {
+    const file = await openValidatedRegularFile(resolve(options.archivePath), {
+      label: 'Local compact archive',
+      maximumBytes: options.plan.archive.compressedBytes,
+      minimumBytes: options.plan.archive.compressedBytes,
+      exactBytes: options.plan.archive.compressedBytes,
+    })
+    try {
+      const stream = file.handle.createReadStream({ autoClose: false, start: 0 })
+      for await (const chunk of stream) yield Buffer.from(chunk)
+      if (await file.changed()) throw new Error('Local compact archive changed while streaming')
+    } finally {
+      await file.close()
+    }
+  })()
 }
 
 async function preflightBeforeInput(options: CompactV3AdapterOptions): Promise<void> {
@@ -1179,7 +1251,7 @@ async function preflightBeforeInput(options: CompactV3AdapterOptions): Promise<v
 async function runAdapterWithInput(
   options: CompactV3AdapterOptions,
   archiveIndex: number,
-  openCompressedInput: () => AsyncIterable<Uint8Array>,
+  openCompressedInput: () => AsyncIterable<Uint8Array> | Promise<AsyncIterable<Uint8Array>>,
   remoteInputAcquisition?: () => import('./compact-v3-contracts.ts').CompactRemoteInputAcquisition,
 ): Promise<CompactV3AdapterResult> {
   await preflightBeforeInput(options)
@@ -1222,15 +1294,18 @@ export async function runCompactV3ArchiveAdapter(
   optionsValue: CompactV3AdapterOptions,
 ): Promise<CompactV3AdapterResult> {
   const plan = CompactPreflightPlanSchema.parse(optionsValue.plan)
+  if (!SHA256.test(optionsValue.toolchain.sourceSnapshotSha256)) {
+    throw new Error('Toolchain source snapshot must be a SHA-256 digest')
+  }
+  const boundary = await ensureSecureCompactWorkDirectory(optionsValue.workDirectory, {
+    createAdapterWorking: true,
+  })
   const options: CompactV3AdapterOptions = {
     ...optionsValue,
     plan,
     archivePath: resolve(optionsValue.archivePath),
-    workDirectory: resolve(optionsValue.workDirectory),
+    workDirectory: boundary.workDirectory,
     executionPurpose: optionsValue.executionPurpose ?? 'evidence-candidate',
-  }
-  if (!SHA256.test(options.toolchain.sourceSnapshotSha256)) {
-    throw new Error('Toolchain source snapshot must be a SHA-256 digest')
   }
   const archiveIndex = approvedArchiveIndex(options.corpus, plan.archive)
   if (options.executionPurpose === 'benchmark-bootstrap' && (
@@ -1240,11 +1315,9 @@ export async function runCompactV3ArchiveAdapter(
   )) {
     throw new Error('Benchmark bootstrap is restricted to the complete approved 78-archive broadcast corpus')
   }
-  // Preserve fail-closed ordering: an unsafe plan is rejected before even the
-  // local source path is opened or statted.
-  await preflightBeforeInput(options)
-  await assertLocalArchiveShape(options)
-  return runAdapterWithInput(options, archiveIndex, () => createReadStream(options.archivePath))
+  // runAdapterWithInput completes the fail-closed storage preflight before this
+  // factory opens and binds the approved local archive.
+  return runAdapterWithInput(options, archiveIndex, () => openLocalArchiveStream(options))
 }
 
 /**
@@ -1256,15 +1329,18 @@ export async function runCompactV3RemoteArchiveAdapter(
   optionsValue: CompactV3RemoteAdapterOptions,
 ): Promise<CompactV3AdapterResult> {
   const plan = CompactPreflightPlanSchema.parse(optionsValue.plan)
+  if (!SHA256.test(optionsValue.toolchain.sourceSnapshotSha256)) {
+    throw new Error('Toolchain source snapshot must be a SHA-256 digest')
+  }
+  const boundary = await ensureSecureCompactWorkDirectory(optionsValue.workDirectory, {
+    createAdapterWorking: true,
+  })
   const options: CompactV3AdapterOptions = {
     ...optionsValue,
     plan,
     archivePath: '<approved-https-stream>',
-    workDirectory: resolve(optionsValue.workDirectory),
+    workDirectory: boundary.workDirectory,
     executionPurpose: optionsValue.executionPurpose ?? 'evidence-candidate',
-  }
-  if (!SHA256.test(options.toolchain.sourceSnapshotSha256)) {
-    throw new Error('Toolchain source snapshot must be a SHA-256 digest')
   }
   const archiveIndex = approvedArchiveIndex(options.corpus, plan.archive)
   if (options.executionPurpose === 'benchmark-bootstrap' && (

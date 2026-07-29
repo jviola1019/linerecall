@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { readFile, stat } from 'node:fs/promises'
 import { basename, isAbsolute, relative, resolve } from 'node:path'
 import { CompactPreflightPlanSchema } from './compact-v3-contracts.ts'
 import {
@@ -7,6 +6,10 @@ import {
   runCompactV3RemoteArchiveAdapter,
 } from './compact-v3-adapter.ts'
 import { approvedCompactCorpusFromBytes } from './compact-v3-manifest.ts'
+import {
+  ensureSecureCompactWorkDirectory,
+  readBoundedRegularFile,
+} from './compact-v3-orchestrator.ts'
 import { createSourceSnapshot } from '../release/lib/source-snapshot.ts'
 
 interface Arguments {
@@ -68,28 +71,21 @@ function isInside(path: string, parent: string): boolean {
 }
 
 async function main(): Promise<void> {
-  const args = argumentsFor(process.argv.slice(2))
+  const argsValue = argumentsFor(process.argv.slice(2))
+  const boundary = await ensureSecureCompactWorkDirectory(argsValue.workDirectory, { createV3: false })
+  const args: Arguments = { ...argsValue, workDirectory: boundary.workDirectory }
   const historicalV2 = resolve('data/generated/v2')
   if (isInside(args.workDirectory, historicalV2)) {
     throw new Error('Schema-v3 work directory must not be the historical data/generated/v2 tree')
   }
-  const work = await stat(args.workDirectory)
-  if (!work.isDirectory()) throw new Error('--work-dir must be an existing directory')
-  const planDetails = await stat(args.planPath)
-  if (!planDetails.isFile() || planDetails.size > 1024 * 1024) {
-    throw new Error('--plan must be a regular JSON file no larger than 1 MiB')
-  }
+  const planBytes = await readBoundedRegularFile(args.planPath, 1024 * 1024, '--plan', 1)
   const plan = CompactPreflightPlanSchema.parse(
-    JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(await readFile(args.planPath))) as unknown,
+    JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(planBytes)) as unknown,
   )
   if (args.input === 'local-file' && basename(args.archivePath!) !== plan.archive.filename) {
     throw new Error(`--archive must name the approved local file ${plan.archive.filename}`)
   }
-  const manifestDetails = await stat(args.manifestPath)
-  if (!manifestDetails.isFile() || manifestDetails.size > 4 * 1024 * 1024) {
-    throw new Error('--manifest must be a regular JSON file no larger than 4 MiB')
-  }
-  const manifestBytes = await readFile(args.manifestPath)
+  const manifestBytes = await readBoundedRegularFile(args.manifestPath, 4 * 1024 * 1024, '--manifest', 1)
   const corpus = approvedCompactCorpusFromBytes(manifestBytes, plan.archive.sourceId)
   const sourceSnapshot = await createSourceSnapshot()
   if (sourceSnapshot.treeSha256 !== args.sourceSnapshotSha256) {

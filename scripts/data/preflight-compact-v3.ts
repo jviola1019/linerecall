@@ -11,7 +11,10 @@ import {
   compactPreflightExitCode,
   type CompactStorageAssessment,
 } from './compact-v3-foundation.ts'
-import { compactRetainedStateBytes } from './compact-v3-orchestrator.ts'
+import {
+  compactRetainedStateBytes,
+  ensureSecureCompactWorkDirectory,
+} from './compact-v3-orchestrator.ts'
 
 function argumentsFor(argv: readonly string[]): { planPath: string; workDirectory: string } {
   const options = new Map<string, string>()
@@ -38,7 +41,8 @@ export async function assessCompactV3WorkDirectory(
   availableBytesOverride?: number,
 ): Promise<CompactStorageAssessment> {
   const plan = CompactPreflightPlanSchema.parse(planValue)
-  const workDirectory = resolve(workDirectoryValue)
+  const boundary = await ensureSecureCompactWorkDirectory(workDirectoryValue, { createV3: false })
+  const workDirectory = boundary.workDirectory
   let availableBytes = availableBytesOverride
   if (availableBytes === undefined) {
     const filesystem = await statfs(workDirectory, { bigint: true })

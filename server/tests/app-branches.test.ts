@@ -137,7 +137,7 @@ describe('Fastify API decision branches', () => {
     await app.close()
     assert.equal(response.statusCode, 200)
     assert.equal(forwarded, 0)
-    assert.equal(calls, 2)
+    assert.equal(calls, 3)
   })
 
   it('returns the same generic magic-link response when the IP limit is exhausted', async () => {
@@ -157,6 +157,105 @@ describe('Fastify API decision branches', () => {
     assert.equal(response.statusCode, 200)
     assert.deepEqual(response.json(), { status: true })
     assert.equal(forwarded, 0)
+  })
+
+  it('rate-limits every generic auth route before invoking the auth gateway', async () => {
+    const keys: string[] = []
+    const limiter: RateLimiter = {
+      consume: async (key, limit) => {
+        keys.push(key)
+        return {
+          allowed: false,
+          limit,
+          remaining: 0,
+          resetAt: new Date(NOW.getTime() + 60_000),
+        }
+      },
+    }
+    let forwarded = 0
+    const auth: Authenticator = {
+      authenticate: async () => null,
+      handleWebRequest: async () => {
+        forwarded += 1
+        return Response.json({ status: true })
+      },
+    }
+    const app = await createApp(dependencies({ auth, rateLimiter: limiter }), { publicOrigin: ORIGIN })
+    const response = await app.inject({ method: 'GET', url: '/api/auth/session' })
+    await app.close()
+
+    assert.equal(response.statusCode, 429)
+    assert.equal(response.json().error.code, 'rate_limit_exceeded')
+    assert.equal(response.headers['ratelimit-limit'], '120')
+    assert.equal(response.headers['ratelimit-remaining'], '0')
+    assert.equal(forwarded, 0)
+    assert.equal(keys.length, 1)
+    assert.match(keys[0]!, /^auth-ip:/u)
+  })
+
+  it('layers the stricter passkey limiter over the auth-route baseline', async () => {
+    const keys: string[] = []
+    const limiter: RateLimiter = {
+      consume: async (key, limit) => {
+        keys.push(key)
+        return {
+          allowed: true,
+          limit,
+          remaining: limit - 1,
+          resetAt: new Date(NOW.getTime() + 60_000),
+        }
+      },
+    }
+    const auth: Authenticator = {
+      authenticate: async () => null,
+      handleWebRequest: async () => Response.json({ status: true }),
+    }
+    const app = await createApp(dependencies({ auth, rateLimiter: limiter }), { publicOrigin: ORIGIN })
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/auth/passkey/verify',
+      headers: { origin: ORIGIN },
+      payload: { challenge: 'opaque' },
+    })
+    await app.close()
+
+    assert.equal(response.statusCode, 200)
+    assert.equal(keys.length, 2)
+    assert.match(keys[0]!, /^auth-ip:/u)
+    assert.match(keys[1]!, /^passkey-ip:/u)
+  })
+
+  it('classifies auth limits from exact paths rather than attacker-controlled query text or prefixes', async () => {
+    const keys: string[] = []
+    const limiter: RateLimiter = {
+      consume: async (key, limit) => {
+        keys.push(key)
+        return {
+          allowed: true,
+          limit,
+          remaining: limit - 1,
+          resetAt: new Date(NOW.getTime() + 60_000),
+        }
+      },
+    }
+    const auth: Authenticator = {
+      authenticate: async () => null,
+      handleWebRequest: async () => Response.json({ status: true }),
+    }
+    const app = await createApp(dependencies({ auth, rateLimiter: limiter }), { publicOrigin: ORIGIN })
+    const queryOnly = await app.inject({ method: 'GET', url: '/api/auth/session?next=/passkey/verify' })
+    const prefixedMagic = await app.inject({
+      method: 'POST',
+      url: '/api/auth/sign-in/magic-link-shadow',
+      headers: { origin: ORIGIN },
+      payload: { email: 'user@example.test' },
+    })
+    await app.close()
+
+    assert.equal(queryOnly.statusCode, 200)
+    assert.equal(prefixedMagic.statusCode, 200)
+    assert.equal(keys.length, 2)
+    assert.equal(keys.every((key) => key.startsWith('auth-ip:')), true)
   })
 
   it('does not disguise a malformed limiter decision as a successful magic-link request', async () => {

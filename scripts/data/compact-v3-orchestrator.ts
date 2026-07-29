@@ -1,13 +1,14 @@
-import { createHash } from 'node:crypto'
-import { createReadStream } from 'node:fs'
+import { createHash, randomBytes } from 'node:crypto'
+import { constants } from 'node:fs'
 import {
+  link,
+  lstat,
   mkdir,
   open,
   readdir,
-  readFile,
+  realpath,
   rename,
   rm,
-  stat,
   statfs,
   type FileHandle,
 } from 'node:fs/promises'
@@ -33,6 +34,369 @@ import {
 } from './compact-v3-foundation.ts'
 
 const SHA256 = /^[a-f0-9]{64}$/u
+const FILE_READ_CHUNK_BYTES = 64 * 1024
+const PRIVATE_DIRECTORY_MODE = 0o700
+const GROUP_OR_WORLD_WRITE = 0o022
+const STICKY_DIRECTORY = 0o1000
+const DIRECTORY_SYNC_UNSUPPORTED = new Set(['EINVAL', 'ENOSYS', 'ENOTSUP', 'EOPNOTSUPP'])
+
+export interface SecureCompactWorkBoundary {
+  workDirectory: string
+  v3Directory: string | null
+  adapterWorkingDirectory: string | null
+  windowsAclVerified: boolean
+}
+
+async function validateDirectoryIdentity(path: string, label: string): Promise<string> {
+  const requestedPath = resolve(path)
+  const requestedEntry = await lstat(requestedPath, { bigint: true })
+  if (requestedEntry.isSymbolicLink() || !requestedEntry.isDirectory()) {
+    throw new Error(`${label} must be a non-symbolic-link directory`)
+  }
+  const canonicalPath = await realpath(requestedPath)
+  const handle = await open(
+    canonicalPath,
+    constants.O_RDONLY |
+      (constants.O_DIRECTORY ?? 0) |
+      (constants.O_NOFOLLOW ?? 0),
+  )
+  try {
+    const opened = await handle.stat({ bigint: true })
+    const pathEntry = await lstat(canonicalPath, { bigint: true })
+    if (
+      !opened.isDirectory() ||
+      pathEntry.isSymbolicLink() ||
+      !pathEntry.isDirectory() ||
+      pathEntry.dev !== opened.dev ||
+      pathEntry.ino !== opened.ino
+    ) {
+      throw new Error(`${label} changed or resolved through a symbolic link while opening`)
+    }
+    if (process.platform !== 'win32') {
+      const effectiveUid = typeof process.geteuid === 'function'
+        ? process.geteuid()
+        : typeof process.getuid === 'function'
+          ? process.getuid()
+          : null
+      if (effectiveUid === null) throw new Error(`${label} ownership cannot be verified on this platform`)
+      if (opened.uid !== BigInt(effectiveUid)) {
+        throw new Error(`${label} must be owned by the effective user`)
+      }
+      if ((Number(opened.mode) & GROUP_OR_WORLD_WRITE) !== 0) {
+        throw new Error(`${label} must not be group- or world-writable`)
+      }
+    }
+  } finally {
+    await handle.close()
+  }
+  return canonicalPath
+}
+
+async function validatePosixParentChain(path: string, label: string): Promise<void> {
+  if (process.platform === 'win32') return
+  let current = dirname(path)
+  while (true) {
+    const entry = await lstat(current, { bigint: true })
+    if (entry.isSymbolicLink() || !entry.isDirectory()) {
+      throw new Error(`${label} has an unsafe parent path`)
+    }
+    const mode = Number(entry.mode)
+    if ((mode & GROUP_OR_WORLD_WRITE) !== 0 && (mode & STICKY_DIRECTORY) === 0) {
+      throw new Error(`${label} has a group- or world-writable non-sticky parent directory`)
+    }
+    const parent = dirname(current)
+    if (parent === current) return
+    current = parent
+  }
+}
+
+async function ensurePrivateDirectory(parent: string, name: string, label: string): Promise<string> {
+  const path = join(parent, name)
+  try {
+    await mkdir(path, { mode: PRIVATE_DIRECTORY_MODE })
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+  }
+  return validateDirectoryIdentity(path, label)
+}
+
+/**
+ * Establish the trust boundary for all mutable compact-v3 state. On POSIX the
+ * root and private children must be owned by the effective user and reject
+ * group/world writes; writable ancestors are accepted only when sticky (for
+ * example /tmp). Windows supplies no portable ownership/ACL data through
+ * fs.stat, so the strongest platform-neutral checks are canonical local path,
+ * non-reparse identity, exclusive file creation, and private child modes.
+ */
+export async function ensureSecureCompactWorkDirectory(
+  workDirectory: string,
+  options: {
+    createV3?: boolean
+    createAdapterWorking?: boolean
+  } = {},
+): Promise<SecureCompactWorkBoundary> {
+  const root = await validateDirectoryIdentity(workDirectory, 'Compact v3 work root')
+  await validatePosixParentChain(root, 'Compact v3 work root')
+  const createV3 = options.createV3 ?? true
+  let v3Directory: string | null = null
+  try {
+    v3Directory = await validateDirectoryIdentity(join(root, 'v3'), 'Compact v3 private directory')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    if (createV3) {
+      v3Directory = await ensurePrivateDirectory(root, 'v3', 'Compact v3 private directory')
+    }
+  }
+  let adapterWorkingDirectory: string | null = null
+  if (options.createAdapterWorking) {
+    if (v3Directory === null) {
+      v3Directory = await ensurePrivateDirectory(root, 'v3', 'Compact v3 private directory')
+    }
+    adapterWorkingDirectory = await ensurePrivateDirectory(
+      v3Directory,
+      '.adapter-working',
+      'Compact v3 SQLite working directory',
+    )
+  }
+  return {
+    workDirectory: root,
+    v3Directory,
+    adapterWorkingDirectory,
+    windowsAclVerified: process.platform !== 'win32',
+  }
+}
+
+/**
+ * Make a completed link/rename durable when the filesystem supports directory
+ * fsync. Windows rejects directory fsync with EPERM; that platform-specific
+ * unsupported result is explicit rather than treated as evidence of a sync.
+ */
+export async function syncCompactParentDirectory(path: string): Promise<boolean> {
+  const directory = dirname(resolve(path))
+  const handle = await open(
+    directory,
+    constants.O_RDONLY |
+      (constants.O_DIRECTORY ?? 0) |
+      (constants.O_NOFOLLOW ?? 0),
+  )
+  try {
+    await handle.sync()
+    return true
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code ?? ''
+    if (DIRECTORY_SYNC_UNSUPPORTED.has(code) || (process.platform === 'win32' && code === 'EPERM')) {
+      return false
+    }
+    throw error
+  } finally {
+    await handle.close()
+  }
+}
+
+export interface ValidatedRegularFile {
+  handle: FileHandle
+  size: number
+  changed(): Promise<boolean>
+  close(): Promise<void>
+}
+
+/**
+ * Bind validation and use to one open file description. Opening happens before
+ * the path-entry check, so replacing the pathname cannot redirect the later
+ * read. O_NOFOLLOW is used where Node exposes it; the post-open lstat/identity
+ * comparison supplies the equivalent fail-closed check on Windows.
+ */
+export async function openValidatedRegularFile(
+  path: string,
+  options: {
+    label: string
+    maximumBytes: number
+    minimumBytes?: number
+    exactBytes?: number
+  },
+): Promise<ValidatedRegularFile> {
+  if (!Number.isSafeInteger(options.maximumBytes) || options.maximumBytes < 0) {
+    throw new Error(`${options.label} maximum byte length is invalid`)
+  }
+  const minimumBytes = options.minimumBytes ?? 0
+  if (!Number.isSafeInteger(minimumBytes) || minimumBytes < 0 || minimumBytes > options.maximumBytes) {
+    throw new Error(`${options.label} minimum byte length is invalid`)
+  }
+  if (
+    options.exactBytes !== undefined &&
+    (!Number.isSafeInteger(options.exactBytes) ||
+      options.exactBytes < minimumBytes ||
+      options.exactBytes > options.maximumBytes)
+  ) {
+    throw new Error(`${options.label} exact byte length is invalid`)
+  }
+
+  const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+  try {
+    const opened = await handle.stat({ bigint: true })
+    if (!opened.isFile()) throw new Error(`${options.label} must be a regular file`)
+    if (opened.size > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new Error(`${options.label} byte length exceeds the safe integer range`)
+    }
+    const size = Number(opened.size)
+    if (
+      size < minimumBytes ||
+      size > options.maximumBytes ||
+      (options.exactBytes !== undefined && size !== options.exactBytes)
+    ) {
+      throw new Error(`${options.label} byte length is outside its approved bounds`)
+    }
+
+    const pathEntry = await lstat(path, { bigint: true })
+    if (
+      pathEntry.isSymbolicLink() ||
+      !pathEntry.isFile() ||
+      pathEntry.dev !== opened.dev ||
+      pathEntry.ino !== opened.ino
+    ) {
+      throw new Error(`${options.label} path changed or resolved through a symbolic link while opening`)
+    }
+    return {
+      handle,
+      size,
+      async changed() {
+        const current = await handle.stat({ bigint: true })
+        return current.size !== opened.size ||
+          current.mtimeNs !== opened.mtimeNs ||
+          current.ctimeNs !== opened.ctimeNs
+      },
+      async close() {
+        await handle.close()
+      },
+    }
+  } catch (error) {
+    await handle.close()
+    throw error
+  }
+}
+
+export async function withValidatedRegularFile<T>(
+  path: string,
+  options: {
+    label: string
+    maximumBytes: number
+    minimumBytes?: number
+    exactBytes?: number
+  },
+  use: (file: ValidatedRegularFile) => Promise<T>,
+): Promise<T> {
+  const file = await openValidatedRegularFile(path, options)
+  try {
+    return await use(file)
+  } finally {
+    await file.close()
+  }
+}
+
+export async function readBoundedRegularFile(
+  path: string,
+  maximumBytes: number,
+  label: string,
+  minimumBytes: number = 0,
+): Promise<Buffer> {
+  return withValidatedRegularFile(
+    path,
+    { label, maximumBytes, minimumBytes },
+    async ({ handle, size, changed }) => {
+      const bytes = Buffer.alloc(size)
+      let offset = 0
+      while (offset < size) {
+        const result = await handle.read(
+          bytes,
+          offset,
+          Math.min(FILE_READ_CHUNK_BYTES, size - offset),
+          offset,
+        )
+        if (result.bytesRead < 1) throw new Error(`${label} changed while being read`)
+        offset += result.bytesRead
+      }
+      const extra = Buffer.alloc(1)
+      if ((await handle.read(extra, 0, 1, size)).bytesRead !== 0 || await changed()) {
+        throw new Error(`${label} changed while being read`)
+      }
+      return bytes
+    },
+  )
+}
+
+async function digestRegularFile(
+  path: string,
+  options: {
+    label: string
+    maximumBytes: number
+    minimumBytes?: number
+    exactBytes?: number
+  },
+): Promise<{ size: number; sha256: string }> {
+  return withValidatedRegularFile(path, options, async ({ handle, size, changed }) => {
+    const hash = createHash('sha256')
+    let bytes = 0
+    const stream = handle.createReadStream({ autoClose: false, start: 0 })
+    for await (const chunkValue of stream) {
+      const chunk = Buffer.from(chunkValue)
+      bytes += chunk.byteLength
+      if (!Number.isSafeInteger(bytes) || bytes > options.maximumBytes) {
+        throw new Error(`${options.label} exceeded its byte cap while hashing`)
+      }
+      hash.update(chunk)
+    }
+    if (bytes !== size || await changed()) throw new Error(`${options.label} changed while being hashed`)
+    return { size, sha256: hash.digest('hex') }
+  })
+}
+
+async function restoreClaimWithoutOverwrite(claimedPath: string, path: string): Promise<void> {
+  try {
+    await link(claimedPath, path)
+    await syncCompactParentDirectory(path)
+    await rm(claimedPath)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+      throw new Error(`Could not restore changed filesystem entry ${path}; retained ${claimedPath} for inspection`)
+    }
+    throw error
+  }
+}
+
+/**
+ * Atomically move a pathname out of service before deciding whether it is the
+ * caller-owned file. A replacement can therefore never be unlinked merely
+ * because an earlier read matched.
+ */
+export async function removeFileIfUnchanged(
+  path: string,
+  expected: Uint8Array,
+  maximumBytes: number,
+  label: string,
+): Promise<boolean> {
+  const claimedPath = `${path}.claimed-${process.pid}-${randomBytes(16).toString('hex')}`
+  try {
+    await rename(path, claimedPath)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
+  }
+  try {
+    const observed = await readBoundedRegularFile(claimedPath, maximumBytes, label)
+    if (!observed.equals(Buffer.from(expected))) {
+      throw new Error(`${label} changed before its atomic removal claim`)
+    }
+    await rm(claimedPath)
+    return true
+  } catch (error) {
+    try {
+      await restoreClaimWithoutOverwrite(claimedPath, path)
+    } catch (restoreError) {
+      if ((restoreError as NodeJS.ErrnoException).code !== 'ENOENT') throw restoreError
+    }
+    throw error
+  }
+}
 const OUTPUT_EXTENSION = /^[a-z0-9]{1,12}$/u
 
 export interface CompactPassAccounting {
@@ -94,7 +458,7 @@ export interface CompactArchivePassOptions {
   /** Existing directory dedicated to schema-v3 work. */
   workDirectory: string
   /** Must create a fresh stream because an interrupted archive replays from byte zero. */
-  openCompressedInput: () => AsyncIterable<Uint8Array>
+  openCompressedInput: () => AsyncIterable<Uint8Array> | Promise<AsyncIterable<Uint8Array>>
   /**
    * Present only for the allowlisted HTTPS input. It is read after the stream
    * verifies and must fail until that exact stream was consumed completely.
@@ -171,12 +535,6 @@ function absoluteArtifactPath(workDirectory: string, relativePath: string): stri
   return join(resolve(workDirectory), ...relativePath.split('/'))
 }
 
-async function sha256File(path: string): Promise<string> {
-  const hash = createHash('sha256')
-  for await (const chunk of createReadStream(path)) hash.update(chunk)
-  return hash.digest('hex')
-}
-
 async function availableBytesAt(path: string): Promise<number> {
   const filesystem = await statfs(path, { bigint: true })
   const bytes = filesystem.bavail * filesystem.bsize
@@ -190,12 +548,17 @@ async function availableBytesAt(path: string): Promise<number> {
  * removed by this function.
  */
 export async function compactRetainedStateBytes(workDirectory: string): Promise<number> {
-  const root = join(resolve(workDirectory), 'v3')
+  const boundary = await ensureSecureCompactWorkDirectory(workDirectory, { createV3: false })
+  if (boundary.v3Directory === null) return 0
+  const root = boundary.v3Directory
   const pending = [root]
   let filesSeen = 0
   let total = 0
   while (pending.length > 0) {
-    const directory = pending.pop()!
+    const pendingDirectory = pending.pop()!
+    const directory = pendingDirectory === root
+      ? root
+      : await validateDirectoryIdentity(pendingDirectory, 'Retained schema-v3 directory')
     let entries
     try {
       entries = await readdir(directory, { withFileTypes: true })
@@ -213,18 +576,20 @@ export async function compactRetainedStateBytes(workDirectory: string): Promise<
       if (!entry.isFile()) throw new Error('Schema-v3 work tree contains an unsupported filesystem entry')
       filesSeen += 1
       if (filesSeen > 1_000_000) throw new Error('Schema-v3 work tree exceeds the retained-file safety limit')
-      const details = await stat(path)
-      const next = total + details.size
+      const size = await withValidatedRegularFile(
+        path,
+        {
+          label: 'Retained schema-v3 file',
+          maximumBytes: Number.MAX_SAFE_INTEGER,
+        },
+        async (file) => file.size,
+      )
+      const next = total + size
       if (!Number.isSafeInteger(next)) throw new Error('Retained schema-v3 bytes exceed the safe integer range')
       total = next
     }
   }
   return total
-}
-
-async function assertExistingDirectory(path: string): Promise<void> {
-  const details = await stat(path)
-  if (!details.isDirectory()) throw new Error('Compact v3 work path must be an existing directory')
 }
 
 async function writeAndSync(path: string, bytes: Uint8Array, maximumBytes: number): Promise<void> {
@@ -240,11 +605,11 @@ async function writeAndSync(path: string, bytes: Uint8Array, maximumBytes: numbe
 }
 
 async function atomicReplace(path: string, bytes: Uint8Array, maximumBytes: number): Promise<void> {
-  const temporary = `${path}.${process.pid}.partial`
-  await rm(temporary, { force: true })
+  const temporary = `${path}.${process.pid}.${randomBytes(16).toString('hex')}.partial`
   try {
     await writeAndSync(temporary, bytes, maximumBytes)
     await rename(temporary, path)
+    await syncCompactParentDirectory(path)
   } catch (error) {
     await rm(temporary, { force: true })
     throw error
@@ -259,17 +624,30 @@ async function promoteContentAddressed(
 ): Promise<void> {
   await mkdir(dirname(destinationPath), { recursive: true })
   try {
-    const existing = await stat(destinationPath)
-    if (existing.size !== expectedBytes || await sha256File(destinationPath) !== expectedSha256) {
+    await link(partialPath, destinationPath)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+    const existing = await digestRegularFile(destinationPath, {
+      label: 'Existing content-addressed artifact',
+      maximumBytes: expectedBytes,
+      minimumBytes: expectedBytes,
+      exactBytes: expectedBytes,
+    })
+    if (existing.sha256 !== expectedSha256) {
       throw new Error('A corrupt artifact already occupies the content-addressed destination')
     }
-    await rm(partialPath, { force: true })
-    return
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code
-    if (code !== 'ENOENT') throw error
   }
-  await rename(partialPath, destinationPath)
+  await syncCompactParentDirectory(destinationPath)
+  const promoted = await digestRegularFile(destinationPath, {
+    label: 'Promoted content-addressed artifact',
+    maximumBytes: expectedBytes,
+    minimumBytes: expectedBytes,
+    exactBytes: expectedBytes,
+  })
+  if (promoted.sha256 !== expectedSha256) {
+    throw new Error('Promoted content-addressed artifact does not match its approved digest')
+  }
+  await rm(partialPath, { force: true })
 }
 
 class VerifiedCompressedInput implements AsyncIterable<Uint8Array> {
@@ -315,6 +693,7 @@ class VerifiedCompressedInput implements AsyncIterable<Uint8Array> {
 
 class BoundedArtifactFileSink implements CompactArtifactSink {
   private handle: FileHandle | null = null
+  private readonly hash = createHash('sha256')
   private writing = false
   private finished = false
   private bytes = 0
@@ -330,7 +709,6 @@ class BoundedArtifactFileSink implements CompactArtifactSink {
 
   async start(): Promise<void> {
     await mkdir(dirname(this.path), { recursive: true })
-    await rm(this.path, { force: true })
     this.handle = await open(this.path, 'wx', 0o600)
   }
 
@@ -350,6 +728,7 @@ class BoundedArtifactFileSink implements CompactArtifactSink {
         if (result.bytesWritten < 1) throw new Error('Artifact sink made no write progress')
         offset += result.bytesWritten
       }
+      this.hash.update(chunk)
       this.bytes = nextBytes
     } finally {
       this.writing = false
@@ -363,7 +742,7 @@ class BoundedArtifactFileSink implements CompactArtifactSink {
     await this.handle.sync()
     await this.handle.close()
     this.handle = null
-    return { bytes: this.bytes, sha256: await sha256File(this.path) }
+    return { bytes: this.bytes, sha256: this.hash.digest('hex') }
   }
 
   async abort(): Promise<void> {
@@ -401,8 +780,7 @@ async function acquireLock(path: string, archiveId: string, createdAt: string): 
       await writeAndSync(path, bytes, 2_048)
       return async () => {
         try {
-          const current = await readFile(path)
-          if (current.equals(bytes)) await rm(path, { force: true })
+          await removeFileIfUnchanged(path, bytes, 2_048, 'Compact archive lock')
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
         }
@@ -410,10 +788,10 @@ async function acquireLock(path: string, archiveId: string, createdAt: string): 
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
       let existing: LockRecord
+      let observed: Buffer
       try {
-        const lockDetails = await stat(path)
-        if (lockDetails.size > 2_048) throw new Error('oversized lock')
-        existing = JSON.parse(await readFile(path, 'utf8')) as LockRecord
+        observed = await readBoundedRegularFile(path, 2_048, 'Compact archive lock', 1)
+        existing = JSON.parse(observed.toString('utf8')) as LockRecord
       } catch {
         throw new Error('Compact archive lock is corrupt; inspect it before resuming')
       }
@@ -425,11 +803,10 @@ async function acquireLock(path: string, archiveId: string, createdAt: string): 
       ) {
         throw new Error(`Compact archive ${archiveId} is already locked`)
       }
-      const observed = await readFile(path)
       if (observed.toString('utf8') !== `${JSON.stringify(existing)}\n`) {
         throw new Error('Compact archive lock changed while checking stale ownership')
       }
-      await rm(path, { force: true })
+      await removeFileIfUnchanged(path, observed, 2_048, 'Compact archive lock')
     }
   }
   throw new Error(`Could not acquire compact archive lock for ${archiveId}`)
@@ -449,11 +826,12 @@ async function verifyReceiptArtifacts(
   const receipt = CompactPassReceiptSchema.parse(receiptValue)
   const digest = receiptDigest(receipt)
   const storedReceiptPath = absoluteArtifactPath(workDirectory, receiptRelativePath(archiveId, digest))
-  const storedReceiptDetails = await stat(storedReceiptPath)
-  if (storedReceiptDetails.size > metadataMaximumBytes) {
-    throw new Error(`Content-addressed ${receipt.pass} receipt exceeds its hard cap`)
-  }
-  const storedReceipt = await readFile(storedReceiptPath)
+  const storedReceipt = await readBoundedRegularFile(
+    storedReceiptPath,
+    metadataMaximumBytes,
+    `Content-addressed ${receipt.pass} receipt`,
+    1,
+  )
   if (createHash('sha256').update(storedReceipt).digest('hex') !== digest) {
     throw new Error(`Content-addressed ${receipt.pass} receipt is corrupt`)
   }
@@ -472,8 +850,18 @@ async function verifyReceiptArtifacts(
   )
   if (receipt.output.path !== expectedOutput) throw new Error(`Checkpoint ${receipt.pass} output path is not canonical`)
   const outputPath = absoluteArtifactPath(workDirectory, receipt.output.path)
-  const output = await stat(outputPath)
-  if (output.size !== receipt.output.bytes || await sha256File(outputPath) !== receipt.output.sha256) {
+  let output: { size: number; sha256: string }
+  try {
+    output = await digestRegularFile(outputPath, {
+      label: `Content-addressed ${receipt.pass} shard`,
+      maximumBytes: outputMaximumBytes,
+      minimumBytes: receipt.output.bytes,
+      exactBytes: receipt.output.bytes,
+    })
+  } catch (cause) {
+    throw new Error(`Content-addressed ${receipt.pass} shard is corrupt`, { cause })
+  }
+  if (output.sha256 !== receipt.output.sha256) {
     throw new Error(`Content-addressed ${receipt.pass} shard is corrupt`)
   }
 }
@@ -483,14 +871,17 @@ export async function readVerifiedCompactCheckpoint(
   planValue: CompactPreflightPlan,
 ): Promise<CompactArchiveCheckpoint | null> {
   const plan = CompactPreflightPlanSchema.parse(planValue)
-  const paths = pathsFor(workDirectory, plan.archive.archiveId, 'candidate')
+  const boundary = await ensureSecureCompactWorkDirectory(workDirectory, { createV3: false })
+  if (boundary.v3Directory === null) return null
+  const paths = pathsFor(boundary.workDirectory, plan.archive.archiveId, 'candidate')
   let checkpointBuffer: Buffer
   try {
-    const checkpointDetails = await stat(paths.checkpoint)
-    if (checkpointDetails.size > plan.bounds.checkpointMaxBytes) {
-      throw new Error('Compact archive checkpoint exceeds its hard cap')
-    }
-    checkpointBuffer = await readFile(paths.checkpoint)
+    checkpointBuffer = await readBoundedRegularFile(
+      paths.checkpoint,
+      plan.bounds.checkpointMaxBytes,
+      'Compact archive checkpoint',
+      1,
+    )
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
     throw error
@@ -505,7 +896,7 @@ export async function readVerifiedCompactCheckpoint(
   }
   if (checkpoint.candidateReceipt) {
     await verifyReceiptArtifacts(
-      workDirectory,
+      boundary.workDirectory,
       plan.archive.archiveId,
       checkpoint.candidateReceipt,
       plan.bounds.checkpointMaxBytes,
@@ -514,7 +905,7 @@ export async function readVerifiedCompactCheckpoint(
   }
   if (checkpoint.exactReceipt) {
     await verifyReceiptArtifacts(
-      workDirectory,
+      boundary.workDirectory,
       plan.archive.archiveId,
       checkpoint.exactReceipt,
       plan.bounds.checkpointMaxBytes,
@@ -608,14 +999,18 @@ export async function runCompactArchivePass(
   optionsValue: CompactArchivePassOptions,
 ): Promise<CompactArchivePassResult> {
   const plan = CompactPreflightPlanSchema.parse(optionsValue.plan)
-  const options: CompactArchivePassOptions = { ...optionsValue, plan }
+  const boundary = await ensureSecureCompactWorkDirectory(optionsValue.workDirectory)
+  const options: CompactArchivePassOptions = {
+    ...optionsValue,
+    plan,
+    workDirectory: boundary.workDirectory,
+  }
   const executionPurpose = options.executionPurpose ?? 'evidence-candidate'
   const extension = options.outputExtension ?? 'bin'
   if (!OUTPUT_EXTENSION.test(extension)) throw new Error('Compact shard extension is invalid')
   if (!SHA256.test(options.toolchain.sourceSnapshotSha256)) {
     throw new Error('Toolchain source snapshot must be a SHA-256 digest')
   }
-  await assertExistingDirectory(options.workDirectory)
   const availableBytes = await (options.availableBytes ?? (() => availableBytesAt(options.workDirectory)))()
   ensureSafeInteger(availableBytes, 'Available storage')
   const retainedBytesAlreadyPresent = await compactRetainedStateBytes(options.workDirectory)
@@ -626,7 +1021,13 @@ export async function runCompactArchivePass(
   if (!preflight.safeToStart) throw new Error(`Compact v3 preflight blocked: ${preflight.reasonCode}`)
 
   const now = options.now ?? (() => new Date())
-  const paths = pathsFor(options.workDirectory, plan.archive.archiveId, options.pass)
+  const basePaths = pathsFor(options.workDirectory, plan.archive.archiveId, options.pass)
+  const stagingNonce = randomBytes(16).toString('hex')
+  const paths: ManagedPaths = {
+    ...basePaths,
+    outputPartial: `${basePaths.outputPartial}.${stagingNonce}`,
+    receiptPartial: `${basePaths.receiptPartial}.${stagingNonce}`,
+  }
   await mkdir(paths.archiveDirectory, { recursive: true })
   const releaseLock = await acquireLock(paths.lock, plan.archive.archiveId, isoTime(now))
   let sink: BoundedArtifactFileSink | null = null
@@ -647,12 +1048,10 @@ export async function runCompactArchivePass(
       throw new Error('Exact pass cannot start before the candidate pass commits')
     }
 
-    await rm(paths.outputPartial, { force: true })
-    await rm(paths.receiptPartial, { force: true })
     sink = new BoundedArtifactFileSink(paths.outputPartial, plan.bounds.atomicPromotionMaxBytes)
     await sink.start()
     const input = new VerifiedCompressedInput(
-      options.openCompressedInput(),
+      await options.openCompressedInput(),
       plan.archive.compressedBytes,
       plan.archive.sha256,
     )
@@ -699,8 +1098,12 @@ export async function runCompactArchivePass(
     )
     const additionalIfMissing = async (path: string, bytes: number): Promise<number> => {
       try {
-        const details = await stat(path)
-        return details.isFile() ? 0 : bytes
+        await withValidatedRegularFile(
+          path,
+          { label: 'Existing promoted compact artifact', maximumBytes: Number.MAX_SAFE_INTEGER },
+          async () => undefined,
+        )
+        return 0
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') return bytes
         throw error
@@ -708,7 +1111,11 @@ export async function runCompactArchivePass(
     }
     let currentCheckpointBytes = 0
     try {
-      currentCheckpointBytes = (await stat(paths.checkpoint)).size
+      currentCheckpointBytes = await withValidatedRegularFile(
+        paths.checkpoint,
+        { label: 'Current compact checkpoint', maximumBytes: plan.bounds.checkpointMaxBytes },
+        async (file) => file.size,
+      )
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
     }

@@ -1,6 +1,6 @@
 import type { LookupAddress } from 'node:dns'
 import { lookup as dnsLookup } from 'node:dns/promises'
-import { open, lstat, readFile, rm } from 'node:fs/promises'
+import { open } from 'node:fs/promises'
 import type { IncomingHttpHeaders, IncomingMessage } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import { BlockList, isIP, type LookupFunction } from 'node:net'
@@ -10,6 +10,10 @@ import {
   CompactRemoteInputAcquisitionSchema,
   type CompactRemoteInputAcquisition,
 } from './compact-v3-contracts.ts'
+import {
+  readBoundedRegularFile,
+  removeFileIfUnchanged,
+} from './compact-v3-orchestrator.ts'
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 30_000
 const DEFAULT_IDLE_TIMEOUT_MS = 120_000
@@ -380,8 +384,7 @@ async function acquireRemoteStreamLease(testMode: boolean): Promise<() => Promis
         }
         return async () => {
           try {
-            const current = await readFile(path)
-            if (current.equals(bytes)) await rm(path, { force: true })
+            await removeFileIfUnchanged(path, bytes, 2_048, 'Remote archive concurrency lock')
           } catch (error) {
             if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
           } finally {
@@ -393,11 +396,7 @@ async function acquireRemoteStreamLease(testMode: boolean): Promise<() => Promis
         let existing: RemoteStreamLock
         let observed: Buffer
         try {
-          const details = await lstat(path)
-          if (!details.isFile() || details.isSymbolicLink() || details.size > 2_048) {
-            throw new Error('invalid remote stream lock')
-          }
-          observed = await readFile(path)
+          observed = await readBoundedRegularFile(path, 2_048, 'Remote archive concurrency lock', 1)
           existing = JSON.parse(observed.toString('utf8')) as RemoteStreamLock
         } catch (cause) {
           throw new CompactRemoteArchiveError(
@@ -418,14 +417,17 @@ async function acquireRemoteStreamLease(testMode: boolean): Promise<() => Promis
             true,
           )
         }
-        if (!(await readFile(path)).equals(observed)) {
+        try {
+          await removeFileIfUnchanged(path, observed, 2_048, 'Remote archive concurrency lock')
+        } catch (cause) {
           throw new CompactRemoteArchiveError(
             'download_lock_changed',
             'Remote archive concurrency lock changed during stale-lock recovery.',
             true,
+            null,
+            { cause },
           )
         }
-        await rm(path, { force: true })
       }
     }
     throw new CompactRemoteArchiveError('concurrent_download', 'Could not acquire remote archive lock.', true)

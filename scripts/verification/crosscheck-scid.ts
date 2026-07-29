@@ -1,9 +1,11 @@
-import { readFile, stat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { ScidCrosscheckInputSchema } from '../../src/data/verification/contracts.ts';
-import { readJsonFile, sha256File, sha256Text, writeJsonAtomic } from './lib/files.ts';
+import { readHandleBoundRegularFile } from '../lib/handle-bound-file.ts';
+import { readJsonFile, sha256Text, writeJsonAtomic } from './lib/files.ts';
 import { ScidManifestSchema } from './lib/manifest.ts';
 import {
   buildScidPositionIndex,
@@ -15,6 +17,21 @@ import {
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 const DEFAULT_MANIFEST = join(REPOSITORY_ROOT, 'data', 'manifests', 'scid.source.json');
 const DEFAULT_SEED = 'linerecall-scid-crosscheck-v1';
+
+export async function readVerifiedScidOracle(
+  path: string,
+  expected: { size: number; sha256: string },
+): Promise<{ source: string; sha256: string }> {
+  const bytes = await readHandleBoundRegularFile(path, 'Scid oracle', expected.size);
+  if (bytes.byteLength !== expected.size) {
+    throw new Error(`Scid oracle size mismatch: expected ${expected.size}, received ${bytes.byteLength}`);
+  }
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  if (sha256 !== expected.sha256) {
+    throw new Error(`Scid oracle SHA-256 mismatch: expected ${expected.sha256}, received ${sha256}`);
+  }
+  return { source: bytes.toString('utf8'), sha256 };
+}
 
 function requiredArgument(name: string): string {
   const index = process.argv.indexOf(name);
@@ -37,18 +54,10 @@ export async function runScidCrosscheck(options: {
   seed: string;
 }): Promise<void> {
   const manifest = ScidManifestSchema.parse(await readJsonFile(options.manifestPath));
-  const fileStats = await stat(options.scidEcoPath);
-  if (fileStats.size !== manifest.size) {
-    throw new Error(`Scid oracle size mismatch: expected ${manifest.size}, received ${fileStats.size}`);
-  }
-  const oracleSha256 = await sha256File(options.scidEcoPath);
-  if (oracleSha256 !== manifest.sha256) {
-    throw new Error(`Scid oracle SHA-256 mismatch: expected ${manifest.sha256}, received ${oracleSha256}`);
-  }
+  const oracle = await readVerifiedScidOracle(options.scidEcoPath, manifest);
   const rawInput = await readFile(options.inputPath, 'utf8');
   const input = ScidCrosscheckInputSchema.parse(JSON.parse(rawInput) as unknown);
-  const oracleSource = await readFile(options.scidEcoPath, 'utf8');
-  const parsed = parseScidEco(oracleSource);
+  const parsed = parseScidEco(oracle.source);
   if (parsed.failures.length > 0) {
     const first = parsed.failures[0];
     throw new Error(
@@ -76,7 +85,7 @@ export async function runScidCrosscheck(options: {
     },
     oracle: {
       repositoryCommit: manifest.repositoryCommit,
-      sha256: oracleSha256,
+      sha256: oracle.sha256,
       license: manifest.license,
       parsedEntryCount: parsed.entries.length,
       rejectedEntryCount: parsed.failures.length,

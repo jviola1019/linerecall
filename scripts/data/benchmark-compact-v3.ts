@@ -4,8 +4,6 @@ import {
   mkdir,
   open,
   readdir,
-  readFile,
-  stat,
   statfs,
 } from 'node:fs/promises'
 import { basename, isAbsolute, join, relative, resolve } from 'node:path'
@@ -27,7 +25,13 @@ import {
   type ApprovedCompactCorpus,
 } from './compact-v3-manifest.ts'
 import { assessCompactV3Storage } from './compact-v3-foundation.ts'
-import { compactRetainedStateBytes } from './compact-v3-orchestrator.ts'
+import {
+  compactRetainedStateBytes,
+  ensureSecureCompactWorkDirectory,
+  readBoundedRegularFile,
+  syncCompactParentDirectory,
+  withValidatedRegularFile,
+} from './compact-v3-orchestrator.ts'
 import { createSourceSnapshot } from '../release/lib/source-snapshot.ts'
 
 const SAMPLE_INTERVAL_MS = 250
@@ -128,12 +132,9 @@ async function loadPlans(
   for (const [index, archive] of corpus.archives.entries()) {
     const archiveId = `broadcast-${archive.month}`
     const path = join(directory, `${archiveId}.json`)
-    const details = await stat(path)
-    if (!details.isFile() || details.size > 1024 * 1024) {
-      throw new Error(`Benchmark plan ${basename(path)} must be a regular file no larger than 1 MiB`)
-    }
+    const bytes = await readBoundedRegularFile(path, 1024 * 1024, `Benchmark plan ${basename(path)}`, 1)
     const plan = CompactPreflightPlanSchema.parse(
-      JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(await readFile(path))) as unknown,
+      JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown,
     )
     if (approvedArchiveIndex(corpus, plan.archive) !== index) {
       throw new Error(`Benchmark plan ${archiveId} is not in canonical corpus order`)
@@ -150,8 +151,6 @@ async function loadPlans(
 }
 
 async function assertCleanDedicatedWorkDirectory(args: Arguments): Promise<void> {
-  const details = await stat(args.workDirectory)
-  if (!details.isDirectory()) throw new Error('--work-dir must be an existing directory')
   if (isInside(args.workDirectory, resolve('data/generated/v2')) || isInside(args.workDirectory, resolve('data/raw'))) {
     throw new Error('Benchmark work must not be placed in the historical v2 or raw-input trees')
   }
@@ -208,6 +207,7 @@ async function writeReceipt(
   } finally {
     await handle.close()
   }
+  await syncCompactParentDirectory(path)
   return { path: relativePath, sha256 }
 }
 
@@ -225,12 +225,10 @@ export async function runBenchmarkBootstrap(args: Arguments): Promise<{
   receiptPath: string
   receiptSha256: string
 }> {
+  const boundary = await ensureSecureCompactWorkDirectory(args.workDirectory, { createV3: false })
+  args = { ...args, workDirectory: boundary.workDirectory }
   await assertCleanDedicatedWorkDirectory(args)
-  const manifestDetails = await stat(args.manifestPath)
-  if (!manifestDetails.isFile() || manifestDetails.size > 4 * 1024 * 1024) {
-    throw new Error('--manifest must be a regular file no larger than 4 MiB')
-  }
-  const manifestBytes = await readFile(args.manifestPath)
+  const manifestBytes = await readBoundedRegularFile(args.manifestPath, 4 * 1024 * 1024, '--manifest', 1)
   const corpus = approvedCompactCorpusFromBytes(manifestBytes, 'lichess-broadcasts')
   if (corpus.archives.length !== 78 || corpus.publishedGameTotal !== 1_146_297) {
     throw new Error('Benchmark bootstrap requires the complete approved 78-archive broadcast corpus')
@@ -245,10 +243,16 @@ export async function runBenchmarkBootstrap(args: Arguments): Promise<{
     if (!args.archivesDirectory) throw new Error('Local benchmark input requires --archives-dir')
     for (const plan of plans) {
       const archivePath = join(args.archivesDirectory, plan.archive.filename)
-      const details = await stat(archivePath)
-      if (!details.isFile() || details.size !== plan.archive.compressedBytes) {
-        throw new Error(`Local archive ${plan.archive.filename} does not match its approved byte length`)
-      }
+      await withValidatedRegularFile(
+        archivePath,
+        {
+          label: `Local archive ${plan.archive.filename}`,
+          maximumBytes: plan.archive.compressedBytes,
+          minimumBytes: plan.archive.compressedBytes,
+          exactBytes: plan.archive.compressedBytes,
+        },
+        async () => undefined,
+      )
     }
   }
 

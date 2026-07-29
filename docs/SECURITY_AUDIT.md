@@ -57,13 +57,28 @@ review-only implementation observations, not a current security approval:
   the contract.
 - Compact-v3 disposable SQLite working copies apply live page caps and no
   on-disk rollback journal. A full database rolls back and cannot checkpoint or
-  promote. These controls limit failure impact; the cumulative game ledger and
-  complete baseline still make full-Q2 capacity unproven.
+  promote. The pipeline now confines SQLite pathname reopens to a canonical,
+  non-symlink work boundary; POSIX requires effective-user ownership, blocks
+  group/world writes and unsafe writable ancestors, and creates private
+  `v3/.adapter-working` directories. Durable promotion links and checkpoint
+  renames fsync their parent where supported. Windows receives path-identity
+  and reparse-point checks, but Node cannot prove NTFS ACL ownership or
+  directory-fsync durability; an operator-reviewed private local ACL remains a
+  prerequisite. Same-user hostile processes remain outside this offline
+  pipeline's threat model. These controls limit failure impact; the cumulative
+  game ledger and complete baseline still make full-Q2 capacity unproven.
 - `.github/workflows/codeql.yml` is configured for JavaScript/TypeScript with
   SHA-pinned actions, `security-extended` queries, concurrency cancellation,
-  and only `contents: read` plus `security-events: write`. It has not yet
-  produced a successful result bound to the current pushed source snapshot and
-  is not counted as a scan pass.
+  and only `contents: read` plus `security-events: write`. Its first run on
+  commit `9ec6c6e` completed analysis and reported 19 high-severity findings and
+  one medium-severity finding across file-handle races, incomplete HTML-tag
+  regular expressions, a missing generic-auth limiter, and a file-derived
+  outbound request. The follow-up source replaces check-then-open paths with
+  handle-bound validation and atomic file operations, uses a standards HTML
+  parser for CSP inspection, rate-limits every auth route, and reconstructs
+  archive URLs from a closed compile-time allowlist. No alert is suppressed or
+  dismissed. A clean CodeQL result on the pushed follow-up head is required;
+  the repository check status, not this narrative, is authoritative.
 
 Current-source artifact, browser, dependency, SBOM, secret, CodeQL, server,
 infrastructure, and independent security evidence must be regenerated and

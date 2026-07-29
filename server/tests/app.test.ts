@@ -68,7 +68,7 @@ describe('Fastify API boundary', () => {
     })
     assert.equal(response.statusCode, 422)
     assert.equal(response.json().error.code, 'validation_failed')
-    assert.doesNotMatch(response.body, /<script>/)
+    assert.equal(response.body.includes(hostile), false)
   })
 
   it('uses ETags for the public catalog', async () => {

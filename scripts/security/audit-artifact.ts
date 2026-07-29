@@ -1,14 +1,19 @@
-import { readFile, stat } from 'node:fs/promises'
 import { EmbeddedSnapshotPayloadSchema } from '../../src/data/embedded-contract.ts'
+import { readHandleBoundRegularFile } from '../lib/handle-bound-file.ts'
 import { verifyCsp } from './lib/csp.ts'
-import { fileExists, isExecutedDirectly, option, sha256Bytes } from './lib/files.ts'
+import { isExecutedDirectly, option, sha256Bytes } from './lib/files.ts'
+import {
+  attribute,
+  elementOffset,
+  elementsNamed,
+  hasAttribute,
+  parseHtmlSource,
+  rawTextContent,
+  type HtmlElement,
+} from './lib/html-source.ts'
 import { finishReport, makeReport, type CheckResult } from './lib/report.ts'
 
 const MAX_ARTIFACT_BYTES = 10 * 1024 * 1024
-
-function count(source: string, pattern: RegExp): number {
-  return [...source.matchAll(pattern)].length
-}
 
 function addMatches(
   findings: Array<Record<string, unknown>>,
@@ -27,70 +32,125 @@ function addMatches(
   }
 }
 
+type ArtifactRead =
+  | { status: 'ready'; bytes: Uint8Array; html: string }
+  | { status: 'failed'; rule: string; summary: string }
+
+async function readStableArtifact(path: string): Promise<ArtifactRead> {
+  let bytes: Buffer
+  try {
+    bytes = await readHandleBoundRegularFile(path, 'Release candidate', MAX_ARTIFACT_BYTES)
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    return {
+      status: 'failed',
+      rule: code === 'ENOENT' || code === 'ENOTDIR' ? 'artifact-missing' : 'artifact-unreadable',
+      summary: code === 'ENOENT' || code === 'ENOTDIR'
+        ? 'The self-contained release candidate does not exist'
+        : 'The self-contained release candidate could not be read as one stable regular file',
+    }
+  }
+
+  try {
+    const html = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+    return { status: 'ready', bytes, html }
+  } catch {
+    return { status: 'failed', rule: 'artifact-invalid-utf8', summary: 'The release candidate is not valid UTF-8' }
+  }
+}
+
+function addElementFinding(
+  findings: Array<Record<string, unknown>>,
+  element: HtmlElement,
+  rule: string,
+  explanation: string,
+): void {
+  findings.push({ rule, offset: elementOffset(element), explanation })
+}
+
 export async function auditArtifact(path: string): Promise<readonly CheckResult[]> {
-  if (!(await fileExists(path))) {
+  const artifact = await readStableArtifact(path)
+  if (artifact.status === 'failed') {
     return [{
       id: 'artifact-present',
       status: 'fail',
-      summary: 'The self-contained release candidate does not exist',
-      findings: [{ path }],
+      summary: artifact.summary,
+      findings: [{ path, rule: artifact.rule }],
     }]
   }
 
-  const bytes = (await stat(path)).size
-  const html = await readFile(path, 'utf8')
+  const bytes = artifact.bytes.byteLength
+  const html = artifact.html
+  const parsed = parseHtmlSource(html)
   const findings: Array<Record<string, unknown>> = []
 
-  addMatches(findings, html, 'external-script', /<script\b[^>]*\bsrc\s*=/giu, 'Scripts must be embedded.')
-  addMatches(findings, html, 'external-frame', /<(?:iframe|frame|embed|object)\b/giu, 'Embedded browsing/plugin contexts are prohibited.')
-  addMatches(
-    findings,
-    html,
-    'external-subresource',
-    /<(?:img|audio|video|source|track|input)\b[^>]*\bsrc\s*=\s*(["'])(?!data:|blob:)[\s\S]*?\1/giu,
-    'Binary subresources must use embedded data/blob URLs.',
-  )
+  for (const script of elementsNamed(parsed, 'script')) {
+    if (hasAttribute(script, 'src')) {
+      addElementFinding(findings, script, 'external-script', 'Scripts must be embedded.')
+    }
+  }
+  for (const tagName of ['iframe', 'frame', 'embed', 'object']) {
+    for (const element of elementsNamed(parsed, tagName)) {
+      addElementFinding(findings, element, 'external-frame', 'Embedded browsing/plugin contexts are prohibited.')
+    }
+  }
+  for (const tagName of ['img', 'audio', 'video', 'source', 'track', 'input']) {
+    for (const element of elementsNamed(parsed, tagName)) {
+      if (!hasAttribute(element, 'src')) continue
+      const source = attribute(element, 'src') ?? ''
+      if (source.startsWith('data:') || source.startsWith('blob:')) continue
+      addElementFinding(findings, element, 'external-subresource', 'Binary subresources must use embedded data/blob URLs.')
+    }
+  }
   const resourceLinkRelations = new Set([
     'stylesheet', 'modulepreload', 'preload', 'prefetch', 'preconnect',
     'dns-prefetch', 'icon', 'mask-icon', 'manifest',
   ])
-  for (const match of html.matchAll(/<link\b[^>]*>/giu)) {
-    const tag = match[0]
-    const relation = /\brel\s*=\s*(["'])([\s\S]*?)\1/iu.exec(tag)?.[2]?.toLowerCase()
-    const href = /\bhref\s*=\s*(["'])([\s\S]*?)\1/iu.exec(tag)?.[2]
+  for (const link of elementsNamed(parsed, 'link')) {
+    const relation = attribute(link, 'rel')?.toLowerCase()
+    const href = attribute(link, 'href')
     if (!relation || !relation.split(/\s+/u).some((value) => resourceLinkRelations.has(value))) continue
     if (href?.startsWith('data:') || href?.startsWith('blob:')) continue
-    findings.push({
-      rule: 'external-link-resource',
-      offset: match.index ?? 0,
-      explanation: 'Styles, modules, icons, and manifests must be embedded.',
-    })
+    addElementFinding(findings, link, 'external-link-resource', 'Styles, modules, icons, and manifests must be embedded.')
   }
-  addMatches(
-    findings,
-    html,
-    'external-srcset',
-    /<(?:img|source)\b[^>]*\bsrcset\s*=/giu,
-    'Responsive image candidates are prohibited in the self-contained artifact.',
-  )
-  addMatches(
-    findings,
-    html,
-    'external-video-poster',
-    /<video\b[^>]*\bposter\s*=/giu,
-    'Video poster subresources are prohibited in the self-contained artifact.',
-  )
-  addMatches(findings, html, 'anchor-ping', /<a\b[^>]*\bping\s*=/giu, 'Anchor ping telemetry is prohibited.')
-  addMatches(findings, html, 'meta-refresh', /<meta\b[^>]*http-equiv\s*=\s*(["']?)refresh\1/giu, 'Meta refresh navigation is prohibited.')
-  for (const style of html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style\s*>/giu)) {
-    const content = style[1] ?? ''
+  for (const tagName of ['img', 'source']) {
+    for (const element of elementsNamed(parsed, tagName)) {
+      if (hasAttribute(element, 'srcset')) {
+        addElementFinding(findings, element, 'external-srcset', 'Responsive image candidates are prohibited in the self-contained artifact.')
+      }
+    }
+  }
+  for (const video of elementsNamed(parsed, 'video')) {
+    if (hasAttribute(video, 'poster')) {
+      addElementFinding(findings, video, 'external-video-poster', 'Video poster subresources are prohibited in the self-contained artifact.')
+    }
+  }
+  for (const anchor of elementsNamed(parsed, 'a')) {
+    if (hasAttribute(anchor, 'ping')) {
+      addElementFinding(findings, anchor, 'anchor-ping', 'Anchor ping telemetry is prohibited.')
+    }
+  }
+  for (const meta of elementsNamed(parsed, 'meta')) {
+    if (attribute(meta, 'http-equiv')?.trim().toLowerCase() === 'refresh') {
+      addElementFinding(findings, meta, 'meta-refresh', 'Meta refresh navigation is prohibited.')
+    }
+  }
+  for (const style of elementsNamed(parsed, 'style')) {
+    let block
+    try {
+      block = rawTextContent(parsed, style)
+    } catch {
+      addElementFinding(findings, style, 'malformed-style-element', 'Style elements must have explicit end tags.')
+      continue
+    }
+    const { content, offset } = block
     addMatches(
       findings,
       content,
       'css-external-url',
       /url\(\s*(["']?)(?!data:|blob:|#)[^)'"]+\1\s*\)/giu,
       'CSS resources must be embedded.',
-      (style.index ?? 0) + style[0].indexOf(content),
+      offset,
     )
     addMatches(
       findings,
@@ -98,10 +158,17 @@ export async function auditArtifact(path: string): Promise<readonly CheckResult[
       'css-import',
       /@import\s+(?:url\s*\(|["'])/giu,
       'CSS imports are prohibited in the self-contained artifact.',
-      (style.index ?? 0) + style[0].indexOf(content),
+      offset,
     )
   }
-  addMatches(findings, html, 'style-attribute', /\sstyle\s*=\s*(["'])/giu, 'Inline style attributes violate the hash-only CSP.')
+  for (const element of parsed.elements) {
+    if (hasAttribute(element, 'style')) {
+      addElementFinding(findings, element, 'style-attribute', 'Inline style attributes violate the hash-only CSP.')
+    }
+    if (element.attrs.some((candidate) => candidate.name.toLowerCase().startsWith('on'))) {
+      addElementFinding(findings, element, 'inline-handler', 'Inline HTML handlers are prohibited.')
+    }
+  }
   addMatches(findings, html, 'network-api', /\b(?:fetch\s*\(|XMLHttpRequest|WebSocket|EventSource|sendBeacon\s*\()/gu, 'The artifact must not make data-network calls.')
   addMatches(findings, html, 'realtime-network', /\b(?:RTCPeerConnection|WebTransport)\b/gu, 'WebRTC and WebTransport are prohibited in the offline artifact.')
   addMatches(findings, html, 'worker-construction', /\bnew\s+(?:SharedWorker|Worker)\s*\(/gu, 'Runtime worker construction is prohibited.')
@@ -109,37 +176,49 @@ export async function auditArtifact(path: string): Promise<readonly CheckResult[
   addMatches(findings, html, 'dynamic-code', /\b(?:eval\s*\(|new\s+Function\s*\()/gu, 'Dynamic code evaluation is prohibited.')
   addMatches(findings, html, 'storage-policy', /\b(?:localStorage|sessionStorage)\b/gu, 'Only ProgressRepository cloud, supported Artifact storage, memory, and validated JSON adapters are approved; browser key-value storage is prohibited.')
   addMatches(findings, html, 'unsafe-url', /(?:javascript|vbscript)\s*:/giu, 'Executable URL schemes are prohibited.')
-  addMatches(findings, html, 'inline-handler', /\son[a-z]+\s*=\s*(["'])/giu, 'Inline HTML handlers are prohibited.')
   addMatches(findings, html, 'remote-module-import', /\bimport\s*(?:\(|[^;]*?\bfrom\s*)["']https?:\/\//giu, 'Remote module imports are prohibited.')
   addMatches(findings, html, 'source-map-reference', /\/\/[#@]\s*sourceMappingURL\s*=\s*(?!data:)/giu, 'External source maps are prohibited.')
 
-  const csp = verifyCsp(html)
+  let csp: ReturnType<typeof verifyCsp>
+  let cspParseFailure = false
+  try {
+    csp = verifyCsp(html)
+  } catch {
+    csp = { valid: false, actual: null, expected: '' }
+    cspParseFailure = true
+  }
   const cspFindings = csp.valid ? [] : [{
     rule: 'csp-mismatch',
-    explanation: 'CSP is missing or does not exactly cover every inline script/style hash.',
+    explanation: cspParseFailure
+      ? 'CSP could not be verified because an inline block or external script was malformed.'
+      : 'CSP is missing or does not exactly cover every inline script/style hash.',
     actual: csp.actual,
     expected: csp.expected,
   }]
   const structureFindings: Array<Record<string, unknown>> = []
-  if (count(html, /<!doctype\s+html/giu) !== 1) structureFindings.push({ rule: 'doctype-count' })
-  if (count(html, /<html\b/giu) !== 1) structureFindings.push({ rule: 'html-count' })
-  if (!/<html\b[^>]*\blang\s*=\s*(["'])en-US\1/iu.test(html)) structureFindings.push({ rule: 'language-missing' })
-  if (!/<html\b[^>]*\bdir\s*=\s*(["'])ltr\1/iu.test(html)) structureFindings.push({ rule: 'direction-missing' })
-  if (!/<meta\b[^>]*\bname\s*=\s*(["'])viewport\1/iu.test(html)) structureFindings.push({ rule: 'viewport-missing' })
+  if (parsed.doctypeCount !== 1) structureFindings.push({ rule: 'doctype-count' })
+  const explicitHtmlElements = elementsNamed(parsed, 'html').filter((element) => element.sourceCodeLocation !== null && element.sourceCodeLocation !== undefined)
+  if (explicitHtmlElements.length !== 1) structureFindings.push({ rule: 'html-count' })
+  const documentElement = explicitHtmlElements[0]
+  if (!documentElement || attribute(documentElement, 'lang') !== 'en-US') structureFindings.push({ rule: 'language-missing' })
+  if (!documentElement || attribute(documentElement, 'dir') !== 'ltr') structureFindings.push({ rule: 'direction-missing' })
+  const hasViewport = elementsNamed(parsed, 'meta')
+    .some((meta) => attribute(meta, 'name')?.trim().toLowerCase() === 'viewport')
+  if (!hasViewport) structureFindings.push({ rule: 'viewport-missing' })
 
   const snapshotFindings: Array<Record<string, unknown>> = []
-  const snapshotScripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/giu)]
-    .filter((match) => /\bid\s*=\s*(["'])linerecall-embedded-snapshot\1/iu.test(match[1] ?? ''))
+  const snapshotScripts = elementsNamed(parsed, 'script')
+    .filter((script) => attribute(script, 'id') === 'linerecall-embedded-snapshot')
   if (snapshotScripts.length !== 1) {
     snapshotFindings.push({ rule: 'embedded-snapshot-count', actual: snapshotScripts.length, expected: 1 })
   } else {
-    const attributes = snapshotScripts[0]?.[1] ?? ''
-    const content = snapshotScripts[0]?.[2] ?? ''
-    if (!/\btype\s*=\s*(["'])application\/json\1/iu.test(attributes)) {
+    const snapshotScript = snapshotScripts[0]!
+    if (attribute(snapshotScript, 'type')?.trim().toLowerCase() !== 'application/json') {
       snapshotFindings.push({ rule: 'embedded-snapshot-not-inert' })
     }
-    if (content.includes('<')) snapshotFindings.push({ rule: 'embedded-snapshot-raw-html-delimiter' })
     try {
+      const { content } = rawTextContent(parsed, snapshotScript)
+      if (content.includes('<')) snapshotFindings.push({ rule: 'embedded-snapshot-raw-html-delimiter' })
       EmbeddedSnapshotPayloadSchema.parse(JSON.parse(content) as unknown)
     } catch {
       snapshotFindings.push({ rule: 'embedded-snapshot-json-or-shape' })
@@ -152,7 +231,7 @@ export async function auditArtifact(path: string): Promise<readonly CheckResult[
       status: 'pass',
       summary: 'Self-contained artifact exists',
       findings: [],
-      metrics: { bytes, sha256: sha256Bytes(html) },
+      metrics: { bytes, sha256: sha256Bytes(artifact.bytes) },
     },
     {
       id: 'artifact-size',

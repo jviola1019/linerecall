@@ -95,16 +95,82 @@ test('archive download is atomic and refuses a checksum mismatch', async () => {
       url: 'https://database.lichess.org/broadcast/lichess_db_broadcast_2026-06.pgn.zst',
       sha256: createHash('sha256').update(body).digest('hex'),
     }
-    const fetchImpl = (async () => new Response(body)) as typeof fetch
+    const requests: Array<{ url: string; redirect: RequestRedirect | undefined }> = []
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      requests.push({ url: String(input), redirect: init?.redirect })
+      return new Response(body)
+    }) as typeof fetch
     const downloaded = await downloadArchive(archive, directory, fetchImpl)
     assert.equal(downloaded.downloaded, true)
     assert.deepEqual(await readFile(downloaded.path), body)
+    assert.deepEqual(requests, [{ url: archive.url, redirect: 'error' }])
     const reused = await downloadArchive(archive, directory, fetchImpl)
     assert.equal(reused.downloaded, false)
 
     await assert.rejects(
-      downloadArchive({ ...archive, filename: 'lichess_db_broadcast_2026-05.pgn.zst', sha256: '0'.repeat(64) }, directory, fetchImpl),
+      downloadArchive(
+        {
+          ...archive,
+          month: '2026-05',
+          filename: 'lichess_db_broadcast_2026-05.pgn.zst',
+          url: 'https://database.lichess.org/broadcast/lichess_db_broadcast_2026-05.pgn.zst',
+          sha256: '0'.repeat(64),
+        },
+        directory,
+        fetchImpl,
+      ),
       /SHA-256 mismatch/,
+    )
+
+    let hostileFetchCalled = false
+    await assert.rejects(
+      downloadArchive(
+        { ...archive, url: 'https://example.com/controlled-by-file.pgn.zst' },
+        directory,
+        (async () => {
+          hostileFetchCalled = true
+          return new Response(body)
+        }) as typeof fetch,
+      ),
+      /exact approved source/iu,
+    )
+    assert.equal(hostileFetchCalled, false)
+
+    await assert.rejects(
+      downloadArchive(
+        {
+          ...archive,
+          month: '2026-07',
+          filename: 'lichess_db_broadcast_2026-07.pgn.zst',
+          url: 'https://database.lichess.org/broadcast/lichess_db_broadcast_2026-07.pgn.zst',
+        },
+        directory,
+        (async () => {
+          hostileFetchCalled = true
+          return new Response(body)
+        }) as typeof fetch,
+      ),
+      /outside the exact approved allowlist/iu,
+    )
+    assert.equal(hostileFetchCalled, false)
+
+    const redirectedResponse = new Response(body)
+    Object.defineProperty(redirectedResponse, 'url', {
+      configurable: true,
+      value: 'https://database.lichess.org/broadcast/not-the-approved-object.pgn.zst',
+    })
+    await assert.rejects(
+      downloadArchive(
+        {
+          ...archive,
+          month: '2026-04',
+          filename: 'lichess_db_broadcast_2026-04.pgn.zst',
+          url: 'https://database.lichess.org/broadcast/lichess_db_broadcast_2026-04.pgn.zst',
+        },
+        directory,
+        (async () => redirectedResponse) as typeof fetch,
+      ),
+      /response URL is not the exact approved source/iu,
     )
   } finally {
     await rm(directory, { recursive: true, force: true })
