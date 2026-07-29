@@ -247,6 +247,31 @@ describe('Fastify API decision branches', () => {
     assert.equal(forwarded, 121)
   })
 
+  it('normalizes framework rate-limit retry headers into the safe error contract', async () => {
+    const app = await createApp(dependencies(), { publicOrigin: ORIGIN })
+    app.get('/test/framework-rate-limit/:kind', async (request, reply) => {
+      const { kind } = request.params as { kind: string }
+      const retryAfter = kind === 'number'
+        ? 7
+        : kind === 'array'
+          ? ['8']
+          : 'invalid'
+      reply.header('Retry-After', retryAfter)
+      throw Object.assign(new Error('framework detail must not escape'), { statusCode: 429 })
+    })
+
+    for (const [kind, expected] of [['number', 7], ['array', 8], ['invalid', 60]] as const) {
+      const response = await app.inject({ method: 'GET', url: `/test/framework-rate-limit/${kind}` })
+      assert.equal(response.statusCode, 429)
+      assert.equal(response.headers['retry-after'], String(expected))
+      const body = response.json()
+      assert.equal(body.error.code, 'rate_limit_exceeded')
+      assert.equal(body.error.retryAfterSeconds, expected)
+      assert.equal(body.error.message.includes('framework detail'), false)
+    }
+    await app.close()
+  })
+
   it('layers the stricter passkey limiter over the auth-route baseline', async () => {
     const keys: string[] = []
     const limiter: RateLimiter = {
