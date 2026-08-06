@@ -10,7 +10,10 @@ import {
   MemoryFamilyTrainingJournalRepository,
   type FamilyTrainingJournalRepository,
 } from '../../src/domain/family-training-journal.ts'
-import { GRAPH_TRAINING_CONTRACT_ID } from '../../src/domain/graph-training-session.ts'
+import {
+  GRAPH_TRAINING_CONTRACT_ID,
+  type GraphTrainingReviewInference,
+} from '../../src/domain/graph-training-session.ts'
 import { stableRepertoireCardId, type RepertoireGraphDocument } from '../../src/domain/repertoire.ts'
 import { createSyntheticTranspositionGraph } from '../fixtures/synthetic-repertoire-graph.ts'
 
@@ -58,7 +61,22 @@ describe('validated v3 graph-training boundary', () => {
 
   test('lists every audited path and follows an alternate branch without a grade confirmation', async () => {
     const user = userEvent.setup()
-    const reviews = vi.fn()
+    const memory = new MemoryFamilyTrainingJournalRepository()
+    const writeOrder: string[] = []
+    const repository: FamilyTrainingJournalRepository = {
+      kind: 'memory',
+      appendCoverageEvent: (event) => memory.appendCoverageEvent(event),
+      appendCycleEvent: (event) => memory.appendCycleEvent(event),
+      appendCursor: async (cursor) => {
+        writeOrder.push('cursor')
+        return memory.appendCursor(cursor)
+      },
+      listCoverageEvents: (scope) => memory.listCoverageEvents(scope),
+      listCycleEvents: (scope) => memory.listCycleEvents(scope),
+      loadLatestCursor: (scope) => memory.loadLatestCursor(scope),
+      loadCursor: (scope) => memory.loadCursor(scope),
+    }
+    const reviews = vi.fn((_review: GraphTrainingReviewInference) => { writeOrder.push('review') })
     const announcements = vi.fn()
     render(
       <GraphTrainingBoundary
@@ -68,6 +86,8 @@ describe('validated v3 graph-training boundary', () => {
         reducedMotion
         onInferredReview={reviews}
         onAnnouncement={announcements}
+        familyId="synthetic-family"
+        journalRepository={repository}
       />,
     )
 
@@ -80,6 +100,13 @@ describe('validated v3 graph-training boundary', () => {
     const knight = options.find((option) => option.textContent?.includes('Knight first'))!
     await user.click(knight)
     await user.click(screen.getByRole('button', { name: 'Practice selected path' }))
+    await waitFor(async () => expect(await memory.loadLatestCursor({
+      releaseId: graph.releaseId,
+      familyId: 'synthetic-family',
+      packId: graph.pack.id,
+      side: graph.pack.side,
+    })).not.toBeNull())
+    writeOrder.length = 0
     expect(screen.getByRole('heading', { name: 'Continuous graph practice' })).toBeVisible()
     expect(screen.queryByRole('button', { name: /^Again$|^Hard$|^Good$|^Easy$/u })).not.toBeInTheDocument()
     expect(screen.getByRole('tabpanel', { name: 'line analysis' })).toHaveTextContent(/Current audited continuation/u)
@@ -95,6 +122,8 @@ describe('validated v3 graph-training boundary', () => {
 
     expect(reviews).toHaveBeenCalledTimes(1)
     expect(reviews.mock.calls[0]?.[0]).toMatchObject({ grade: 'good', source: 'due', moveUci: 'g2g3' })
+    await waitFor(() => expect(writeOrder).toContain('cursor'))
+    expect(writeOrder[0]).toBe('review')
     expect(announcements).toHaveBeenCalledWith('Alternate audited branch accepted. Continuing from its exact resulting position.')
     expect(document.querySelector('[data-square="g3"][data-piece-type="wp"]')).not.toBeNull()
     await waitFor(() => expect(screen.getByText(/move 3 of 6/u)).toBeVisible())

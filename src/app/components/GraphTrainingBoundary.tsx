@@ -970,9 +970,12 @@ function GraphTrainingWorkspace({
   const handleMove = (moveUci: string): void => {
     try {
       const next = submitGraphTrainingMove({ adapter, state: session, moveUci })
-      setSession(next)
       const feedback = next.lastFeedback
-      if (feedback?.switchedPath && autonomousPlan) {
+      // React batches both updates from this input event. The functional plan
+      // update avoids a stale closure while keeping the inferred review ahead
+      // of the post-commit cursor writer effect.
+      setSession(next)
+      if (feedback?.switchedPath) {
         setAutonomousPlan((current) => current ? removeTransferredPathFromFutureBatches({
           plan: current,
           activeBatchIndex,

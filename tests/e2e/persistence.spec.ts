@@ -50,8 +50,12 @@ test('default storage is visibly session-only and never probes browser durable s
 
   await page.getByRole('button', { name: 'Switch to light mode' }).click()
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
-  await page.reload({ waitUntil: 'domcontentloaded' })
-  await expect(page.getByRole('navigation', { name: 'Primary navigation' })).toBeVisible({ timeout: 20_000 })
+  // Firefox can leave Playwright's reload lifecycle waiting after the new
+  // document has already committed. A same-artifact navigation creates the
+  // required fresh in-memory session without depending on that driver edge.
+  await page.goto(APP_PATH, { waitUntil: 'domcontentloaded' })
+  await waitForReadyApp(page)
+  await page.getByRole('button', { name: 'Progress' }).click()
   await expect(page.getByRole('heading', { name: 'Your progress', level: 1 })).toBeVisible({ timeout: 20_000 })
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
   await expect(page.getByText('Cards reviewed').locator('..').getByRole('strong')).toHaveText('0')

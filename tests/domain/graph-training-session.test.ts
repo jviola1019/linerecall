@@ -204,11 +204,48 @@ test('a path transferred from a future 1,001-path batch is claimed once and skip
     activeBatchIndex: 0,
     transferredPathId,
   })
+  const firstSelection = createExplicitGraphSessionSelection({
+    adapter: expanded.adapter,
+    pathIds: plan.pathIdBatches[0]!,
+    dueCardIds: expanded.dueCardIds,
+  })
+  const firstSession = createGraphTrainingSession({
+    adapter: expanded.adapter,
+    selection: firstSelection,
+  })
+  const transferredPath = expanded.adapter.pathsById.get(transferredPathId)!
+  const switchedSession: GraphTrainingSessionState = {
+    ...firstSession,
+    activePathId: transferredPathId,
+    activePathNodeIndex: 0,
+    currentNodeId: transferredPath.nodeIds[0]!,
+    sessionPathIds: [...firstSession.sessionPathIds, transferredPathId],
+    pendingPathIds: [
+      ...firstSession.pendingPathIds.filter((pathId) => pathId !== firstSession.activePathId),
+      firstSession.activePathId,
+    ],
+  }
+  const cursorOptions = {
+    adapter: expanded.adapter,
+    familyId: 'synthetic-family',
+    activeBatchIndex: 0,
+    completedBeforeBatch: [] as string[],
+    session: switchedSession,
+    authoritativeDueCardIds: expanded.dueCardIds,
+  }
+  const stalePlanCursor = createFamilyTrainingCursorSnapshot({ ...cursorOptions, plan })
+  const claimedPlanCursor = createFamilyTrainingCursorSnapshot({ ...cursorOptions, plan: claimed })
 
   assert.equal(plan.pathIdBatches[1]?.includes(transferredPathId), true)
   assert.equal(claimed.pathIdBatches.flat().includes(transferredPathId), false)
   assert.equal(claimed.totalPathIds.includes(transferredPathId), true)
   assert.equal(nextNonemptyGraphTrainingBatch(claimed, 0), null)
+  assert.deepEqual(stalePlanCursor, claimedPlanCursor)
+  assert.equal(
+    [...claimedPlanCursor.completedPathIds, ...claimedPlanCursor.pendingPathIds]
+      .filter((pathId) => pathId === transferredPathId).length,
+    1,
+  )
   assert.equal(
     [transferredPathId, ...claimed.pathIdBatches.slice(1).flat()]
       .filter((pathId) => pathId === transferredPathId).length,

@@ -368,24 +368,25 @@ export function DrillView({
   const playMove = (uci: string): void => {
     if (session.phase !== 'awaiting_move') return
     const next = submitTrainingMove({ state: session, line, graph, moveUci: uci })
-    if (!next.feedback?.legal) {
+    const moveFeedback = next.feedback
+    if (!moveFeedback?.legal) {
       setSession(next)
       onAnnouncement('Illegal move. Choose a legal move and try again.')
       return
     }
-    const status = moveStatusPresentation(next.feedback.classification as BoardMoveStatus)
+    const status = moveStatusPresentation(moveFeedback.classification as BoardMoveStatus)
     if (next.phase === 'awaiting_move') {
       setSession(next)
       setAnsweredFen(null)
-      onAnnouncement(`${status.label}. ${reasonLabel(next.feedback.reason)} Play the repertoire move to continue; this card will repeat.`)
+      onAnnouncement(`${status.label}. ${reasonLabel(moveFeedback.reason)} Play the repertoire move to continue; this card will repeat.`)
       return
     }
     const suggested = next.suggestedGrade ?? 'good'
-    setGrade(suggested)
     if (manualGrading) {
+      setGrade(suggested)
       setSession(next)
       setAnsweredFen(applyLegalMove(node.fen, uci).fen)
-      onAnnouncement(`${status.label}. ${reasonLabel(next.feedback.reason)} Suggested grade: ${suggested}.`)
+      onAnnouncement(`${status.label}. ${reasonLabel(moveFeedback.reason)} Suggested grade: ${suggested}.`)
       return
     }
     const cardId = `${line.id}::${node.id}`
@@ -410,7 +411,7 @@ export function DrillView({
     setAnnotationMode(false)
     setLastReview({
       nodeId: node.id,
-      feedback: next.feedback,
+      feedback: moveFeedback,
       grade: suggested,
       beforeCard,
       ...(reviewEventId ? { reviewEventId } : {}),

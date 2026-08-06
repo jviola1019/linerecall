@@ -793,10 +793,11 @@ export function App({
   }
 
   const updateSettings = (settings: Partial<ProgressV1['settings']>): void => {
+    const current = progressRef.current
     const next = {
-      ...progress,
+      ...current,
       updatedAt: new Date().toISOString(),
-      settings: { ...progress.settings, ...settings },
+      settings: { ...current.settings, ...settings },
     }
     saveProgress(next)
   }
@@ -814,7 +815,15 @@ export function App({
       ...scopedStreaks,
     }
     saveProgress(next)
-    return onReviewCommit?.({ ...commit, card })
+    if (!onReviewCommit) return undefined
+    try {
+      return onReviewCommit({ ...commit, card })
+    } catch (error) {
+      const failure = error instanceof Error ? error : new Error('Connected review queue rejected the review')
+      setSaveError(`The local review was saved, but connected sync rejected it: ${failure.message}. Export progress before leaving.`)
+      announce('The review was saved locally, but connected sync needs attention.')
+      return undefined
+    }
   }
 
   const handleTacticalPuzzleAttempt = async (event: PuzzleAttemptEventV1): Promise<void> => {
@@ -978,17 +987,23 @@ export function App({
   ]
   const readyCore = state.coreStatus === 'ready' ? state.core : null
   const appReady = readyCore !== null && progressHydration === 'ready'
-  const dueCount = Object.values(progress.cards).filter((card) => Date.parse(card.dueAt) <= Date.now()).length
-  const suggestedFamily = readyCore?.reviewFamilyCatalog.families.find((family) =>
-    validatedFamilyGraphs(effectiveFamilyGraphResources[family.id]).length > 0)
-    ?? readyCore?.reviewFamilyCatalog.families.find(({ id }) => id === 'caro-kann')
-    ?? readyCore?.reviewFamilyCatalog.families[0]
-    ?? null
+  const todayActive = state.view === 'today'
+  const dueCount = todayActive
+    ? Object.values(progress.cards).filter((card) => Date.parse(card.dueAt) <= Date.now()).length
+    : 0
+  const suggestedFamily = todayActive
+    ? readyCore?.reviewFamilyCatalog.families.find((family) =>
+      validatedFamilyGraphs(effectiveFamilyGraphResources[family.id]).length > 0)
+      ?? readyCore?.reviewFamilyCatalog.families.find(({ id }) => id === 'caro-kann')
+      ?? readyCore?.reviewFamilyCatalog.families[0]
+      ?? null
+    : null
   const suggestedFamilySide = suggestedFamily?.availableSides[0] ?? 'white'
   const suggestedFamilyGraphReady = suggestedFamily
     ? familySideFullyReady(effectiveFamilyGraphResources[suggestedFamily.id], suggestedFamilySide)
     : false
   const effectiveGraphDueCardIds = useMemo(() => {
+    if (state.view !== 'train') return [...graphTrainingDueCardIds]
     if (!state.selectedFamilyId) return [...graphTrainingDueCardIds]
     const graphs = validatedFamilyGraphs(
       effectiveFamilyGraphResources[state.selectedFamilyId],
@@ -1013,6 +1028,7 @@ export function App({
     progress.cards,
     state.selectedFamilyId,
     state.selectedFamilySide,
+    state.view,
   ])
   const activeNavView = state.view === 'family' || state.view === 'train' ? 'repertoire' : state.view
   const selectedFamilyLoadState = state.selectedFamilyId
