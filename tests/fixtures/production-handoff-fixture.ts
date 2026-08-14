@@ -16,6 +16,7 @@ import {
   createSyntheticFamilyGraphProvenanceDocument,
 } from './synthetic-repertoire-evidence.ts'
 import { createSyntheticFamilyCampaignBindings } from './synthetic-family-campaign-bindings.ts'
+import { productionBrowseManifestFixture } from './production-app-manifest.ts'
 
 export const HANDOFF_FIXTURE_RELEASE = 'synthetic-handoff-release-not-for-shipping'
 const HASH = 'a'.repeat(64)
@@ -23,6 +24,41 @@ const BROADCAST_EXACT_RECEIPT = 'b'.repeat(64)
 const Q2_EXACT_RECEIPT = 'c'.repeat(64)
 
 export type ReadinessBuildInput = z.infer<typeof ProductionDataReadinessBuildInputV1Schema>
+
+async function createSyntheticBrowseSnapshot(root: string): Promise<{
+  inputDirectory: string
+  manifest: ImmutableJsonReceiptV1 & { encoding: 'identity' }
+}> {
+  const inputDirectory = join(root, 'browse')
+  const plain = Buffer.from('{}\n', 'utf8')
+  const stored = gzipSync(plain)
+  const blobMetadata = {
+    sha256: createHash('sha256').update(stored).digest('hex'),
+    compressedBytes: stored.byteLength,
+    uncompressedBytes: plain.byteLength,
+  }
+  const paths = [
+    'search.json.gz',
+    'audit.json.gz',
+    'shards/s_0000000000000000.json.gz',
+    'shards/s_1111111111111111.json.gz',
+    ...Array.from({ length: 500 }, (_, index) => {
+      const eco = `${String.fromCharCode(65 + Math.floor(index / 100))}${String(index % 100).padStart(2, '0')}`
+      return `partitions/${eco}.json.gz`
+    }),
+  ]
+  await Promise.all(paths.map(async (path) => {
+    const outputPath = join(inputDirectory, path)
+    await mkdir(dirname(outputPath), { recursive: true })
+    await writeFile(outputPath, stored, { flag: 'wx' })
+  }))
+  const manifest = await writeFixtureJson(
+    root,
+    'app/browse-wire-v2.json',
+    productionBrowseManifestFixture(blobMetadata),
+  )
+  return { inputDirectory, manifest }
+}
 
 export function writeFixtureJson(
   root: string,
@@ -78,6 +114,7 @@ export async function createProductionHandoffFixture(options: {
   familyBuildInput: FamilyPromotionIndexBuildInputV1
   readinessInputs: Omit<ReadinessBuildInput, 'familyPromotionIndex' | 'appSnapshotManifest'>
   browseManifest: ImmutableJsonReceiptV1 & { encoding: 'identity' }
+  browseInputDirectory: string
   learnerNodeCount: number
 }> {
   const root = await mkdtemp(join(tmpdir(), 'linerecall-production-handoff-'))
@@ -289,16 +326,13 @@ export async function createProductionHandoffFixture(options: {
     broadcasts: await writeFixtureJson(root, 'sources/broadcasts.source.json', broadcastSource),
     standardQ2_2026: await writeFixtureJson(root, 'sources/standard-q2.source.json', q2Source),
   }
-  const browseManifest = await writeFixtureJson(
-    root,
-    'app/browse-wire-v2.json',
-    JSON.parse(await readFile(join(process.cwd(), 'data/generated/app-snapshot/manifest.json'), 'utf8')) as unknown,
-  )
+  const browse = await createSyntheticBrowseSnapshot(root)
 
   return {
     root,
     learnerNodeCount,
-    browseManifest,
+    browseManifest: browse.manifest,
+    browseInputDirectory: browse.inputDirectory,
     familyBuildInput: {
       schemaVersion: 1,
       releaseId: HANDOFF_FIXTURE_RELEASE,

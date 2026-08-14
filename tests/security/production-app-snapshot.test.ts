@@ -106,7 +106,7 @@ test('production embed rechecks every promoted byte and exposes the family graph
   const embedded = await embedProductionAppSnapshot({
     root: fixture.root,
     appManifestReceipt: identityReceipt(app),
-    browseInputDirectory: resolve('data/generated/app-snapshot'),
+    browseInputDirectory: fixture.browseInputDirectory,
     outputPath,
   })
   const payload = EmbeddedProductionSnapshotPayloadV3Schema.parse(
@@ -171,7 +171,7 @@ test('production embed rechecks every promoted byte and exposes the family graph
     embedProductionAppSnapshot({
       root: fixture.root,
       appManifestReceipt: identityReceipt(app),
-      browseInputDirectory: resolve('data/generated/app-snapshot'),
+      browseInputDirectory: fixture.browseInputDirectory,
       outputPath,
     }),
     /EEXIST|exist/u,
@@ -198,7 +198,7 @@ test('runtime family reads fail closed when an embedded promoted blob changes', 
   await embedProductionAppSnapshot({
     root: fixture.root,
     appManifestReceipt: identityReceipt(app),
-    browseInputDirectory: resolve('data/generated/app-snapshot'),
+    browseInputDirectory: fixture.browseInputDirectory,
     outputPath,
   })
   const payload = EmbeddedProductionSnapshotPayloadV3Schema.parse(
@@ -233,7 +233,7 @@ test('embedded production resources reject pathological decompression sizes', as
   await embedProductionAppSnapshot({
     root: fixture.root,
     appManifestReceipt: identityReceipt(app),
-    browseInputDirectory: resolve('data/generated/app-snapshot'),
+    browseInputDirectory: fixture.browseInputDirectory,
     outputPath,
   })
   const payload = JSON.parse(await readFile(outputPath, 'utf8')) as Record<string, unknown>
