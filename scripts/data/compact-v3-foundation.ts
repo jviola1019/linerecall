@@ -21,6 +21,11 @@ const COHORT_ID = /^cohort_[a-z0-9-]{3,64}$/u
 const UCI = /^[a-h][1-8][a-h][1-8][qrbn]?$/u
 const UINT32_MAX = 0xffff_ffff
 
+function fingerprintBytes(fingerprint: string): Buffer {
+  if (!SHA256.test(fingerprint)) throw new Error('Evidence fingerprint must be a lowercase SHA-256')
+  return Buffer.from(fingerprint, 'hex')
+}
+
 function pragmaInteger(database: DatabaseSync, name: 'page_count' | 'page_size' | 'max_page_count'): number {
   const row = database.prepare(`PRAGMA ${name}`).get() as Record<string, unknown> | undefined
   const value = row ? Object.values(row)[0] : undefined
@@ -316,7 +321,7 @@ export class SqliteCandidateIndex {
       }
       this.database.exec(`
         CREATE TABLE IF NOT EXISTS candidates (
-          fingerprint TEXT NOT NULL CHECK(length(fingerprint) = 64),
+          fingerprint BLOB NOT NULL CHECK(length(fingerprint) = 32),
           cohort_id TEXT NOT NULL,
           kind TEXT NOT NULL CHECK(kind IN ('position', 'edge')),
           first_estimate INTEGER NOT NULL CHECK(first_estimate >= 1),
@@ -369,7 +374,7 @@ export class SqliteCandidateIndex {
 
   has(fingerprint: string, cohortId: string): boolean {
     if (!SHA256.test(fingerprint) || !COHORT_ID.test(cohortId)) throw new Error('Invalid candidate lookup')
-    return this.findCandidate.get(fingerprint, cohortId) !== undefined
+    return this.findCandidate.get(fingerprintBytes(fingerprint), cohortId) !== undefined
   }
 
   retain(fingerprint: string, cohortId: string, kind: CompactEvidenceKind, estimate: number): boolean {
@@ -378,16 +383,17 @@ export class SqliteCandidateIndex {
     if (!Number.isSafeInteger(estimate) || estimate < ADAPTIVE_CANDIDATE_MINIMUM_SAMPLE) {
       throw new Error('Candidate estimate has not reached the retention threshold')
     }
-    const existing = this.findCandidate.get(fingerprint, cohortId) as { kind: CompactEvidenceKind } | undefined
+    const bytes = fingerprintBytes(fingerprint)
+    const existing = this.findCandidate.get(bytes, cohortId) as { kind: CompactEvidenceKind } | undefined
     if (existing) {
       if (existing.kind !== kind) throw new Error('Candidate fingerprint collision changed evidence kind')
-      this.updateEstimate.run(estimate, fingerprint, cohortId)
+      this.updateEstimate.run(estimate, bytes, cohortId)
       return false
     }
     if (this.count >= this.maximumCandidates) {
       throw new Error('Candidate index hard cap reached; archive pass aborted without promotion')
     }
-    this.insertCandidate.run(fingerprint, cohortId, kind, estimate, estimate)
+    this.insertCandidate.run(bytes, cohortId, kind, estimate, estimate)
     this.count += 1
     return true
   }
@@ -497,12 +503,12 @@ export class SqliteCompactExactStore {
         PRAGMA foreign_keys = ON;
         CREATE TABLE IF NOT EXISTS positions (
           position_id INTEGER PRIMARY KEY,
-          fingerprint TEXT NOT NULL UNIQUE CHECK(length(fingerprint) = 64),
+          fingerprint BLOB NOT NULL UNIQUE CHECK(length(fingerprint) = 32),
           epd TEXT NOT NULL UNIQUE
         ) STRICT;
         CREATE TABLE IF NOT EXISTS edges (
           edge_id INTEGER PRIMARY KEY,
-          fingerprint TEXT NOT NULL UNIQUE CHECK(length(fingerprint) = 64),
+          fingerprint BLOB NOT NULL UNIQUE CHECK(length(fingerprint) = 32),
           from_position_id INTEGER NOT NULL REFERENCES positions(position_id),
           uci TEXT NOT NULL,
           san TEXT NOT NULL,
@@ -556,8 +562,9 @@ export class SqliteCompactExactStore {
   private positionId(epd: string): number {
     const identity: PositionIdentity = { kind: 'position', epd }
     const fingerprint = evidenceFingerprint(identity)
-    this.upsertPosition.run(fingerprint, epd)
-    const row = this.getPosition.get(fingerprint) as { positionId: number; epd: string } | undefined
+    const bytes = fingerprintBytes(fingerprint)
+    this.upsertPosition.run(bytes, epd)
+    const row = this.getPosition.get(bytes) as { positionId: number; epd: string } | undefined
     if (!row || row.epd !== epd) throw new Error('Position fingerprint collision detected')
     return row.positionId
   }
@@ -598,14 +605,15 @@ export class SqliteCompactExactStore {
       const fromPositionId = this.positionId(observation.identity.fromEpd)
       const toPositionId = this.positionId(observation.identity.toEpd)
       const fingerprint = evidenceFingerprint(observation.identity)
+      const bytes = fingerprintBytes(fingerprint)
       this.upsertEdge.run(
-        fingerprint,
+        bytes,
         fromPositionId,
         observation.identity.uci,
         observation.san,
         toPositionId,
       )
-      const row = this.getEdge.get(fingerprint) as {
+      const row = this.getEdge.get(bytes) as {
         edgeId: number
         fromPositionId: number
         uci: string

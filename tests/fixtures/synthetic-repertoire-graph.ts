@@ -11,6 +11,10 @@ import {
   type RepertoireNode,
   type RepertoirePath,
 } from '../../src/domain/repertoire.ts'
+import {
+  SYNTHETIC_GRAPH_PROVENANCE_REF,
+  createSyntheticRepertoireEvidence,
+} from './synthetic-repertoire-evidence.ts'
 
 interface FixtureLine {
   moves: string[]
@@ -92,17 +96,12 @@ export async function createSyntheticTranspositionGraph(): Promise<RepertoireGra
       role: 'book',
       eligibleForDrill: true,
       acceptedBookTransposition: (incoming.get(toNodeId)?.length ?? 0) > 1 && hasKnownContinuation,
-      evidence: {
-        cohorts: [{ cohortId: 'cohort_synthetic-fixture-only', n: 500 }],
-        conditionalUsage: edge.uci === 'g1f3' ? 0.7 : 0.3,
-        engine: {
-          status: 'verified',
-          centipawnLoss: 0,
-          forcedMateAgainstLearner: false,
-          quarantineReasons: [],
-        },
-      },
-      provenanceRef: 'synthetic-fixture-not-production-evidence',
+      evidence: createSyntheticRepertoireEvidence({
+        uci: edge.uci,
+        trainedSide: 'white',
+        ...(edge.uci === 'g1f3' ? { moveN: 700, reachN: 1_000 } : { moveN: 600, reachN: 2_000 }),
+      }),
+      provenanceRef: SYNTHETIC_GRAPH_PROVENANCE_REF,
     }
   })
   const nodes: RepertoireNode[] = [...epds].map((epd) => {
@@ -115,6 +114,7 @@ export async function createSyntheticTranspositionGraph(): Promise<RepertoireGra
       learnerTurn,
       outgoingEdgeIds: [...(outgoing.get(id) ?? [])].sort((left, right) => left.localeCompare(right, 'en')),
       ...(learnerTurn ? { cardId: stableRepertoireCardId(packId, id) } : {}),
+      provenanceRef: SYNTHETIC_GRAPH_PROVENANCE_REF,
     }
   })
   const paths: RepertoirePath[] = []
@@ -131,6 +131,7 @@ export async function createSyntheticTranspositionGraph(): Promise<RepertoireGra
       terminalStatus: 'evidence_terminal',
       familyTags: [rawPath.family],
       conditionalUsage: rawPath.usage,
+      provenanceRef: SYNTHETIC_GRAPH_PROVENANCE_REF,
     })
   }
 
@@ -151,7 +152,7 @@ export async function createSyntheticTranspositionGraph(): Promise<RepertoireGra
       nodeIds: nodes.map(({ id }) => id),
       edgeIds: edges.map(({ id }) => id),
       pathIds: paths.map(({ id }) => id),
-      provenanceRef: 'synthetic-fixture-not-production-evidence',
+      provenanceRef: SYNTHETIC_GRAPH_PROVENANCE_REF,
     },
     nodes,
     edges,

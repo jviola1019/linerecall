@@ -64,7 +64,7 @@ function browserProps(partition: PartitionResource = { status: 'ready', value: c
     onSelectLine: vi.fn(),
     onSelectVariant: vi.fn(),
     onSelectSearchResult: vi.fn(),
-    onStartDrill: vi.fn(),
+    onOpenFamily: vi.fn(),
     onRetryPartition: vi.fn(),
     onAnnouncement: vi.fn(),
   }
@@ -285,7 +285,7 @@ describe('opening browser resource and keyboard branches', () => {
     firstMove.focus()
     for (const key of ['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp', 'Home', 'End', 'x']) fireEvent.keyDown(document.activeElement!, { key })
 
-    const tabs = within(screen.getByRole('tablist', { name: 'Training side' })).getAllByRole('tab')
+    const tabs = within(screen.getByRole('tablist', { name: 'Historical side evidence' })).getAllByRole('tab')
     if (tabs.length > 1) {
       tabs[0]!.focus()
       for (const key of ['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp', 'Home', 'End', 'x']) fireEvent.keyDown(document.activeElement!, { key })
@@ -427,7 +427,7 @@ describe('opening browser resource and keyboard branches', () => {
     expect(await screen.findByRole('heading', { name: /Search results/u })).toBeTruthy()
   })
 
-  test('shows no-result search and browsable non-drillable explanations', async () => {
+  test('shows no-result search and browse-only historical evidence explanations', async () => {
     const user = userEvent.setup()
     const nonVerified = c20.lines.find((line) => line.verifiedVariantIds.length === 0)!
     expect(nonVerified).toBeTruthy()
@@ -436,13 +436,15 @@ describe('opening browser resource and keyboard branches', () => {
     await user.type(screen.getByRole('searchbox', { name: /Search by opening name/u }), 'definitely-no-match-xyz')
     await user.click(screen.getByRole('button', { name: 'Search openings' }))
     expect(screen.getByText('No audited opening matches found.')).toBeTruthy()
-    expect(screen.getByRole('note')).toHaveTextContent(nonVerified.backtestEligible ? /not part of the released engine-verified training graph/u : /does not meet/u)
+    expect(screen.getByRole('note')).toHaveTextContent(nonVerified.backtestEligible ? /no side-specific record/u : /does not meet/u)
+    expect(screen.getByRole('button', { name: 'Open opening family' })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'Start spaced-repetition drill' })).toBeNull()
 
     const quarantined = c20.verifiedLines.find((line) => !line.drillEligible)
     if (quarantined) {
       rerender(<OpeningBrowser {...browserProps()} selectedLineId={quarantined.sourceLineId} selectedVariantId={quarantined.id} />)
-      expect(screen.getByText('Quarantined')).toBeTruthy()
-      expect(screen.getByRole('button', { name: 'Start spaced-repetition drill' })).toBeDisabled()
+      expect(screen.getByText('Historical record quarantined')).toBeTruthy()
+      expect(screen.getByRole('button', { name: 'Open opening family' })).toBeEnabled()
     }
   })
 
@@ -908,7 +910,7 @@ describe('progress, evidence, licenses, and App branches', () => {
     await waitFor(() => expect(input).toHaveFocus())
   })
 
-  test('initializes the App from light mode, retries partition errors, searches, selects, and starts a real drill', async () => {
+  test('initializes the App from light mode, retries partition errors, searches, and opens the canonical family', async () => {
     document.documentElement.dataset.theme = 'light'
     const user = userEvent.setup()
     let partitionAttempts = 0
@@ -945,8 +947,15 @@ describe('progress, evidence, licenses, and App branches', () => {
     const lineOption = within(lineList).getAllByRole('option').find((option) => option.textContent?.includes(drillLine.name))
     if (!lineOption) throw new Error('Expected C20 drill line option missing')
     await user.click(lineOption)
-    await user.click(await screen.findByRole('button', { name: 'Start spaced-repetition drill' }))
-    expect(await screen.findByRole('heading', { name: drillLine.name })).toBeTruthy()
+    const family = core.reviewFamilyCatalog.families.find((candidate) =>
+      candidate.taxonomyLineIds.includes(drillLine.sourceLineId))
+    if (!family) throw new Error('Expected canonical family assignment missing')
+    expect(core.reviewFamilyCatalog.families.filter((candidate) =>
+      candidate.taxonomyLineIds.includes(drillLine.sourceLineId))).toHaveLength(1)
+    expect(screen.queryByRole('button', { name: 'Start spaced-repetition drill' })).toBeNull()
+    await user.click(await screen.findByRole('button', { name: 'Open opening family' }))
+    expect(window.location.hash).toBe(`#/repertoire/${family.id}`)
+    expect(await screen.findByRole('heading', { level: 1, name: family.canonicalName })).toBeTruthy()
   }, 20_000)
 
   test('shows provenance for a newly selected browsable-only line instead of a stale drill line', async () => {
@@ -967,10 +976,6 @@ describe('progress, evidence, licenses, and App branches', () => {
     await screen.findByRole('heading', { name: 'Ready when you are.' })
     await user.click(screen.getByRole('button', { name: 'Explore' }))
     await screen.findByRole('listbox', { name: 'C20 opening lines' })
-    await user.click(await screen.findByRole('button', { name: 'Start spaced-repetition drill' }))
-    await screen.findByRole('grid', { name: /Chessboard/u })
-
-    await user.click(screen.getByRole('button', { name: 'Explore' }))
     const lineList = await screen.findByRole('listbox', { name: 'C20 opening lines' })
     const browsableOption = within(lineList).getAllByRole('option').find((option) => option.textContent?.includes(browsableOnly.name))
     if (!browsableOption) throw new Error('Browsable-only provenance fixture is absent from the C20 line list')

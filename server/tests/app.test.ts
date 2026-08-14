@@ -200,6 +200,100 @@ describe('Fastify API boundary', () => {
     assert.equal(bootstrap.headers['ratelimit-limit'], '60')
   })
 
+  it('syncs family completion and cursor history through strict tenant-scoped routes', async () => {
+    const headers = { origin: ORIGIN, 'x-linerecall-user': 'family-user' }
+    const coverageEvent = {
+      schemaVersion: 1,
+      eventId: '0198a5c0-1000-7000-8000-000000000401',
+      releaseId: 'release-2026q2',
+      familyId: 'king-pawn',
+      packId: 'pack-e4',
+      pathId: 'path_0123456789abcdef0123',
+      coverageCycleId: 'pack-e4::coverage:0',
+      completedAt: '2026-07-14T11:59:00.000Z',
+    }
+    const payload = {
+      deviceId: DEVICE_ID,
+      coverageEvents: [coverageEvent],
+      cycleEvents: [{
+        schemaVersion: 1,
+        eventId: '0198a5c0-1000-7000-8000-000000000403',
+        releaseId: 'release-2026q2',
+        familyId: 'king-pawn',
+        side: 'white',
+        kind: 'cycle_started',
+        generationId: '0198a5c0-1000-7000-8000-000000000404',
+        generationOrdinal: 0,
+        occurredAt: '2026-07-14T11:58:00.000Z',
+      }, {
+        schemaVersion: 1,
+        eventId: '0198a5c0-1000-7000-8000-000000000405',
+        releaseId: 'release-2026q2',
+        familyId: 'king-pawn',
+        side: 'white',
+        kind: 'pack_bound',
+        generationId: '0198a5c0-1000-7000-8000-000000000404',
+        generationOrdinal: 0,
+        packId: 'pack-e4',
+        packCoverageCycleId: 'pack-e4::coverage:0',
+        occurredAt: '2026-07-14T11:58:01.000Z',
+      }],
+      cursorMutation: {
+        mutationId: '0198a5c0-1000-7000-8000-000000000402',
+        baseVersion: 0,
+        value: {
+          schemaVersion: 1,
+          releaseId: 'release-2026q2',
+          familyId: 'king-pawn',
+          side: 'white',
+          coverageCycleId: 'pack-e4::coverage:0',
+          authoritativeDueCardIds: ['pack-e4::pos_0123456789abcdef'],
+          reviewedCardIds: [],
+          completedPathIds: ['path_0123456789abcdef0123'],
+          pendingPathIds: ['path_fedcba9876543210fedc'],
+          batchIndex: 0,
+        },
+      },
+    }
+    const first = await app.inject({ method: 'POST', url: '/v1/family-training/sync', headers, payload })
+    const retry = await app.inject({ method: 'POST', url: '/v1/family-training/sync', headers, payload })
+    assert.equal(first.statusCode, 200, first.body)
+    assert.equal(retry.statusCode, 200, retry.body)
+    assert.equal(retry.json().cursorStatus, 'duplicate')
+
+    const page = await app.inject({
+      method: 'GET',
+      url: '/v1/family-training/coverage?releaseId=release-2026q2&familyId=king-pawn&cursor=0&limit=1',
+      headers,
+    })
+    assert.equal(page.statusCode, 200, page.body)
+    assert.equal(page.json().records[0].event.pathId, coverageEvent.pathId)
+
+    const cycles = await app.inject({
+      method: 'GET',
+      url: '/v1/family-training/cycles?releaseId=release-2026q2&familyId=king-pawn&side=white&cursor=0&limit=10',
+      headers,
+    })
+    assert.equal(cycles.statusCode, 200, cycles.body)
+    assert.deepEqual(cycles.json().records.map(({ event }: { event: { kind: string } }) => event.kind), ['cycle_started', 'pack_bound'])
+
+    const cursor = await app.inject({
+      method: 'GET',
+      url: '/v1/family-training/cursor?releaseId=release-2026q2&familyId=king-pawn&side=white&packId=pack-e4',
+      headers,
+    })
+    assert.equal(cursor.statusCode, 200, cursor.body)
+    assert.equal(cursor.json().cursor.value.pendingPathIds.length, 1)
+
+    const otherTenant = await app.inject({
+      method: 'GET',
+      url: '/v1/family-training/coverage?releaseId=release-2026q2&familyId=king-pawn&cursor=0&limit=1',
+      headers: { 'x-linerecall-user': 'other-family-user' },
+    })
+    assert.equal(otherTenant.statusCode, 200, otherTenant.body)
+    assert.equal(otherTenant.json().records.length, 0)
+  })
+
   it('rejects structurally adversarial PGN before it reaches object storage', async () => {
     const headers = { origin: ORIGIN, 'x-linerecall-user': 'user-hostile-pgn' }
     const response = await app.inject({

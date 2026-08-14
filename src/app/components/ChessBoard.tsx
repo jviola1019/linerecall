@@ -74,6 +74,7 @@ export interface ChessBoardProps {
   hintUci?: string | null
   lastMove?: { uci: string; status: BoardMoveStatus } | null
   boardOverlay?: ReactNode
+  boardControls?: ReactNode
   onMove: (uci: string) => void
   onAnnouncement?: (message: string) => void
 }
@@ -96,7 +97,10 @@ interface PromotionVisual extends VisualPromotion {
 // 180 ms interaction budget so a queued reply cannot start before the prior
 // browser transition has finished.
 const MOVE_TRANSITION_MS = 180
-const PROMOTION_CROSSFADE_MS = 90
+// Keep the identity swap visible long enough to be perceivable and to remain
+// testable under CPU throttling; the piece has already completed its 180 ms
+// spatial move before this non-spatial crossfade begins.
+const PROMOTION_CROSSFADE_MS = 160
 
 function optionUci(from: Square, to: Square, promotion?: PieceSymbol): string {
   return `${from}${to}${promotion ?? ''}`
@@ -127,6 +131,7 @@ export function ChessBoard({
   hintUci = null,
   lastMove = null,
   boardOverlay = null,
+  boardControls = null,
   onMove,
   onAnnouncement,
 }: ChessBoardProps): React.JSX.Element {
@@ -562,6 +567,19 @@ export function ChessBoard({
     const arrowPath = `M ${x2} ${y2} L ${arrowBaseX - uy * arrowWidth} ${arrowBaseY + ux * arrowWidth} L ${arrowBaseX + uy * arrowWidth} ${arrowBaseY - ux * arrowWidth} Z`
     const bracketRadius = 4.25
     const bracketArm = 1.8
+    const guideMarkerLabels: Readonly<Record<string, string>> = {
+      'guide-book': 'B',
+      'guide-playable': 'A',
+      'guide-inaccuracy': '!',
+      'guide-mistake': '×',
+      'guide-unverified_deviation': '?',
+      'guide-illegal': '!',
+      'guide-hint': 'H',
+      'guide-selection': 'S',
+    }
+    const guideMarkerLabel = guideMarkerLabels[className]
+    const badgeX = x1 + (x2 - x1) * 0.52
+    const badgeY = y1 + (y2 - y1) * 0.52
     const destinationPath = [
       `M ${to.x - bracketRadius + bracketArm} ${to.y - bracketRadius} H ${to.x - bracketRadius} V ${to.y - bracketRadius + bracketArm}`,
       `M ${to.x + bracketRadius - bracketArm} ${to.y - bracketRadius} H ${to.x + bracketRadius} V ${to.y - bracketRadius + bracketArm}`,
@@ -574,6 +592,12 @@ export function ChessBoard({
         <line className={`movement-guide-line ${className}`} x1={x1} y1={y1} x2={marker ? arrowBaseX : x2} y2={marker ? arrowBaseY : y2} />
         {marker ? <path className={`movement-guide-arrowhead ${className}`} d={arrowPath} /> : null}
         <path className={`movement-guide-destination ${className}`} d={destinationPath} />
+        {marker && guideMarkerLabel ? (
+          <g className={`movement-guide-badge ${className}`} transform={`translate(${badgeX} ${badgeY})`}>
+            <circle r="2.55" />
+            <text y="0.15">{guideMarkerLabel}</text>
+          </g>
+        ) : null}
       </g>
     )
   }
@@ -729,6 +753,24 @@ export function ChessBoard({
         ) : null}
         {boardOverlay}
       </div>
+
+      {boardControls}
+
+      {guideDescriptions.length > 0 ? (
+        <ul className="movement-guide-legend" aria-label="Visible board guides">
+          {lastMoveGuide && lastMove ? (
+            <li data-guide={lastMove.status}>
+              <span aria-hidden="true">{moveStatusPresentation(lastMove.status).icon}</span>
+              {moveStatusPresentation(lastMove.status).label}
+            </li>
+          ) : null}
+          {hintGuide ? <li data-guide="hint"><span aria-hidden="true">H</span>Hint route</li> : null}
+          {selectionGuide ? <li data-guide="selection"><span aria-hidden="true">S</span>Selected route</li> : null}
+          {selectedSquare !== null && legalSelectionGuides.length > 0
+            ? <li data-guide="option"><span aria-hidden="true">⌟</span>{legalSelectionGuides.length} legal target{legalSelectionGuides.length === 1 ? '' : 's'}</li>
+            : null}
+        </ul>
+      ) : null}
 
       <div className="move-picker" role="group" aria-labelledby={pickerId}>
         <label id={pickerId} htmlFor={`${pickerId}-select`}>Legal move picker</label>

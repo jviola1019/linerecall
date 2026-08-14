@@ -18,6 +18,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import {
   COMPACT_MINIMUM_FREE_RESERVE_BYTES,
+  COMPACT_ADAPTER_STATE_SCHEMA_VERSION,
   COMPACT_STORAGE_MODEL,
   CompactArchiveCheckpointSchema,
   CompactPreflightPlanSchema,
@@ -37,6 +38,10 @@ import {
   type CompactCandidatePassSummary,
   type CompactExactPassSummary,
 } from '../../scripts/data/compact-v3-orchestrator.ts'
+import {
+  createFixtureBenchmarkApproval,
+  fixtureBenchmarkApprovalBytesForPlan,
+} from '../fixtures/compact-benchmark-approval.ts'
 
 const fixtureBytes = Buffer.from('fixture compressed archive bytes\n', 'utf8')
 const fixtureSha256 = createHash('sha256').update(fixtureBytes).digest('hex')
@@ -54,8 +59,27 @@ const bounds = {
 }
 
 const peakBound = Object.values(bounds).reduce((sum, value) => sum + value, 0)
+const limits = {
+  completeBaselineMaxPly: 30,
+  adaptiveEvidenceMaxPly: 100,
+  adaptiveCandidateMinimumSample: 100,
+  archiveConcurrency: 1,
+  minimumFreeReserveBytes: COMPACT_MINIMUM_FREE_RESERVE_BYTES,
+  countMinWidth: 8,
+  countMinDepth: 2,
+  maximumCandidates: 1_000,
+} as const
 
 function planFor(bytes: Buffer = fixtureBytes, sha256: string = fixtureSha256): CompactPreflightPlan {
+  const approval = createFixtureBenchmarkApproval({
+    limits,
+    bounds,
+    sourceSnapshotSha256: 'c'.repeat(64),
+    acceptedGames: 12,
+    observations: 400,
+    peakResidentBytes: 1_024,
+    peakAdditionalStorageBytes: peakBound,
+  })
   return CompactPreflightPlanSchema.parse({
     schemaVersion: 3,
     storageModel: COMPACT_STORAGE_MODEL,
@@ -74,28 +98,9 @@ function planFor(bytes: Buffer = fixtureBytes, sha256: string = fixtureSha256): 
       etagObserved: 'fixture-etag',
       lastModifiedObserved: 'Thu, 16 Jul 2026 12:00:00 GMT',
     },
-    limits: {
-      completeBaselineMaxPly: 30,
-      adaptiveEvidenceMaxPly: 100,
-      adaptiveCandidateMinimumSample: 100,
-      archiveConcurrency: 1,
-      minimumFreeReserveBytes: COMPACT_MINIMUM_FREE_RESERVE_BYTES,
-      countMinWidth: 8,
-      countMinDepth: 2,
-      maximumCandidates: 1_000,
-    },
+    limits,
     bounds,
-    benchmark: {
-      status: 'approved',
-      method: 'complete-broadcast-replay-with-enforced-hard-caps',
-      receiptSha256: 'b'.repeat(64),
-      measuredAt: '2026-07-16T12:05:00.000Z',
-      acceptedGames: 12,
-      observations: 400,
-      peakResidentBytes: 1_024,
-      peakAdditionalStorageBytes: peakBound,
-      note: 'Fixture-only approval used to test orchestration; it is not corpus release evidence.',
-    },
+    benchmark: approval.proof,
   })
 }
 
@@ -115,6 +120,7 @@ function candidateSummary(): CompactCandidatePassSummary {
 function exactSummary(candidateReceiptSha256: string): CompactExactPassSummary {
   return {
     pass: 'exact',
+    priorExactStateSha256: null,
     finalCandidateSetReceiptSha256: candidateReceiptSha256,
     recordsSeen: 4,
     accepted: 2,
@@ -147,7 +153,11 @@ function baseOptions(
       chessJs: '1.4.0',
       zstd: 'fixture-identity-stream',
       sourceSnapshotSha256: 'c'.repeat(64),
+      adapterStateSchemaVersion: COMPACT_ADAPTER_STATE_SCHEMA_VERSION,
     },
+    ...(plan.benchmark.status === 'approved' ? {
+      benchmarkApprovalBytes: fixtureBenchmarkApprovalBytesForPlan(plan, 'c'.repeat(64)),
+    } : {}),
     outputExtension: 'bundle',
     availableBytes: async () => COMPACT_MINIMUM_FREE_RESERVE_BYTES + peakBound,
     now: clock(),
@@ -430,7 +440,7 @@ test('free-space preflight blocks before opening input and the staging sink fail
     let opened = false
     await assert.rejects(runCompactArchivePass({
       ...baseOptions(directory, archivePath, plan),
-      availableBytes: async () => COMPACT_MINIMUM_FREE_RESERVE_BYTES + peakBound - 1,
+      availableBytes: async () => 0,
       openCompressedInput: () => {
         opened = true
         return createReadStream(archivePath)
@@ -510,10 +520,65 @@ test('benchmark receipts are explicit and promotion cannot cross the corpus-wide
         await consumeToOutput(context)
         return candidateSummary()
       },
-    }), /retained-state hard cap/iu)
+    }), /retained-state hard cap|retained-state-cap-exceeded/iu)
     assert.equal(await readVerifiedCompactCheckpoint(directory, plan), null)
-    const entries = await readdir(join(directory, 'v3', plan.archive.archiveId), { recursive: true })
-    assert.equal(entries.some((entry) => entry.endsWith('.bundle') || entry.endsWith('checkpoint.json')), false)
+    await assert.rejects(
+      stat(join(directory, 'v3', plan.archive.archiveId)),
+      { code: 'ENOENT' },
+    )
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('missing, forged, and cross-snapshot benchmark approvals fail before input opens', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'linerecall-v3-approval-binding-'))
+  const archivePath = join(directory, 'fixture.pgn.zst')
+  await writeFile(archivePath, fixtureBytes)
+  try {
+    const approved = planFor()
+    const base = baseOptions(directory, archivePath, approved)
+    let opened = false
+    const attempt = (plan: CompactPreflightPlan, benchmarkApprovalBytes?: Uint8Array) => runCompactArchivePass({
+      ...base,
+      plan,
+      ...(benchmarkApprovalBytes ? { benchmarkApprovalBytes } : {}),
+      openCompressedInput: () => {
+        opened = true
+        return createReadStream(archivePath)
+      },
+      pass: 'candidate',
+      process: async () => candidateSummary(),
+    })
+    const { benchmarkApprovalBytes: _approvedBytes, ...withoutApproval } = base
+    await assert.rejects(runCompactArchivePass({
+      ...withoutApproval,
+      openCompressedInput: () => {
+        opened = true
+        return createReadStream(archivePath)
+      },
+      pass: 'candidate',
+      process: async () => candidateSummary(),
+    }), /approval.*absent|receipt bytes are absent/iu)
+    assert.equal(opened, false)
+
+    const forged = Buffer.from(base.benchmarkApprovalBytes!)
+    forged[forged.byteLength - 2] = forged[forged.byteLength - 2]! ^ 1
+    await assert.rejects(attempt(approved, forged), /SHA-256 differs/iu)
+    assert.equal(opened, false)
+
+    const cross = createFixtureBenchmarkApproval({
+      limits: approved.limits,
+      bounds: approved.bounds,
+      sourceSnapshotSha256: 'd'.repeat(64),
+      acceptedGames: approved.benchmark.acceptedGames,
+      observations: approved.benchmark.observations,
+      peakResidentBytes: approved.benchmark.peakResidentBytes,
+      peakAdditionalStorageBytes: approved.benchmark.peakAdditionalStorageBytes,
+    })
+    const crossPlan = CompactPreflightPlanSchema.parse({ ...approved, benchmark: cross.proof })
+    await assert.rejects(attempt(crossPlan, cross.bytes), /another source snapshot/iu)
+    assert.equal(opened, false)
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

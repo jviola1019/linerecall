@@ -1,8 +1,8 @@
 # Unified opening-family architecture
 
-Status: implemented in the current source tree and covered by focused contract,
-domain, and component tests. It is newer than the recorded review candidate.
-No family graph or tactical shard is approved for production.
+Status: the source contracts, loaders, family routes, trainer boundary, and
+synthetic fixture suites exist. No current test pass is asserted here. No real
+family graph or tactical shard is approved for production.
 
 ## Product boundary
 
@@ -90,6 +90,30 @@ loadPuzzleShard(shardRef)
 
 The embedded schema-v2 adapter fails closed for those operations. It does not
 convert a shallow legacy line into a family graph.
+
+## Compact-v3 construction handoff
+
+Production family resources are not inferred from the review catalog. The v3
+builder starts at a reviewed legal EPD root and a strict family/side pack spec,
+then opens only a content-addressed exact-state handoff for the complete
+broadcast and Q2 corpora. It replays checkpoint chains, validates terminal
+SQLite hashes and table layouts, and reads the states without mutation.
+
+The pre-engine pass enumerates every reachable empirical learner edge with
+`N >= 500` through ply 100. A release-bound Stockfish campaign produces one
+proof for every candidate edge. Final graph construction re-runs the empirical
+traversal and rejects missing, additional, stale, or mismatched proofs. It emits
+the graph and a separate eligible-source-edge inventory; promotion requires
+exact equality. `N = 100–499` evidence may remain visible as exploratory but is
+not drillable. Hard work limits abort output rather than hiding a tail of
+eligible paths.
+
+After graph construction, the Scid campaign samples the promoted principal
+lines and records discrepancies/quarantine decisions. Puzzle promotion binds
+its own verified records and Stockfish proofs to the same release. Only the
+family-promotion index, production app manifest, and production-readiness
+receipt may hand these resources to the shipped application. Builders for this
+chain exist, but the corresponding production outputs do not.
 
 The promoted runtime resource is manifest-first. One family resource contains
 the validated `OpeningFamilyManifestV1` plus a graph resource for every
@@ -208,15 +232,53 @@ keeps the board and session visible until the user retries.
 
 Family completion and chess-card scheduling remain separate concerns.
 `FamilyCoverageEventV1` is append-only; normal SM-2 review events continue to
-derive card schedules. The current source includes an in-memory family journal,
-versioned cursor save/restore boundaries, serialized retryable cursor writes,
-and callback boundaries for durable storage. Artifact, cloud, and validated
-JSON family-cursor adapters still require release-grade integration and staging
-evidence.
+derive card schedules. The source includes an in-memory family journal,
+versioned cursor save/restore boundaries, append-only family-generation and
+pack-binding events, serialized retryable cursor writes, and a strict portable
+journal snapshot/replace capability for repositories that support transfer.
+The application-level portable JSON bundle atomically combines opening
+progress, puzzle progress, and that complete family-journal snapshot. Import
+validates and stages every section before replacement and attempts to restore
+the prior state if a later write fails.
+
+The hosted client supplies a `CloudFamilyTrainingJournalRepository` backed by
+versioned `/v1/family-training/*` endpoints. The memory and PostgreSQL server
+adapters enforce append-only event identity, logical completion deduplication,
+pack membership, monotonic same-cycle cursor progress, and bounded pagination.
+The cloud client retains validated failed writes in memory and retries the same
+immutable event or mutation identity when connectivity returns. Server account
+export includes the stored family events and cursors; the hosted pending-event
+download includes unsynchronized family records.
+
+Those source boundaries are not provider-backed release evidence. The cloud
+adapter does not implement portable snapshot replacement, a supported Claude
+Artifact family-journal adapter is not present, and pooled non-owner PostgreSQL,
+outage, quota, export/deletion, and recovery behavior still require real
+staging.
+
+Full-family and named-branch restore use the same durable generation boundary.
+Starting a named branch creates a new generation ordinal and stages its first
+exact pack-cycle binding before that generation becomes authoritative. Each
+later pack is bound to the same generation. On reload, LineRecall loads only
+the cursors named by those bindings and compares each cursor's complete path
+universe with the release-matched manifest memberships. Exactly one branch
+must explain the saved cursors. Full-family/branch ambiguity, overlapping
+branch matches, missing cursors, or paths outside the promoted graph fail
+closed. Append-only completion events restore `{packId, pathId}` keys, so
+remounts preserve the count without double counting and the first unfinished
+pack resumes automatically. A focused single-path study does not create or
+rebind a family generation.
+
+Provider-backed recovery evidence is still a release requirement; passing the
+memory-repository remount tests proves the deterministic contract, not cloud or
+Artifact durability.
 
 No implementation may use `localStorage` or IndexedDB as an undeclared
 fallback. An unsupported environment remains session-only and must offer an
-honest transfer path before production.
+honest transfer path before production. The session-memory adapter supplies
+the validated portable bundle; a storage adapter that cannot snapshot the
+complete journal must make that limitation visible instead of exporting a
+partial bundle.
 
 Tactical progress is also separate. Puzzle solves, hints, errors, elapsed time,
 and abandonment cannot change opening recall mastery.
@@ -248,11 +310,11 @@ exact-pass receipt for both corpora to every eligible-inventory source digest.
 It also enforces the `all-eligible-audited` policy with a null maximum branch
 count.
 
-That promotion index does not exist in the current workspace. The generated
-promotion report is therefore `blocked`, with zero families, packs, paths,
-eligible edges, puzzle shards, or puzzles validated for promotion. Those zeros
-describe an absent promotion input, not the review taxonomy and not a claim
-that the opening families contain no paths.
+That promotion index does not exist in the current workspace. A current audit
+must therefore block before validating any family, pack, path, eligible-edge,
+puzzle-shard, or puzzle count. If a report renders absent-input counts as zero,
+those zeros describe missing promotion input, not the review taxonomy and not
+a claim that the opening families contain no paths.
 
 The project has a zero-spend constraint. Public CI may run bounded fixtures and
 audits on standard no-cost runners, but it does not process the 87.2 GB Q2

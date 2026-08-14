@@ -22,6 +22,9 @@ import { BoardAnnotationOverlay, BoardAnnotationPanel } from './BoardAnnotations
 import { EvidenceTable, MoveComparison } from './EvidenceTable.tsx'
 import { EmptyState } from './ResourceState.tsx'
 import type { BoardAnnotation, BoardAnnotationTone } from '../../domain/board-annotations.ts'
+import type { ReviewCommitMetadata } from '../../domain/review-commit.ts'
+
+export type { ReviewCommitMetadata } from '../../domain/review-commit.ts'
 
 export interface DrillViewProps {
   line: VerifiedLine | null
@@ -35,15 +38,6 @@ export interface DrillViewProps {
   onSetManualGrading?: (enabled: boolean) => void
   onAnnouncement: (message: string) => void
   onReturnToBrowser: () => void
-}
-
-export interface ReviewCommitMetadata {
-  kind: 'review' | 'correction'
-  grade: ReviewGrade
-  lineId: string
-  nodeId: string
-  occurredAt: string
-  correctsEventId?: string
 }
 
 const GRADES: ReadonlyArray<{ grade: ReviewGrade; key: string; label: string; detail: string }> = [
@@ -252,7 +246,7 @@ export function DrillView({
   if (!line) {
     return (
       <div className="drill-view">
-        <EmptyState title="Choose a drillable variation" detail="Open the ECO browser, select an engine-checked training side, and start a drill." />
+        <EmptyState title="Training line unavailable" detail="This compatibility trainer needs an explicitly supplied verified line. Public practice starts from an opening family." />
         <button type="button" onClick={onReturnToBrowser}>Browse openings</button>
       </div>
     )

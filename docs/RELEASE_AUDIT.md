@@ -1,343 +1,204 @@
-# LineRecall unified-family release audit
+# LineRecall evidence-complete release audit
 
-Current status: **not shippable**. This document records engineering evidence,
-not an ADA, WCAG, Section 508, privacy, license, trademark, or security
-certification.
+Current decision: **not shippable**. No production artifact is approved, and
+`dist/linerecall.html` and `dist/SHIPPABLE.json` are absent. This document is an
+engineering status record, not an ADA, WCAG, Section 508, privacy, license,
+trademark, or security certification.
 
-The last retained exact-byte candidate evidence in this document was generated
-on 2026-07-20 at 3,433,826 bytes with SHA-256
-`e13d4fe0d3180a1409dacbec6e454a56791f456ed8f8ac28662c5bcc1fe06507`.
-Its exact-byte artifact audit passes the self-contained, size, offline, CSP,
-document, and embedded-snapshot checks. It remains historical review-only
-evidence. A later working-tree candidate is not covered by that hash or those
-results unless its own generated audit records match its exact bytes.
+## Evidence discipline
 
-`dist/linerecall.html` and `dist/SHIPPABLE.json` remain absent. The complete
-schema-v3 corpus, production graph, Stockfish/Scid campaign, tactical-puzzle
-promotion, connected staging, manual assistive-technology review, localization
-review, independent security review, and legal approval have not passed.
+No automated pass, test count, coverage percentage, browser result, artifact
+hash, performance result, or security finding is asserted for the current
+working tree in this document. Generated records are valid only for the exact
+candidate bytes, source snapshot, configuration, and data receipts named in
+those records. A source or documentation change makes an earlier result
+historical; editing its narrative cannot make it current.
 
-The automated evidence below applies only to the final source tree and
-candidate hash recorded by the generated audit manifests. Reports bound to
-older bytes remain historical evidence and cannot be relabeled as current. The
-final report-only release audit is expected to fail closed and must confirm
-that no production output exists.
+The current workspace has only a blocked compact-v3 foundation audit under
+`data/generated/v3`. It has no family-promotion index, production app manifest,
+production-data readiness receipt, promoted tactical shard, or production
+artifact. Older candidates and generated audit files may remain as diagnostic
+evidence, but none approves the current source.
 
-## Source changes after the recorded candidate
+The repository tracks `not_run` templates under
+`audit/templates/evidence/`. They describe required work without claiming a
+review occurred. `npm run audit:init-evidence` copies missing templates to the
+ignored `audit/evidence/` workspace and never overwrites an existing record.
+Qualified reviewers complete records there against one exact hardened
+candidate. `npm run release:evidence-receipts -- --write` then archives the
+referenced reports by digest and binds completed records to that candidate; it
+refuses stale completed evidence. Templates remain `not_run`, while generated
+and reviewer evidence remains uncommitted.
 
-The current source tree is ahead of the 2026-07-20 candidate and its retained
-evidence. These changes have not been promoted or published:
+`npm run release:audit -- --report-only` may be used to enumerate blockers. A
+report-only run deliberately records automated gates as `not_run`, cannot
+promote a release, and must leave production outputs absent.
 
-- Repertoire now uses a validated review catalog with one entry per canonical
-  opening family. The generated catalog contains 149 primary families and
-  assigns each of the 3,790 taxonomy rows exactly once.
-- Caro–Kann (110 rows), Sicilian Defence (388 rows), and Ruy Lopez (234 rows)
-  each appear once and own both available learner-side tabs. These are taxonomy
-  counts, not audited path totals.
-- Family detail and training use hash routes. A promoted graph can advance
-  autonomously across every manifest-owned pack and unfinished path for one
-  learner side, preserve due cards beyond the bounded 1,000-path session batch,
-  admit a legal alternate graph path, and record idempotent family completion
-  events.
-- Full-family coverage now records append-only `cycle_started` and `pack_bound`
-  events. Each pack receives a distinct pack-local coverage-cycle identity,
-  card and cursor lookups are pack-scoped, an unbound started cycle can recover
-  by binding its first pack, and a deliberately restarted full-family run
-  creates a new family generation before binding.
-- Family and side totals are accepted only after every referenced pack passes
-  release, root, ECO, and exact path-membership ownership checks. Branch names
-  and hierarchy come from the family manifest rather than free-text graph
-  labels. Duplicate reviewed labels collapse visually without deleting any
-  path.
-- Named-branch practice resolves primary and secondary branch memberships
-  across every same-side pack, keeps one branch-level `completed / total`
-  counter, and advances to the next sibling pack. The cross-pack branch
-  coordinator is currently React session state, however; it has no append-only
-  durable branch-cycle record from which an exact reload or remount can rebuild
-  membership and completion.
-- A rejected completion write blocks local completion and the next-pack
-  transition and exposes an accessible retry. Cursor write/restore boundaries
-  are versioned, but durable provider-backed integration still needs staging.
-- Family side and pack selectors are labelled native button groups with
-  `aria-pressed` state. They are not represented as tab widgets; the A-E ECO
-  browser remains the intentional roving-tab interface.
-- Puzzles now has a separate nine-state tactical resource and separate,
-  idempotent progress. Without a promoted shard it shows an unavailable state;
-  it does not substitute opening recall.
-- The board source now separates its semantic grid from stable, absolutely
-  positioned visual pieces. Review-harness checks cover normal moves, captures,
-  castling, en passant, promotion, queued replies, rapid reset, orientation
-  changes, reduced motion, and a paused mid-transition geometry sample.
-- The tactical review harness covers distinct resource states, sequential
-  learner/reply motion, castling, en passant, promotion, alternate mate-in-one
-  handling, evidence focus, and a 320-by-800 mobile dock that remains above the
-  fixed navigation. These records use synthetic fixtures and do not promote a
-  puzzle shard.
-- Focused regressions cover family-card uniqueness, side and pack selection,
-  multi-pack full-family and named-branch traversal, family and training deep
-  links, browser history, mobile-first catalog ordering, and tactical-route
-  isolation.
+## Source foundations present
 
-The implementation is documented in
-`docs/OPENING_FAMILY_ARCHITECTURE.md`. Because these source changes postdate the
-candidate, every old source digest, browser result, screenshot, performance
-measurement, coverage report, security review, and manual record must be
-regenerated or explicitly revalidated against new candidate bytes. The
-historical results below cannot approve this source tree.
+The following implementation boundaries exist in source. This list describes
+code and schemas, not a passing release campaign:
 
-### Current working-tree observations, not release evidence
+- Repertoire uses a canonical family catalog; Explore keeps individual ECO
+  taxonomy rows. The generated review catalog assigns all 3,790 taxonomy rows
+  to 149 primary families. Caro–Kann owns 110 review rows, Sicilian Defence
+  388, and Ruy Lopez 234. These are taxonomy/navigation counts, not graph,
+  path, sample, or opening-value results.
+- The compact-v3 pipeline has bounded candidate and exact passes,
+  content-addressed archive receipts, storage preflight, immutable checkpoints,
+  and a fail-closed exact-state handoff.
+- The family data layer can derive all empirical learner-edge candidates from
+  exact states, run a receipt-bound Stockfish campaign, rebuild graphs from the
+  same inventory, create eligible-source-edge inventories, run a stratified
+  Scid campaign, and assemble fail-closed promotion/readiness inputs.
+- Runtime family loading is manifest-first and checks release, family, side,
+  pack, root, ECO, path membership, and content-address identity before it
+  exposes totals or training.
+- Full-family training uses pack-scoped cursors and append-only generation and
+  pack-binding events. It can partition more than 1,000 paths without dropping
+  the authoritative due set and can continue between manifest-owned packs.
+- Named-branch practice can traverse primary and secondary memberships across
+  same-side packs. Exact generation-bound pack cursors and manifest memberships
+  reconstruct a unique saved branch after remount; an ambiguous full-family or
+  overlapping-branch interpretation fails closed rather than guessing.
+- The Progress interface can export and atomically replace a versioned portable
+  bundle containing opening progress, puzzle progress, and the complete family
+  journal when its active repository supports snapshot/replace. Session memory
+  implements that transfer boundary.
+- The hosted client and connected service implement family-journal sync with
+  retryable in-memory queues, strict versioned API contracts, memory and
+  PostgreSQL adapters, forced-RLS migration, append-only completion/cycle
+  events, and membership-bound cursor snapshots. This has not been exercised
+  against a real non-owner PostgreSQL staging deployment.
+- The tactical runtime has explicit loading, empty, stale, offline,
+  rate-limited, corrupt, error, disabled, and ready states, legal replay,
+  separate progress, and no opening-recall fallback.
+- The connected service includes a Lichess worker consumer and local service
+  boundaries for auth, sync, RLS, jobs, provider rate limits, export, and
+  deletion. None has provider-backed production approval.
 
-On 2026-07-29, bounded local checks on the mutable working tree reported a
-passing TypeScript check, 36 passing compact-v3 fixture cases plus three
-Windows capability skips, focused family/graph tests, and all nine current
-board, tactical, family, and mobile review-harness cases. The queued-reply
-browser check records `transitionrun` and `transitionend` ordering, and the
-midpoint check pauses motion to confirm the piece is spatially between its
-source and destination.
+Fixture suites exist for these contracts, including synthetic family graphs,
+engine/Scid evidence, puzzle promotion, board transitions, and production
+handoff construction. Those fixtures are deliberately marked synthetic. They
+are not corpus results, do not establish an opening's value or depth, and can
+never be promoted as release data.
 
-The fail-closed release controller then ran all 34 configured automated gates
-against a 3,666,600-byte review candidate with SHA-256
-`7e8e20b64d33e936a14f1b9e78fe74bb13683de54a01b34bb1342488a5928879`.
-Thirty-two automated gates passed, including the complete browser matrix,
-offline/artifact policy, CSP, SBOM, dependency/license/secret checks, hosted and
-server builds/tests, and coverage. The two expected data gates failed:
-`connected-data-foundation` and `evidence-complete-v3-production-data`.
-Three prior pass records were correctly rejected as bound to different
-candidate bytes, and eight manual/provider records remain `not_run`. The report
-is `audit/generated/release-gate.json`; it is a failed audit, not a release
-receipt. `dist/linerecall.html` and `dist/SHIPPABLE.json` are absent.
+## Data status
 
-Current coverage clears the configured code thresholds without exclusions:
-`graph-training-session.ts` has 92.44% branch coverage, the 11-file critical
-domain aggregate has 93.80% branches, and the 46-file runtime aggregate has
-80.86% branches.
+### Approved source identities
 
-The release-controller results are bound to the candidate digest shown above,
-but the standalone review-harness observations are not separately approved
-screenshot evidence. Neither set is bound to a complete real corpus or promoted
-puzzle shard, and this post-run documentation update necessarily places the
-mutable source tree ahead of the captured source snapshot. They cannot be
-counted as a release pass. Exact `pointercancel` behavior is covered at
-component level; the browser harness exercises an invalid drag and the
-keyboard/non-spatial alternatives, not a genuine browser `pointercancel`.
-Physical touch cancellation remains manual work.
+- Taxonomy: `lichess-org/chess-openings` commit
+  `17ee660257de02870636f36248e919f2e01d8e85`, CC0-1.0; 3,790 rows and all
+  500 ECO codes.
+- Broadcast source: 78 official Lichess broadcast archives through June 2026,
+  CC BY-SA 4.0.
+- Club cohort: all April–June 2026 Lichess Standard-rated archives, CC0;
+  267,333,507 published games and 87,256,474,116 compressed bytes.
+- Puzzle source: official Lichess puzzle export, CC0. The approved local source
+  receipt records 302,111,223 bytes and SHA-256
+  `5503bfaf5534518ffe3c4c3bb0ac1ae82350d117ad1a52947796096b75e6247e`.
+- Verification tools: Stockfish 18, GPL-3.0-only, and pinned Scid ECO data,
+  GPL-2.0-only, both offline audit tools whose binaries/data do not ship.
 
-## Product and interface in the recorded candidate
+The older schema-v2 broadcast diagnostic recorded 1,146,297 records seen,
+800,176 accepted, 346,121 rejected, and zero duplicates. It targeted a shallow
+taxonomy-era graph. These values are historical diagnostics only; they are not
+compact-v3 totals, not Q2 results, and not a production backtest.
 
-- Distinct **Today**, **Repertoire**, **Puzzles**, **Explore**, and
-  **Progress** destinations, plus an on-demand **Data & Licenses** view.
-- Board-first responsive layouts: desktop rail/board/context panel and mobile
-  header, viewport-sized board, status strip, thumb navigation, and accessible
-  bottom-sheet evidence.
-- Continuous line walks with inferred Good/Hard/Again grades. Six clean moves
-  require six chess inputs and no grade-button confirmations; optional manual
-  pacing remains available.
-- Exact-position book/transposition handling, legal alternatives, unsupported
-  deviation correction, and no arbitrary repertoire switching or FEN snapback.
-- Search across all 500 ECO codes by name, ECO, SAN/UCI sequence, or bounded
-  pasted PGN.
-- Pinned Chessnut SVG pieces plus an original movement guide with a source
-  ring, route, destination bracket, semantic marker, distinct stroke patterns,
-  labels, and textual equivalents. Meaning never relies on color alone.
-- Click-click, Pointer Events drag/drop, keyboard roving focus, Enter/Space,
-  legal-target announcements, and a non-spatial legal-move picker, all backed
-  by `chess.js` legality.
-- Opening-recall puzzle sessions and personal board annotations are separate
-  from opening mastery. They are visibly identified as repertoire-derived
-  positions, not falsely represented as the unprocessed Lichess puzzle corpus.
-- Dark/light themes, reduced motion, forced colors, 320 CSS-pixel reflow,
-  44-by-44 non-spatial targets, local system typography, and no
-  remote images, fonts, telemetry, analytics, or runtime data API.
-- Deterministic 160 ms CSS view motion. The draft native View Transition API
-  is intentionally not used because current WebKit can expose it while leaving
-  an input-blocking transition unresolved.
+The complete compact-v3 broadcast replay and the full Q2 candidate/exact passes
+have not produced final receipts. Therefore there are no release-valid
+accepted, rejected, deduplicated, edge, sample, path, depth, rating-band, or
+time-control totals to report. No number is estimated to fill that gap.
 
-## Audited embedded data
+## Data promotion chain
 
-The source/license manifest predates ingestion and keeps program licensing
-separate from CC BY-SA-derived statistics.
+Production content must pass this exact order:
 
-- Taxonomy: pinned `lichess-org/chess-openings` commit
-  `17ee660257de02870636f36248e919f2e01d8e85`, CC0-1.0; 3,790 rows across
-  all 500 ECO codes.
-- Broadcast backtest: all 78 official Lichess broadcast archives through June
-  2026, CC BY-SA 4.0; 1,146,297 records seen, 800,176 accepted, zero
-  duplicates, and 346,121 rejected.
-- Exact rejection totals: 19,698 malformed PGNs; 188,097 invalid White
-  ratings; 86,372 invalid results; 40,491 invalid Black ratings; 10,523
-  non-Standard variants; and 940 non-initial positions. These totals sum to
-  346,121 and accepted plus rejected equals records seen.
-- Current snapshot: 7,824 normalized positions, 792 taxonomy terminal lines at
-  `N>=500`, 1,155 trained-side variants, 1,141 drillable variants, 14
-  quarantined variants, 500 checksum-protected ECO partitions, and 751 shared
-  evidence shards.
-- The current local workspace retains the read-only schema-v2 graph at
-  `data/generated/v2/evidence-graph.sqlite` (18,733,826,048 bytes). It is
-  ignored, is not committed to the public repository, and is not a
-  production-v3 input or release artifact.
+1. Complete and reconcile the broadcast and Q2 compact-v3 exact states.
+2. Create the immutable exact-family handoff.
+3. Enumerate every reachable empirical learner candidate edge with `N >= 500`.
+4. Run Stockfish 18 at the pinned settings for every candidate edge.
+5. Rebuild family graphs from the unchanged exact states and proof inventory.
+6. Prove graph drill-edge equality with each eligible-source-edge inventory.
+7. Run the stratified Scid cross-check and quarantine conflicting content.
+8. Ingest, verify, and promote the linked puzzle subset and per-node proofs.
+9. Build and audit the family promotion index.
+10. Build the production app manifest and production-data readiness receipt.
+11. Run all current automated and manual release gates against exact bytes.
 
-These broadcast values are not relabeled as club-player results. The existing
-snapshot's Stockfish/Scid metadata remains auditable for that snapshot only;
-it cannot clear the planned deeper-pack verification campaign.
+The builders fail rather than truncate eligible branches at configured node,
+edge, or path safety limits. `N = 100–499` continuations may be visible as
+exploratory evidence but are not audited book drill moves. Every eligible
+branch remains available; ranking changes order, not visibility. Paths end only
+at an evidence terminal, a quarantined/insufficient continuation, or the
+absolute ply-100 cap, which must be labeled `depth_capped` when theory could
+continue.
 
-The embedded app manifest is `linerecall-app-wire-v2`. The production-data
-gate now requires a digest-bound `linerecall-app-wire-v3` manifest whose policy
-retains every eligible audited practice branch and has no fixed branch cap.
-Therefore the current snapshot is categorically review-only even if its legacy
-checks pass; it cannot be promoted by editing manual evidence records.
-
-## Historical 2026-07-20 automated engineering evidence
-
-- Offline-client, hosted-client, and connected-server TypeScript checks pass.
-  The source-tree digest is generated after every source or documentation
-  change rather than copied into this self-referential document.
-- Tests pass: 72 client/component, 105 data/verification, 102 chess/domain, 41
-  security-boundary, 7 hosted-client, and 159 connected-server cases.
-- Browser matrix: Chromium passes 36 of 36; Firefox passes 32 with four
-  intentional Chromium-only capability skips; WebKit passes 32 with the same
-  four skips. All three final reports have zero unexpected and zero flaky
-  cases. A pre-fix WebKit run exposed a real deferred-download race; the final
-  implementation retains the temporary export anchor and object URL for a
-  bounded interval, and repeated plus full export/import flows pass in every
-  engine.
-- Thirteen axe scans per browser cover the five primary destinations, Data &
-  Licenses, training, light mode, reduced motion, forced colors, move feedback,
-  and the mobile statistics dialog. Each engine reports zero violations. Each
-  also reports zero moderate findings and retains 10 serious-impact
-  `color-contrast` incomplete results covering 342 nodes. Those incomplete
-  results are not passes and remain part of the manual
-  accessibility/contrast blocker.
-- Critical client/domain coverage passes for all 11 required modules at 93.21%
-  aggregate branch and 97.92% aggregate function coverage. Overall merged
-  runtime coverage is 82.22% branch, 88.79% function, and 91.28% line. All 23
-  security-critical server modules meet the per-file 90% branch and function
-  thresholds; connected-server aggregate branch coverage is 94.44%.
-- At 4x mobile CPU throttling, the interactive shell is 506.9 ms, first
-  contentful paint is 1,108 ms, and CLS is 0.000071. Sampled uncached ECO loads
-  are at most 155.1 ms in Chromium, 244 ms in Firefox, and 271 ms in WebKit.
-  Move-feedback p95 is 17 ms, 32 ms, and 34 ms respectively. Strict evidence
-  validation has a 28.28 ms median.
-- Automated security outputs cover 101 source/config files and 358
-  secret-scanned files, report no recognized credential and no high or critical
-  production dependency vulnerability, allowlist 734 dependency packages, and
-  produce an 808-component CycloneDX 1.5 SBOM.
-- The exact artifact is 3,433,826 bytes and passes all six artifact checks.
-  Offline browsing, drills, included review-only opening positions, statistics,
-  session-only behavior, progress export/import, and corrupt-import rejection
-  pass against the same candidate in all three browsers.
-- Each browser report retains 23 review-only PNG attachments covering routes,
-  themes, viewports, training, annotations, deviations, and the 50% piece-glide
-  frame. Human visual approval has not been performed and remains a blocker.
-- The generated immutable route, security headers, CSP, MIME, cache policy, and
-  artifact checksum are regenerated and audited together before the final
-  report-only release gate.
-
-These are local automated engineering results, not independent penetration
-testing, provider-backed staging, legal certification, localization approval,
-or manual accessibility evidence.
-
-## Connected implementation status
-
-The repository contains a deployable React hosted client, Fastify API,
-PostgreSQL migrations with forced RLS, Redis/S3/KMS/SES/AWS Batch adapters,
-Better Auth configuration, append-only review-event scheduling, immutable
-repertoire revisions and shares, account export/deletion boundaries, durable
-`pg-boss` import jobs, and provider-neutral OpenTofu modules.
-
-The Lichess connection implements no-scope PKCE S256, exact redirect/state
-validation, encrypted server-side tokens, revocation behavior, a mandatory
-60-second 429 cooldown, and a bounded NDJSON parser that retains anonymized
-opening aggregates through ply 30. A dedicated durable worker now consumes the
-scheduled aggregation/cursor jobs with heartbeat, cancellation, retry, and
-dead-letter behavior. This has passed local automated tests only; connected-game
-analytics are not deployed or represented as production-ready.
+The Caro–Kann release regression requires one audited Black family graph across
+B10–B19, at least eight drillable paths, the Advance, Exchange, Panov,
+Classical, and Two Knights families, and at least one validated Core path with
+ten learner decisions. No real promoted Caro–Kann graph currently exists, so no
+Core, path-count, depth, or value claim is permitted.
 
 ## Hard release blockers
 
-1. **Q2 club cohort:** the approved April-June 2026 Lichess Standard corpus is
-   87,256,474,116 compressed bytes and 267,333,507 published games. It has not
-   been fully processed. The compact-v3 adapter can now stream each exact
-   approved archive separately for both passes without retaining source files,
-   enforces live SQLite page caps on disposable candidate and exact working
-   copies, disables their on-disk rollback journals, inventories retained work
-   before preflight, and discards `SQLITE_FULL` output before checkpoint or
-   promotion. No real remote pass or approved complete-broadcast resource
-   benchmark has run. The cumulative game-key ledger, complete ply-0-to-30
-   baseline, and repeated immutable states can still exceed a broadcast-derived
-   plan at Q2 scale. The caps make a run fail safely; they do not establish
-   capacity, runtime, exact totals, or completion feasibility.
-2. **Production graph and embedded contract:** no complete schema-v3 readiness
-   receipt or `linerecall-app-wire-v3` embedded manifest exists. The current
-   shallow/top-three-era v2 snapshot is explicitly rejected for production.
-   No promoted v3 Caro-Kann B10-B19 graph exists, so there is no auditable
-   real-corpus path count, named-family count, or completion total. Synthetic
-   graph fixtures prove autonomous traversal mechanics only. The review
-   candidate must not claim or display an "all Caro-Kann variations" count,
-   and the Caro-Kann Core label remains blocked. The 149-family review catalog
-   is not a substitute for this graph or for source-edge inventory equality.
-   The dedicated `release:family-promotion` audit is currently blocked because
-   `data/generated/v3/family-promotion-index.json` does not exist. Consequently
-   it has validated zero promotable families, packs, paths, eligible edges,
-   puzzle shards, and puzzles. Those zeros are an absent-input result, not an
-   opening-content statistic.
-3. **Puzzle verification:** the downloaded Lichess puzzle archive is
-   302,111,223 bytes with locally computed SHA-256
-   `5503bfaf5534518ffe3c4c3bb0ac1ae82350d117ad1a52947796096b75e6247e`,
-   ETag `"6a44d6af-1201d9f7"`, and Last-Modified
-   `Wed, 01 Jul 2026 08:58:23 GMT`. The local receipt was approved by the
-   workspace owner on 2026-07-15 and is bound to the exact source and filter
-   manifest. Tactical-shard publication remains prohibited because the complete
-   compact v3 association graph and per-learner-node Stockfish 18 campaign do
-   not exist. The source Puzzles route therefore remains explicitly unavailable.
-4. **New verification campaign:** deeper Core-pack Stockfish 18 analysis and
-   the stratified Scid audit have not completed against the compact schema-v3
-   graph.
-5. **Connected operations:** the dedicated Lichess worker, renewable heartbeat,
-   cancellation, retry/dead-letter handling, and cursor runner are implemented
-   and covered locally. Provider-backed staging has not exercised PostgreSQL/RLS
-   pooling, Redis failure, SES magic links, passkeys, OAuth, S3/KMS, Batch/jobs,
-   Artifact storage, quotas, migrations, account deletion, backups, or restore.
-6. **Durable family and branch cycles:** full-family generation and pack binding
-   have append-only repository contracts, but only the in-memory application
-   adapter has been exercised here. Artifact, cloud, and JSON-backed family
-   cursor behavior still needs implementation or exact staging evidence.
-   Named-branch cross-pack state has no durable append-only cycle identity at
-   all, so a reload/remount cannot yet reconstruct the exact branch membership,
-   completed paths, and next pack. This is a release blocker even though the
-   live-session traversal tests pass.
-7. **Infrastructure validation:** the OpenTofu CLI is unavailable locally, so
-   the reference infrastructure has not passed `tofu validate` or deployment.
-8. **Manual accessibility:** qualified NVDA/Chrome/Firefox,
-   VoiceOver/Safari/iOS, TalkBack/Chrome/Android, actual zoom, contrast,
-   forced-colors, touch, RTL, and complete keyboard evidence is `not_run`.
-9. **Legal/product approval:** trademark, accessibility representations,
-   application/data licenses, privacy/terms, age handling, sharing/moderation,
-   subprocessors, and seven production locales have not received qualified
-   approval. Chess.com functionality remains disabled.
+1. **Complete corpora.** The full compact-v3 broadcast and April–June 2026
+   Standard candidate/exact passes, digest verification, accounting, resource
+   benchmark, and final receipts are incomplete. Safe storage caps prove only
+   that a run can fail closed; they do not prove zero-spend capacity or
+   completion time.
+2. **Family evidence and verification.** No real engine-candidate inventory,
+   Stockfish campaign, rebuilt family graph, eligible-edge reconciliation,
+   stratified Scid report, or family-promotion index has been promoted.
+3. **Puzzles.** The source archive receipt is approved, but production
+   ingestion requires complete exact corpora, a release-matched family
+   association database, and a real Stockfish campaign. No real candidate
+   manifest, proof inventory, promoted shard, or puzzle-promotion receipt
+   exists.
+4. **Current automated release evidence.** Type checks, unit/component suites,
+   the full browser matrix, axe attachments, coverage, performance, offline,
+   CSP/artifact, dependency, license, secret, SBOM, CodeQL, and signed-build
+   checks must be rerun against the final source and candidate. This document
+   does not claim those runs have passed.
+5. **Persistence and connected staging.** The cloud family journal and portable
+   session-memory bundle are implemented source boundaries, but the supported
+   Artifact family-journal adapter is absent and the cloud path has no live
+   staging evidence. Append-only review sync, account/auth flows, pooled
+   non-owner RLS, Redis, object storage, email, passkeys, OAuth, quotas, failure
+   recovery, export/deletion, backup, and restore still require live staging.
+   The cross-pack named-branch reload contract is implemented through durable
+   generation bindings and fail-closed manifest reconstruction, but it has no
+   provider-backed staging evidence yet.
+6. **Accessibility.** Qualified NVDA with Chrome and Firefox, VoiceOver with
+   Safari on a physical iPhone, TalkBack with Chrome on a physical Android
+   device, keyboard, actual zoom, contrast, forced-colors, touch, RTL, and
+   announcement evidence remains `not_run`.
+7. **Localization, editorial, and visual review.** All seven locale catalogs,
+   Arabic RTL, primary product copy, screenshots, responsive layouts, and
+   animation baselines require identified human reviewers and exact-candidate
+   records.
+8. **Security review.** Automated checks do not replace an independent review
+   of the exact source/candidate or provider-backed auth, authorization,
+   cryptography, deployment, recovery, and abuse boundaries.
+9. **Legal approval.** Trademark, accessibility representations, privacy,
+   terms, age handling, sharing/moderation, licenses, and subprocessors require
+   qualified review. Chess.com-specific functionality remains disabled.
 
 ## No-production and no-spend posture
 
-- `dist/linerecall.html`, `dist/SHIPPABLE.json`, GitHub Pages deployment,
-  production accounts, and cloud sync remain disabled.
-- The public GitHub repository may use standard no-cost runners for bounded
-  fixtures, static checks, audits, and candidate bundles only.
-- The full Q2 ingestion and engine campaign do not run in GitHub Actions. No
-  paid runner, paid object store, paid database, paid compute, metered API, or
-  connected production host is authorized.
-- AWS and OCI modules remain unapplied reference infrastructure. Local server
-  tests do not constitute a production deployment.
-- A billing event of one dollar or more is a stop condition unless the owner
-  makes a new written decision.
+- Review candidates may exist under `build/candidate`; they are never labeled
+  production.
+- `dist/linerecall.html`, `dist/SHIPPABLE.json`, Pages deployment, production
+  accounts, and cloud sync remain disabled.
+- GitHub Actions may run bounded fixtures and audits on standard no-cost public
+  runners. It does not run the 87.2 GB Q2 ingestion or the full engine campaign.
+- AWS and OCI/OpenTofu are unapplied reference configurations. Local validation
+  or mocks do not constitute deployment or staging.
+- No paid runner, storage, database, compute, API, or host is authorized. A
+  billing event of one dollar or more is a stop condition without a new written
+  owner decision.
 
-## Fail-closed launcher behavior
-
-- `npm run open` verifies a released artifact and manifest; it refuses while
-  release gates fail.
-- `npm run open:dev` starts Vite on loopback for development.
-- `./open-linerecall.ps1 -Candidate` opens the review candidate explicitly.
-
-No launcher bypasses a failed release gate or labels the candidate production.
-The next work is the Q2 ingestion, approved puzzle pipeline, new Stockfish/Scid
-campaign, provider-backed worker and connected-staging exercise,
-physical/manual accessibility campaign, localization review, independent
-security assessment, and qualified legal sign-off.
+`npm run open` verifies a released artifact and refuses while gates fail.
+`npm run open:dev` starts the source application on loopback.
+`open-linerecall.ps1 -Candidate` opens a review candidate only when that status
+is requested explicitly. None of these paths may bypass a failed release gate.

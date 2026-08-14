@@ -123,10 +123,10 @@ describe('accessible chess input', () => {
 })
 
 describe('opening browser and evidence', () => {
-  test('searches text/moves/PGN and starts only an audited drillable variant', async () => {
+  test('searches text/moves/PGN and hands the selected taxonomy line to canonical family navigation', async () => {
     const user = userEvent.setup()
     const onSearch = vi.fn()
-    const onDrill = vi.fn()
+    const onOpenFamily = vi.fn()
     const resource: PartitionResource = { status: 'ready', value: c20, error: null }
     const announce = vi.fn()
     const { container } = render(
@@ -141,7 +141,7 @@ describe('opening browser and evidence', () => {
         onSelectLine={vi.fn()}
         onSelectVariant={vi.fn()}
         onSelectSearchResult={onSearch}
-        onStartDrill={onDrill}
+        onOpenFamily={onOpenFamily}
         onRetryPartition={vi.fn()}
         onAnnouncement={announce}
       />,
@@ -168,8 +168,9 @@ describe('opening browser and evidence', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(/malformed|does not contain/u)
     expect(announce).not.toHaveBeenLastCalledWith(expect.stringMatching(/^Search error:/u))
 
-    await user.click(screen.getByRole('button', { name: 'Start spaced-repetition drill' }))
-    expect(onDrill).toHaveBeenCalledWith(drillLine)
+    expect(screen.queryByRole('button', { name: 'Start spaced-repetition drill' })).toBeNull()
+    await user.click(screen.getByRole('button', { name: 'Open opening family' }))
+    expect(onOpenFamily).toHaveBeenCalledWith(drillLine.sourceLineId)
   }, 15_000)
 
   test('renders loading, empty, error, low-sample, and no-game states', async () => {
@@ -277,7 +278,9 @@ describe('drill, progress, provenance, and top-level state', () => {
       ).card,
       repetitions: 1,
       intervalDays: 30,
-      dueAt: '2026-08-10T00:00:00.000Z',
+      // Keep the reviewed card outside the due set regardless of when the
+      // regression suite is run; only the remaining new cards should be due.
+      dueAt: '2099-08-10T00:00:00.000Z',
     }
     progress.cards[card.cardId] = card
     progress.openingStreaks[drillLine.sourceLineId] = { current: 3, lastLocalDate: '2026-07-11' }
@@ -386,6 +389,35 @@ describe('drill, progress, provenance, and top-level state', () => {
       expect(container.querySelector('.view-stage')).toHaveAttribute('data-view', destination.view)
       expect(container.querySelectorAll('.primary-nav [aria-current="page"]')).toHaveLength(1)
     }
+  })
+
+  test('routes an Explore taxonomy row to its one canonical opening family', async () => {
+    const user = userEvent.setup()
+    const matchingFamilies = core.reviewFamilyCatalog.families.filter((family) =>
+      family.taxonomyLineIds.includes(drillLine.sourceLineId))
+    expect(matchingFamilies).toHaveLength(1)
+    const family = matchingFamilies[0]!
+    const dataSource: OpeningDataSource = {
+      initialize: vi.fn(async () => core),
+      loadPartition: vi.fn(async (eco) => eco === 'A00' ? a00 : c20),
+      loadAudit: vi.fn(async () => audit),
+    }
+
+    render(<App dataSource={dataSource} />)
+    expect(await screen.findByRole('heading', { name: 'Ready when you are.' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Explore' }))
+    await user.click(screen.getByRole('tab', { name: /Volume C:/u }))
+    await user.click(within(screen.getByRole('listbox', { name: 'ECO opening codes' })).getByRole('option', { name: /^C20/u }))
+    const lineList = await screen.findByRole('listbox', { name: 'C20 opening lines' })
+    const option = within(lineList).getAllByRole('option').find((candidate) =>
+      candidate.textContent?.includes(drillLine.name))
+    if (!option) throw new Error('Expected taxonomy line is absent from Explore')
+    await user.click(option)
+
+    expect(screen.queryByRole('button', { name: 'Start spaced-repetition drill' })).toBeNull()
+    await user.click(screen.getByRole('button', { name: 'Open opening family' }))
+    expect(window.location.hash).toBe(`#/repertoire/${family.id}`)
+    expect(await screen.findByRole('heading', { level: 1, name: family.canonicalName })).toBeVisible()
   })
 
   test('groups Repertoire by family and accepts only an explicitly supplied family graph', async () => {

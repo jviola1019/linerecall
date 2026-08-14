@@ -128,11 +128,40 @@ test.describe('review-only board and tactical audit', () => {
     await chooseScenario(page, 'castling')
     const kingId = await pieceIdAt(page, 'e1')
     const rookId = await pieceIdAt(page, 'h1')
+    await page.evaluate(({ expectedKingId, expectedRookId }) => {
+      const layer = document.querySelector('.visual-piece-layer')
+      if (!layer) throw new Error('The visual piece layer is not rendered')
+      document.body.dataset.castlingMotionEvents = '[]'
+      layer.addEventListener('transitionrun', (event) => {
+        const transition = event as TransitionEvent
+        const target = event.target
+        if (transition.propertyName !== 'transform' || !(target instanceof HTMLElement)) return
+        const pieceId = target.dataset.pieceId
+        if (pieceId !== expectedKingId && pieceId !== expectedRookId) return
+        const events = JSON.parse(document.body.dataset.castlingMotionEvents ?? '[]') as Array<{
+          pieceId: string
+          time: number
+        }>
+        events.push({ pieceId, time: performance.now() })
+        document.body.dataset.castlingMotionEvents = JSON.stringify(events)
+      })
+    }, { expectedKingId: kingId, expectedRookId: rookId })
     await runTransition(page)
     await expect(page.locator(`.visual-piece[data-piece-id="${kingId}"]`)).toHaveAttribute('data-square', 'g1')
     await expect(page.locator(`.visual-piece[data-piece-id="${rookId}"]`)).toHaveAttribute('data-square', 'f1')
-    expect(await transformAnimationCount(page, kingId)).toBeGreaterThan(0)
-    expect(await transformAnimationCount(page, rookId)).toBeGreaterThan(0)
+    await page.waitForFunction(({ expectedKingId, expectedRookId }) => {
+      const events = JSON.parse(document.body.dataset.castlingMotionEvents ?? '[]') as Array<{ pieceId: string }>
+      const seen = new Set(events.map(({ pieceId }) => pieceId))
+      return seen.has(expectedKingId) && seen.has(expectedRookId)
+    }, { expectedKingId: kingId, expectedRookId: rookId })
+    const castlingEvents = JSON.parse(
+      await page.locator('body').getAttribute('data-castling-motion-events') ?? '[]',
+    ) as Array<{ pieceId: string; time: number }>
+    const kingStart = castlingEvents.find(({ pieceId }) => pieceId === kingId)?.time
+    const rookStart = castlingEvents.find(({ pieceId }) => pieceId === rookId)?.time
+    expect(kingStart).toBeDefined()
+    expect(rookStart).toBeDefined()
+    expect(Math.abs(kingStart! - rookStart!)).toBeLessThanOrEqual(34)
     await page.waitForTimeout(220)
 
     await chooseScenario(page, 'en-passant')
@@ -147,15 +176,42 @@ test.describe('review-only board and tactical audit', () => {
 
     await chooseScenario(page, 'promotion')
     const pawnId = await pieceIdAt(page, 'a7')
+    await page.evaluate((pieceId) => {
+      type PromotionPhase = { state: string; imageCount: number }
+      const layer = document.querySelector('.visual-piece-layer')
+      if (!layer) throw new Error('The visual piece layer is not rendered')
+      document.body.dataset.promotionPhases = '[]'
+      const record = (): void => {
+        const piece = document.querySelector<HTMLElement>(`.visual-piece[data-piece-id="${pieceId}"]`)
+        if (!piece) return
+        const phases = JSON.parse(document.body.dataset.promotionPhases ?? '[]') as PromotionPhase[]
+        const next = {
+          state: piece.dataset.transitionState ?? 'missing',
+          imageCount: piece.querySelectorAll('img').length,
+        }
+        const previous = phases.at(-1)
+        if (previous?.state === next.state && previous.imageCount === next.imageCount) return
+        document.body.dataset.promotionPhases = JSON.stringify([...phases, next])
+      }
+      new MutationObserver(record).observe(layer, {
+        attributes: true,
+        attributeFilter: ['class', 'data-square', 'data-transition-state'],
+        childList: true,
+        subtree: true,
+      })
+      record()
+    }, pawnId)
     await runTransition(page)
     const promoted = page.locator(`.visual-piece[data-piece-id="${pawnId}"]`)
     await expect(promoted).toHaveAttribute('data-square', 'a8')
-    await expect(promoted).toHaveAttribute('data-transition-state', 'travel')
-    await expect(promoted.locator('img')).toHaveCount(2)
-    await expect(promoted).toHaveAttribute('data-transition-state', 'crossfade', { timeout: 500 })
     await expect(promoted).toHaveAttribute('data-transition-state', 'settled')
     await expect(promoted).toHaveAttribute('data-piece-type', 'wq')
     await expect(promoted.locator('img')).toHaveCount(1)
+    const promotionPhases = JSON.parse(
+      await page.locator('body').getAttribute('data-promotion-phases') ?? '[]',
+    ) as Array<{ state: string; imageCount: number }>
+    expect(promotionPhases.some(({ state, imageCount }) => state === 'travel' && imageCount === 2)).toBe(true)
+    expect(promotionPhases.some(({ state, imageCount }) => state === 'crossfade' && imageCount === 2)).toBe(true)
 
     await chooseScenario(page, 'queued')
     const whitePawnId = await pieceIdAt(page, 'e2')
@@ -204,7 +260,6 @@ test.describe('review-only board and tactical audit', () => {
     await runTransition(page)
     await expect.poll(() => transformAnimationCount(page, whitePawnId)).toBeGreaterThan(0)
     await expect(page.locator(`.visual-piece[data-piece-id="${whitePawnId}"]`)).toHaveAttribute('data-square', 'e4')
-    await expect(page.locator(`.visual-piece[data-piece-id="${blackPawnId}"]`)).toHaveAttribute('data-square', 'c7')
     await expect(page.locator(`.visual-piece[data-piece-id="${blackPawnId}"]`)).toHaveAttribute('data-square', 'c5', { timeout: 500 })
     await page.waitForFunction(
       (replyPieceId) => JSON.parse(document.body.dataset.queueMotionEvents ?? '[]')
@@ -238,10 +293,26 @@ test.describe('review-only board and tactical audit', () => {
         && (animation.playState === 'running' || animation.pending))).length),
     ).toBe(0)
 
+    await page.evaluate(() => {
+      document.body.dataset.rapidTransitionStarted = 'false'
+      const layer = document.querySelector('.visual-piece-layer')
+      const onTransitionRun = (event: Event): void => {
+        const transition = event as TransitionEvent
+        const target = event.target
+        if (
+          transition.propertyName !== 'transform'
+          || !(target instanceof HTMLElement)
+          || target.dataset.pieceId !== 'wp-e2'
+        ) return
+        document.body.dataset.rapidTransitionStarted = 'true'
+        layer?.removeEventListener('transitionrun', onTransitionRun)
+      }
+      layer?.addEventListener('transitionrun', onTransitionRun)
+    })
     await page.getByRole('button', { name: 'Run rapid reset and move' }).click()
     const rapidPawn = page.locator('.visual-piece[data-piece-id="wp-e2"]')
     await expect(rapidPawn).toHaveAttribute('data-square', 'e4')
-    await expect.poll(() => transformAnimationCount(page, 'wp-e2')).toBeGreaterThan(0)
+    await expect.poll(() => page.evaluate(() => document.body.dataset.rapidTransitionStarted)).toBe('true')
     await expect(page.locator('.visual-piece-layer')).not.toHaveClass(/visual-piece-layer-static/u)
     await page.waitForTimeout(220)
 

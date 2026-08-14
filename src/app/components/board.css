@@ -38,6 +38,68 @@
   pointer-events: none;
 }
 
+.movement-guide-badge circle {
+  fill: color-mix(in srgb, var(--surface) 88%, transparent);
+  stroke: currentColor;
+  stroke-width: 1.15;
+  vector-effect: non-scaling-stroke;
+}
+
+.movement-guide-badge text {
+  fill: currentColor;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 3.2px;
+  font-weight: 700;
+  text-anchor: middle;
+  dominant-baseline: central;
+  paint-order: stroke;
+  stroke: color-mix(in srgb, var(--surface) 82%, transparent);
+  stroke-width: 0.45px;
+}
+
+.movement-guide-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0.45rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.movement-guide-legend li {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.45rem;
+  border: 1px solid var(--border);
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.movement-guide-legend li > span {
+  display: grid;
+  width: 1.2rem;
+  height: 1.2rem;
+  place-items: center;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  color: var(--text);
+  font-weight: 700;
+}
+
+.movement-guide-legend li[data-guide="playable"],
+.movement-guide-legend li[data-guide="hint"] { border-style: dashed; }
+.movement-guide-legend li[data-guide="inaccuracy"],
+.movement-guide-legend li[data-guide="mistake"],
+.movement-guide-legend li[data-guide="unverified_deviation"] { border-style: dotted; }
+
+.visual-piece-promoting .piece-promotion-from,
+.visual-piece-promoting .piece-promotion-to {
+  transition-duration: 160ms;
+}
+
 .annotation-shape {
   fill: none;
   stroke-width: 2.35;
@@ -104,7 +166,18 @@
 }
 
 @media (max-width: 600px) {
-  .chessboard-overlay-frame { width: calc(100vw - 1.1rem); }
+  .board-region {
+    max-width: 100%;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: thin;
+  }
+  .chessboard-overlay-frame {
+    /* 356px leaves a 352px inner grid after the frame border: 44px per
+       semantic square at the 360px regression viewport. */
+    width: 22.25rem;
+    max-width: none;
+  }
   .annotation-form { grid-template-columns: 1fr; }
   .annotation-actions { grid-column: 1; display: grid; }
 }
@@ -113,7 +186,9 @@
   .annotation-shape,
   .annotation-marker,
   .annotation-start-square,
-  .annotation-cursor-square {
+  .annotation-cursor-square,
+  .movement-guide-badge circle,
+  .movement-guide-badge text {
     filter: none;
     stroke: CanvasText;
     fill: CanvasText;
@@ -124,4 +199,5 @@
   .annotation-shape.annotation-warning { stroke-dasharray: 1.5 3.2; }
   .annotation-start-square,
   .annotation-cursor-square { fill: none; }
+  .movement-guide-badge circle { fill: Canvas; }
 }

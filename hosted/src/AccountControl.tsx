@@ -10,6 +10,9 @@ export interface AccountControlProps {
   session: AuthSession | null
   sync: ConnectedSyncClient | null
   syncState: SyncState | null
+  queuedFamilyCount?: number
+  onRetryFamily?: () => Promise<void>
+  onExportQueued?: () => void
   onSession: (session: AuthSession | null) => void
 }
 function failureMessage(error: unknown): string {
@@ -19,7 +22,9 @@ function failureMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'The account request could not be completed.'
 }
 
-export function AccountControl({ auth, session, sync, syncState, onSession }: AccountControlProps): React.JSX.Element {
+export function AccountControl({
+  auth, session, sync, syncState, queuedFamilyCount = 0, onRetryFamily, onExportQueued, onSession,
+}: AccountControlProps): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [email, setEmail] = useState('')
@@ -138,8 +143,21 @@ export function AccountControl({ auth, session, sync, syncState, onSession }: Ac
               <h3 id="sync-status-title">Sync status</h3>
               <p role="status">{syncState?.message ?? 'Preparing cloud sync.'}</p>
               <div className="inline-controls">
-                <button type="button" disabled={busy || !sync} onClick={() => { void sync?.flush() }}>Retry sync</button>
-                <button type="button" className="secondary-button" disabled={!sync || sync.pendingCount === 0} onClick={() => sync?.exportUnsynced()}>Export queued reviews</button>
+                <button type="button" disabled={busy || !sync} onClick={() => {
+                  void run(async () => {
+                    await Promise.all([sync?.flush(), onRetryFamily?.()])
+                    setNotice('Queued study data was offered to the sync service.')
+                  })
+                }}>Retry sync</button>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={!sync || sync.pendingCount + queuedFamilyCount === 0}
+                  onClick={() => {
+                    if (onExportQueued) onExportQueued()
+                    else sync?.exportUnsynced()
+                  }}
+                >Export queued study data</button>
               </div>
             </section>
             <section aria-labelledby="add-passkey-title">

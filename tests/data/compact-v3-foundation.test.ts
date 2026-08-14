@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import {
   ADAPTIVE_EVIDENCE_MAX_PLY,
+  COMPACT_ADAPTER_STATE_SCHEMA_VERSION,
   COMPACT_MINIMUM_FREE_RESERVE_BYTES,
   COMPACT_STORAGE_MODEL,
   CompactArchiveCheckpointSchema,
@@ -121,6 +122,7 @@ function passReceipt(pass: 'candidate' | 'exact'): CompactPassReceipt {
       chessJs: '1.4.0',
       zstd: 'node-zstd',
       sourceSnapshotSha256: 'd'.repeat(64),
+      adapterStateSchemaVersion: COMPACT_ADAPTER_STATE_SCHEMA_VERSION,
     },
   }
   return CompactPassReceiptSchema.parse(pass === 'candidate' ? {
@@ -136,6 +138,7 @@ function passReceipt(pass: 'candidate' | 'exact'): CompactPassReceipt {
   } : {
     ...base,
     pass,
+    priorExactStateSha256: null,
     finalCandidateSetReceiptSha256: 'e'.repeat(64),
     completeBaselineObservationsRetained: 700,
     adaptiveCandidateObservationsRetained: 200,

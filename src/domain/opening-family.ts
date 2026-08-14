@@ -19,7 +19,7 @@ export const TaxonomyLineIdSchema = z.string().regex(/^tax_[a-f0-9]{24}$/u)
 export const FamilyReleaseIdSchema = z.string().regex(/^[a-z0-9][a-z0-9._-]{2,159}$/u)
 
 const FAMILY_TEXT_MAX = 128
-const SAFE_RESOURCE_PATH = /^(?!\/)(?!.*(?:^|\/)\.{1,2}(?:\/|$))[a-z0-9][a-z0-9_./-]{0,238}\.json\.gz$/u
+const SAFE_RESOURCE_PATH = /^(?!\/)(?!.*\/\/)(?!.*(?:^|\/)\.{1,2}(?:\/|$))[a-z0-9][a-z0-9_./-]{0,238}\.json\.gz$/u
 
 function isCanonicalText(value: string): boolean {
   return value === value.normalize('NFC').trim().replace(/\s+/gu, ' ')

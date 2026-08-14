@@ -4,6 +4,7 @@ import test from 'node:test'
 import { Chess } from 'chess.js'
 import { normalizedEpd } from '../../src/domain/input-validation.ts'
 import {
+  ContentAddressedRefV1Schema,
   OpeningFamilyCatalogV1Schema,
   OpeningFamilyManifestV1Schema,
   OpeningFamilyRegistryError,
@@ -29,6 +30,10 @@ import {
 import embeddedSnapshot from '../../src/generated/embedded-snapshot.json' with { type: 'json' }
 import reviewFamilyCatalog from '../../src/generated/review-family-catalog.json' with { type: 'json' }
 import { validateReviewOpeningFamilyCatalog } from '../../src/data/review-family-catalog.ts'
+import {
+  SYNTHETIC_GRAPH_PROVENANCE_REF,
+  createSyntheticRepertoireEvidence,
+} from '../fixtures/synthetic-repertoire-evidence.ts'
 
 const RELEASE_ID = 'family-fixture-release-1'
 const GENERATED_AT = '2026-07-28T12:00:00.000Z'
@@ -37,6 +42,10 @@ const TAXONOMY_IDS = {
   sicilian: `tax_${'b'.repeat(24)}`,
   ruy: `tax_${'c'.repeat(24)}`,
 }
+
+test('content-addressed family resource paths reject ambiguous separators', () => {
+  assert.equal(ContentAddressedRefV1Schema.safeParse(ref(42, 'resources//family.json.gz')).success, false)
+})
 
 function ecoRange(volume: string, first: number, last: number): string[] {
   return Array.from({ length: last - first + 1 }, (_, index) => `${volume}${String(first + index).padStart(2, '0')}`)
@@ -83,7 +92,7 @@ async function graph(packId: string, eco: string): Promise<RepertoireGraphDocume
       nodeIds: [rootId, terminalId],
       edgeIds: [edgeId],
       pathIds: [pathId],
-      provenanceRef: 'synthetic-family-fixture',
+      provenanceRef: SYNTHETIC_GRAPH_PROVENANCE_REF,
     },
     nodes: [
       {
@@ -93,6 +102,7 @@ async function graph(packId: string, eco: string): Promise<RepertoireGraphDocume
         learnerTurn: true,
         outgoingEdgeIds: [edgeId],
         cardId: stableRepertoireCardId(packId, rootId),
+        provenanceRef: SYNTHETIC_GRAPH_PROVENANCE_REF,
       },
       {
         schemaVersion: 1,
@@ -100,6 +110,7 @@ async function graph(packId: string, eco: string): Promise<RepertoireGraphDocume
         epd: terminalEpd,
         learnerTurn: false,
         outgoingEdgeIds: [],
+        provenanceRef: SYNTHETIC_GRAPH_PROVENANCE_REF,
       },
     ],
     edges: [{
@@ -112,17 +123,8 @@ async function graph(packId: string, eco: string): Promise<RepertoireGraphDocume
       role: 'book',
       eligibleForDrill: true,
       acceptedBookTransposition: false,
-      evidence: {
-        cohorts: [{ cohortId: 'cohort_synthetic-family', n: 500 }],
-        conditionalUsage: 1,
-        engine: {
-          status: 'verified',
-          centipawnLoss: 0,
-          forcedMateAgainstLearner: false,
-          quarantineReasons: [],
-        },
-      },
-      provenanceRef: 'synthetic-family-fixture',
+      evidence: createSyntheticRepertoireEvidence({ uci: 'e2e4', trainedSide: 'white', moveN: 500, reachN: 500 }),
+      provenanceRef: SYNTHETIC_GRAPH_PROVENANCE_REF,
     }],
     paths: [{
       schemaVersion: 1,
@@ -135,6 +137,7 @@ async function graph(packId: string, eco: string): Promise<RepertoireGraphDocume
       terminalStatus: 'evidence_terminal',
       familyTags: ['Fixture line'],
       conditionalUsage: 1,
+      provenanceRef: SYNTHETIC_GRAPH_PROVENANCE_REF,
     }],
   }
 }

@@ -12,7 +12,11 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON
   review_events, card_states, user_settings, repertoire_import_jobs,
   repertoires, repertoire_revisions, share_links, external_connections,
   puzzle_progress, puzzle_attempt_events, lichess_sync_jobs,
-  lichess_imported_game_ids, personal_opening_edge_aggregates
+  lichess_imported_game_ids, personal_opening_edge_aggregates,
+  family_coverage_events, family_cycle_events, family_training_cursor_events
 TO linerecall_app;
-GRANT SELECT ON supported_snapshot_versions, snapshot_card_membership, snapshot_puzzle_membership TO linerecall_app;
+GRANT SELECT ON
+  supported_snapshot_versions, snapshot_card_membership, snapshot_puzzle_membership,
+  snapshot_family_pack_membership, snapshot_family_path_membership
+TO linerecall_app;
 GRANT USAGE, SELECT ON SEQUENCE linerecall_sync_sequence TO linerecall_app;

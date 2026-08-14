@@ -307,9 +307,11 @@ and has no URL or filesystem authority of its own:
   checkpoint JSON alone. An interruption before checkpoint replacement
   replays the archive from byte zero and safely reuses matching immutable
   objects. Candidate and exact passes cannot run out of order.
-- A per-archive lock enforces the manifest's concurrency-one policy. A lock
-  owned by a live process or another host fails closed; a same-host lock whose
-  process no longer exists can be recovered.
+- A corpus-wide lock under the selected work root enforces the manifest's
+  concurrency-one policy across every archive and both passes. A lock owned by
+  a live process or another host fails closed; a same-host lock whose process
+  no longer exists can be recovered. Approved-HTTPS mode also holds its
+  separate host-wide lock so different work roots cannot download in parallel.
 
 The orchestration tests are fixture-only and make no network request:
 
@@ -433,20 +435,21 @@ and adaptive shard caps. SQLite rounds enforcement to complete pages; the
 configured limit is therefore translated to a conservative page count rather
 than treated as permission to cross the byte ceiling.
 
-Completion feasibility remains unproven. `compact_adapter_games` currently
-stores the source ID, full text game key, 64-character corruption guard, and
-first-archive ID in both candidate and exact cumulative states. Every later
-archive copies and promotes the complete preceding database. In addition, ply
-0–30 evidence deliberately bypasses the candidate sketch because the exact
-pass must retain complete baseline aggregates. At 267,333,507 published Q2
-games, those fixed-width text ledgers, repeated cumulative snapshots, and the
-far broader baseline position set can exceed a plan derived only from the
-800,176-game broadcast corpus. No full-Q2 plan may be described as
-capacity-approved until conservative ledger/index/position bounds fit with the
-10 GiB reserve or the pipeline is redesigned around compact partitioned dedup
-keys, replay-decision shards, and audited superseded-state handoff. Runtime caps
-make the current implementation safe to attempt; they do not make it adequate
-to finish.
+Completion feasibility remains unproven. Schema v2 of
+`compact_adapter_games` stores the source identifier once, then uses 32-byte
+binary game identities and 32-byte binary corruption guards with an integer
+first-archive ordinal. Inherited databases with the prior text-ledger layout
+are rejected instead of being converted silently. This removes avoidable text
+and archive-ID duplication, but every later archive still copies and promotes
+the complete preceding cumulative database. In addition, ply 0–30 evidence
+deliberately bypasses the candidate sketch because the exact pass must retain
+complete baseline aggregates. At 267,333,507 published Q2 games, even the
+compact binary ledgers, repeated cumulative snapshots, and the far broader
+baseline position set can exceed a plan derived only from the 800,176-game
+broadcast corpus. No full-Q2 plan may be described as capacity-approved until
+the immutable complete-broadcast benchmark receipt proves conservative
+ledger/index/position bounds fit with the 10 GiB reserve. Runtime caps make the
+current implementation safe to attempt; they do not prove it can finish.
 
 The benchmark chicken-and-egg is handled by a separate, explicit bootstrap
 execution purpose. It accepts only the complete approved 78-archive broadcast
@@ -498,11 +501,20 @@ remain labeled non-production evidence.
 The synthetic family fixtures now demonstrate two separate mechanics:
 full-family cycles bind distinct pack-local coverage cycles through append-only
 `cycle_started` and `pack_bound` events, while named-branch sessions traverse
-both primary and secondary memberships across same-side packs. Those fixtures
-do not establish source-edge inventory equality, sample eligibility, engine
-soundness, Scid agreement, or a real path total. Named-branch cross-pack
-membership and completion are also session-only today; there is no durable
-branch-cycle journal that can reproduce the exact next path after remount.
+both primary and secondary memberships across same-side packs. An append-only
+family-training journal validates and replays cycle generations, pack bindings,
+path-completion events, and versioned cursor snapshots, including the exact
+next path after a component remount. The in-memory repository remains
+session-only, but its complete snapshot is included in the application's strict
+portable JSON bundle. A connected cloud adapter, versioned API, memory server
+adapter, PostgreSQL adapter, and forced-RLS migration now implement the same
+journal boundary. They have not passed provider-backed, pooled non-owner
+PostgreSQL staging, and no supported Artifact family-journal adapter exists.
+Cross-pack named-branch membership is recorded through immutable generation
+and pack-cycle bindings and is reconstructed only when the saved manifest
+membership has one unambiguous interpretation. These fixtures do not establish
+source-edge inventory equality, sample eligibility, engine soundness, Scid
+agreement, or a real path total.
 
 No schema-v3 command opens, converts, deletes, or cleans the read-only 18.7 GB
 schema-v2 database.

@@ -1,7 +1,8 @@
 # Puzzle v3 pipeline
 
-Status: ingestion, runtime-resource, replay, and progress foundations are
-implemented in the current source tree; release data has not been produced.
+Status: ingestion, runtime-resource, replay, progress, and promotion-validation
+foundations exist in source. No current test pass is asserted here and no real
+release puzzle data has been produced.
 
 LineRecall treats the Lichess puzzle export as a separate CC0 source. The pinned
 source manifest is `data/manifests/lichess-puzzles.source.json`. The publisher
@@ -14,12 +15,22 @@ digest.
 
 ## Bounded processing contract
 
-`npm run data:puzzles -- ingest` reads the Zstandard archive as an async byte
-stream. The RFC-4180 parser supports escaped quotes and quoted line breaks across
-chunk boundaries. It retains at most a 16 KiB record and 8 KiB field, permits at
-most ten fields, rejects control characters, and aborts malformed UTF-8. Puzzle
-IDs are deduplicated in a temporary SQLite index. Candidates are written through
-a bounded gzip stream to a partial file and renamed only after completion.
+`npm run data:puzzles -- ingest --release-id <approved-release-id>` validates
+all production prerequisites before reading the 302 MB archive, then consumes
+the Zstandard file as an async byte stream. The RFC-4180 parser supports escaped
+quotes and quoted line breaks across chunk boundaries. It retains at most a
+16 KiB record and 8 KiB field, permits at most ten fields, rejects control
+characters, and aborts malformed UTF-8. Puzzle IDs are deduplicated in a
+temporary SQLite index. Candidates are written through a bounded gzip stream
+to a partial file and linked into place only after completion; existing output
+is never replaced.
+
+The required prerequisites are complete compact-v3 broadcast and Q2 exact
+states, their final receipts, the approved source manifests, a release-matched
+family-association database, the pinned Stockfish manifest, a verified engine
+provision receipt, and a release-bound puzzle-engine campaign. Historical
+schema-v2 graph metadata is rejected. A missing or mismatched prerequisite
+blocks before the archive is streamed.
 
 The filter keeps only records with all of the following:
 
@@ -40,12 +51,21 @@ tag to a broader label.
 
 ## Verification and promotion
 
-Candidates are never release eligible. A promoted record must contain one
+Candidates are explicitly `releaseEligible: false`. Their manifest reconciles
+every published row into candidate, duplicate, or named rejection totals and
+binds the exact corpus, family-association, puzzle-source, and engine-campaign
+identities. A candidate is not a verified puzzle.
+
+A promoted record must contain one
 matching Stockfish 18 proof per learner node with `Threads=1`, `Hash=128`,
 `MultiPV=5`, and 250,000 nodes, plus engine, NNUE, settings, analysis-date, and PV
 evidence. All proofs must pass and the puzzle must have an exact-position or
 unique-family association. Missing, reordered, failed, or unlinked evidence
-fails runtime validation.
+fails validation. The promotion library re-derives each tactical record from
+its verified envelope, requires exact proof-inventory equality, validates each
+shard against that inventory, and derives the promotion receipt from the
+validated source and output. The repository does not currently contain a real
+campaign orchestrator output, proof inventory, shard, or promotion receipt.
 
 The shipped domain replays setup and forced replies rather than changing FENs
 out of band. On a mate-in-one node, any legal mating move is accepted. Puzzle
@@ -92,7 +112,7 @@ puzzle events.
 ```text
 npm run test:data:puzzles:v3
 npm run data:puzzles -- integrity --source <archive> --output <new-receipt>
-npm run data:puzzles -- ingest
+npm run data:puzzles -- ingest --release-id <approved-release-id>
 ```
 
 The integrity command always emits a pending receipt and uses exclusive file
@@ -100,11 +120,16 @@ creation. Do not replace the approved receipt without review.
 
 ## Open hard gates
 
-As of 2026-07-28, the approved 302,111,223-byte archive is present and its local
-SHA-256 receipt is recorded. No release subset exists because the complete
-compact v3 evidence graph (full broadcast plus April–June 2026 standard corpus)
-has not been produced, and no Stockfish 18 per-learner-node campaign has run.
-Fixtures test contracts only; their hashes and engine fields are deliberately
-synthetic and never constitute release evidence. The current Puzzles screen
-therefore shows an explicit unavailable state instead of legacy opening recall
-or fabricated tactics. These blockers prohibit a production artifact.
+The current workspace contains the approved 302,111,223-byte source archive and
+its local SHA-256 receipt. It does not contain the complete compact-v3 evidence
+states, production family-association database, real per-learner-node Stockfish
+campaign, candidate manifest, verified proof inventory, promoted tactical
+shards, puzzle-promotion receipt, or family-promotion index.
+
+Synthetic puzzle fixtures exercise parsing, association, replay, progress, and
+promotion contracts only. Their source hashes, sample fields, engine identities,
+and proof values are synthetic and never constitute corpus, engine, or release
+evidence. No test result is claimed by this document. The Puzzles screen must
+therefore remain in its explicit unavailable state rather than substitute
+legacy opening recall or fabricated tactics. These blockers prohibit a
+production artifact.

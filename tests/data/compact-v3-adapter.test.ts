@@ -9,16 +9,22 @@ import test from 'node:test'
 import { Chess } from 'chess.js'
 import {
   COMPACT_MINIMUM_FREE_RESERVE_BYTES,
+  COMPACT_ADAPTER_STATE_SCHEMA_VERSION,
   COMPACT_STORAGE_MODEL,
   CompactPreflightPlanSchema,
   type CompactPassReceipt,
   type CompactPreflightPlan,
 } from '../../scripts/data/compact-v3-contracts.ts'
 import {
+  createFixtureBenchmarkApproval,
+  fixtureBenchmarkApprovalBytesForPlan,
+} from '../fixtures/compact-benchmark-approval.ts'
+import {
   runCompactV3ArchiveAdapter,
   runCompactV3RemoteArchiveAdapter,
 } from '../../scripts/data/compact-v3-adapter.ts'
 import { approvedCompactCorpusFromBytes } from '../../scripts/data/compact-v3-manifest.ts'
+import { receiptDigest } from '../../scripts/data/compact-v3-foundation.ts'
 
 const LONG_LINE = (
   'e2e4 e7e5 g1f3 b8c6 f1b5 a7a6 b5a4 g8f6 e1g1 f8e7 f1e1 b7b5 ' +
@@ -39,6 +45,16 @@ const bounds = {
   retainedCorpusMaxBytes: 256 * 1024 * 1024,
 }
 const peakBound = Object.values(bounds).reduce((sum, value) => sum + value, 0)
+const adapterLimits = {
+  completeBaselineMaxPly: 30,
+  adaptiveEvidenceMaxPly: 100,
+  adaptiveCandidateMinimumSample: 100,
+  archiveConcurrency: 1,
+  minimumFreeReserveBytes: COMPACT_MINIMUM_FREE_RESERVE_BYTES,
+  countMinWidth: 8_192,
+  countMinDepth: 4,
+  maximumCandidates: 10_000,
+} as const
 
 function digest(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex')
@@ -139,6 +155,15 @@ function manifestBytes(
 }
 
 function planFor(manifest: Buffer, archiveBytes: Buffer, month: string): CompactPreflightPlan {
+  const approval = createFixtureBenchmarkApproval({
+    limits: adapterLimits,
+    bounds,
+    sourceSnapshotSha256: 'c'.repeat(64),
+    acceptedGames: 103,
+    observations: 8_000,
+    peakResidentBytes: 4 * 1024 * 1024,
+    peakAdditionalStorageBytes: peakBound,
+  })
   return CompactPreflightPlanSchema.parse({
     schemaVersion: 3,
     storageModel: COMPACT_STORAGE_MODEL,
@@ -157,28 +182,9 @@ function planFor(manifest: Buffer, archiveBytes: Buffer, month: string): Compact
       etagObserved: `fixture-etag-${month}`,
       lastModifiedObserved: 'Thu, 16 Jul 2026 12:00:00 GMT',
     },
-    limits: {
-      completeBaselineMaxPly: 30,
-      adaptiveEvidenceMaxPly: 100,
-      adaptiveCandidateMinimumSample: 100,
-      archiveConcurrency: 1,
-      minimumFreeReserveBytes: COMPACT_MINIMUM_FREE_RESERVE_BYTES,
-      countMinWidth: 8_192,
-      countMinDepth: 4,
-      maximumCandidates: 10_000,
-    },
+    limits: adapterLimits,
     bounds,
-    benchmark: {
-      status: 'approved',
-      method: 'complete-broadcast-replay-with-enforced-hard-caps',
-      receiptSha256: 'b'.repeat(64),
-      measuredAt: '2026-07-16T12:05:00.000Z',
-      acceptedGames: 103,
-      observations: 8_000,
-      peakResidentBytes: 4 * 1024 * 1024,
-      peakAdditionalStorageBytes: peakBound,
-      note: 'Fixture-only approval used to test the boundary; never valid as corpus evidence.',
-    },
+    benchmark: approval.proof,
   })
 }
 
@@ -246,6 +252,11 @@ const toolchain = {
   chessJs: '1.4.0',
   zstd: 'node:zlib:createZstdDecompress',
   sourceSnapshotSha256: 'c'.repeat(64),
+  adapterStateSchemaVersion: COMPACT_ADAPTER_STATE_SCHEMA_VERSION,
+}
+
+function benchmarkApprovalBytes(plan: CompactPreflightPlan): Buffer {
+  return fixtureBenchmarkApprovalBytesForPlan(plan, toolchain.sourceSnapshotSha256)
 }
 
 function fixedClock(): () => Date {
@@ -280,6 +291,7 @@ test('real PGN records feed cumulative candidate and exact SQLite states with cr
       corpus,
       workDirectory,
       toolchain,
+      benchmarkApprovalBytes: benchmarkApprovalBytes(plans[0]!),
       availableBytes: async () => COMPACT_MINIMUM_FREE_RESERVE_BYTES + peakBound + 1,
       now: fixedClock(),
     }
@@ -316,6 +328,21 @@ test('real PGN records feed cumulative candidate and exact SQLite states with cr
           (SELECT count(*) FROM candidates) AS candidates
       `).get() as { games: number; archives: number; candidates: number }
       assert.deepEqual({ ...counts }, { games: 101, archives: 3, candidates: third.receipt.candidateRows })
+      const compactIdentity = candidateDatabase.prepare(`
+        SELECT typeof(game_identity_sha256) AS identityType,
+          length(game_identity_sha256) AS identityBytes,
+          typeof(corruption_guard_sha256) AS guardType,
+          length(corruption_guard_sha256) AS guardBytes
+        FROM compact_adapter_games LIMIT 1
+      `).get() as { identityType: string; identityBytes: number; guardType: string; guardBytes: number }
+      assert.deepEqual({ ...compactIdentity }, {
+        identityType: 'blob', identityBytes: 32, guardType: 'blob', guardBytes: 32,
+      })
+      const candidateFingerprint = candidateDatabase.prepare(`
+        SELECT typeof(fingerprint) AS storageType, length(fingerprint) AS bytes
+        FROM candidates LIMIT 1
+      `).get() as { storageType: string; bytes: number }
+      assert.deepEqual({ ...candidateFingerprint }, { storageType: 'blob', bytes: 32 })
       const rows = candidateDatabase.prepare(`
         SELECT archive_id AS archiveId, accepted, deduplicated, rejected_json AS rejectedJson
         FROM compact_adapter_archives ORDER BY archive_index
@@ -341,6 +368,13 @@ test('real PGN records feed cumulative candidate and exact SQLite states with cr
     assert.deepEqual(exactResults.map((result) => [result.receipt.accepted, result.receipt.deduplicated]), [
       [60, 0], [40, 1], [1, 0],
     ])
+    assert.deepEqual(exactResults.map(({ receipt }, index) => receipt.pass === 'exact'
+      ? receipt.priorExactStateSha256
+      : 'wrong-pass'), [
+      null,
+      exactResults[0]!.receipt.output.sha256,
+      exactResults[1]!.receipt.output.sha256,
+    ])
     const exact = exactResults[2]!.receipt
     assert.equal(exact.pass, 'exact')
     assert.ok(exact.completeBaselineObservationsRetained > 0)
@@ -358,6 +392,16 @@ test('real PGN records feed cumulative candidate and exact SQLite states with cr
       assert.equal(counts.games, 101)
       assert.equal(counts.archives, 3)
       assert.ok(counts.positions > 0 && counts.edges > 0 && counts.observations > 0)
+      const exactFingerprints = exactDatabase.prepare(`
+        SELECT
+          (SELECT typeof(fingerprint) FROM positions LIMIT 1) AS positionType,
+          (SELECT length(fingerprint) FROM positions LIMIT 1) AS positionBytes,
+          (SELECT typeof(fingerprint) FROM edges LIMIT 1) AS edgeType,
+          (SELECT length(fingerprint) FROM edges LIMIT 1) AS edgeBytes
+      `).get() as { positionType: string; positionBytes: number; edgeType: string; edgeBytes: number }
+      assert.deepEqual({ ...exactFingerprints }, {
+        positionType: 'blob', positionBytes: 32, edgeType: 'blob', edgeBytes: 32,
+      })
     } finally {
       exactDatabase.close()
     }
@@ -402,6 +446,7 @@ test('a conflicting cross-archive game rolls back without changing prior state o
       corpus,
       workDirectory,
       toolchain,
+      benchmarkApprovalBytes: benchmarkApprovalBytes(plans[0]!),
       availableBytes: async () => COMPACT_MINIMUM_FREE_RESERVE_BYTES + peakBound + 1,
       now: fixedClock(),
     }
@@ -421,6 +466,73 @@ test('a conflicting cross-archive game rolls back without changing prior state o
     } finally {
       state.close()
     }
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('an inherited schema-v1 candidate state is rejected before the next source is opened', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'linerecall-v3-adapter-legacy-state-'))
+  const workDirectory = join(directory, 'work')
+  await mkdir(workDirectory)
+  const archives = [
+    archive([pgn('LEGACY01')]),
+    archive([pgn('LEGACY02')]),
+    archive([pgn('LEGACY03')]),
+  ]
+  const manifest = manifestBytes(archives, [1, 1, 1])
+  const corpus = approvedCompactCorpusFromBytes(manifest, 'lichess-standard-rated-q2-2026')
+  const months = ['2026-04', '2026-05', '2026-06']
+  const plans = archives.map((bytes, index) => planFor(manifest, bytes, months[index]!))
+  const firstPath = join(directory, plans[0]!.archive.filename)
+  await writeFile(firstPath, archives[0]!)
+  try {
+    const first = await runCompactV3ArchiveAdapter({
+      pass: 'candidate',
+      plan: plans[0]!,
+      corpus,
+      archivePath: firstPath,
+      workDirectory,
+      toolchain,
+      benchmarkApprovalBytes: benchmarkApprovalBytes(plans[0]!),
+      availableBytes: async () => COMPACT_MINIMUM_FREE_RESERVE_BYTES + peakBound + 1,
+      now: fixedClock(),
+    })
+    const originalPath = join(workDirectory, ...first.receipt.output.path.split('/'))
+    const legacyDatabase = new DatabaseSync(originalPath)
+    try {
+      legacyDatabase.exec('PRAGMA user_version = 1')
+    } finally {
+      legacyDatabase.close()
+    }
+    const legacyBytes = await readFile(originalPath)
+    const legacySha256 = digest(legacyBytes)
+    const legacyRelativePath = first.receipt.output.path.replace(first.receipt.output.sha256, legacySha256)
+    await writeFile(join(workDirectory, ...legacyRelativePath.split('/')), legacyBytes)
+
+    const checkpointPath = join(workDirectory, 'v3', plans[0]!.archive.archiveId, 'checkpoint.json')
+    const checkpoint = JSON.parse(await readFile(checkpointPath, 'utf8')) as Record<string, any>
+    checkpoint.candidateReceipt.output.path = legacyRelativePath
+    checkpoint.candidateReceipt.output.sha256 = legacySha256
+    checkpoint.candidateReceipt.output.bytes = legacyBytes.byteLength
+    checkpoint.candidateReceipt.nextCandidateStateSha256 = legacySha256
+    const rewrittenReceiptSha256 = receiptDigest(checkpoint.candidateReceipt as CompactPassReceipt)
+    const receiptPath = join(
+      workDirectory, 'v3', plans[0]!.archive.archiveId, 'receipts', 'sha256', `${rewrittenReceiptSha256}.json`,
+    )
+    await writeFile(receiptPath, `${JSON.stringify(checkpoint.candidateReceipt)}\n`, 'utf8')
+    await writeFile(checkpointPath, `${JSON.stringify(checkpoint)}\n`, 'utf8')
+
+    await assert.rejects(runCompactV3ArchiveAdapter({
+      pass: 'candidate',
+      plan: plans[1]!,
+      corpus,
+      archivePath: join(directory, 'source-must-not-open.pgn.zst'),
+      workDirectory,
+      toolchain,
+      benchmarkApprovalBytes: benchmarkApprovalBytes(plans[1]!),
+      availableBytes: async () => COMPACT_MINIMUM_FREE_RESERVE_BYTES + peakBound + 1,
+    }), /state schema is not version 2/iu)
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
@@ -455,6 +567,7 @@ test('the adapter consumes a wrapped broadcast Zstandard frame from the same ver
       archivePath,
       workDirectory,
       toolchain,
+      benchmarkApprovalBytes: benchmarkApprovalBytes(plan),
       availableBytes: async () => COMPACT_MINIMUM_FREE_RESERVE_BYTES + peakBound + 1,
       now: fixedClock(),
     })
@@ -495,7 +608,7 @@ test('pending benchmark preflight blocks before the local archive is opened', as
       workDirectory: directory,
       toolchain,
       availableBytes: async () => COMPACT_MINIMUM_FREE_RESERVE_BYTES + peakBound + 1,
-    }), /benchmark-not-approved/iu)
+    }), /approved benchmark proof/iu)
     await assert.rejects(runCompactV3ArchiveAdapter({
       pass: 'candidate',
       plan,
@@ -527,6 +640,7 @@ test('published archive accounting mismatch rolls back without a receipt', async
       archivePath,
       workDirectory: directory,
       toolchain,
+      benchmarkApprovalBytes: benchmarkApprovalBytes(plan),
       availableBytes: async () => COMPACT_MINIMUM_FREE_RESERVE_BYTES + peakBound + 1,
       now: fixedClock(),
     }), /published total/iu)
@@ -546,13 +660,19 @@ test('adapter enforces its SQLite spill cap during processing and promotes no ch
   const manifest = manifestBytes(archives, [61, 1, 1])
   const approved = planFor(manifest, first, '2026-04')
   const cappedBounds = { ...approved.bounds, candidateIndexMaxBytes: 64 * 1024 }
+  const cappedApproval = createFixtureBenchmarkApproval({
+    limits: approved.limits,
+    bounds: cappedBounds,
+    sourceSnapshotSha256: toolchain.sourceSnapshotSha256,
+    acceptedGames: approved.benchmark.acceptedGames,
+    observations: approved.benchmark.observations,
+    peakResidentBytes: approved.benchmark.peakResidentBytes,
+    peakAdditionalStorageBytes: Object.values(cappedBounds).reduce((sum, value) => sum + value, 0),
+  })
   const plan = CompactPreflightPlanSchema.parse({
     ...approved,
     bounds: cappedBounds,
-    benchmark: {
-      ...approved.benchmark,
-      peakAdditionalStorageBytes: Object.values(cappedBounds).reduce((sum, value) => sum + value, 0),
-    },
+    benchmark: cappedApproval.proof,
   })
   const archivePath = join(directory, plan.archive.filename)
   await writeFile(archivePath, first)
@@ -564,6 +684,7 @@ test('adapter enforces its SQLite spill cap during processing and promotes no ch
       archivePath,
       workDirectory: directory,
       toolchain,
+      benchmarkApprovalBytes: cappedApproval.bytes,
       availableBytes: async () => COMPACT_MINIMUM_FREE_RESERVE_BYTES + peakBound + 1,
       now: fixedClock(),
     }), /full|byte hard cap/iu)
@@ -601,6 +722,7 @@ test('a live corpus lock enforces one archive worker across different archive ID
       archivePath,
       workDirectory: directory,
       toolchain,
+      benchmarkApprovalBytes: benchmarkApprovalBytes(plan),
       availableBytes: async () => COMPACT_MINIMUM_FREE_RESERVE_BYTES + peakBound + 1,
     }), /holds the corpus lock/iu)
     assert.equal((await stat(lockPath)).isFile(), true)
@@ -627,6 +749,7 @@ test('candidate and exact passes independently stream and receipt the same appro
       corpus,
       workDirectory: directory,
       toolchain,
+      benchmarkApprovalBytes: benchmarkApprovalBytes(plans[0]!),
       availableBytes: async () => COMPACT_MINIMUM_FREE_RESERVE_BYTES + peakBound + 1,
       now: fixedClock(),
       remoteTestSeams: {
@@ -707,6 +830,7 @@ test('a failed HTTPS stream leaves no compact checkpoint or promoted receipt', a
       corpus: approvedCompactCorpusFromBytes(manifest, 'lichess-standard-rated-q2-2026'),
       workDirectory: directory,
       toolchain,
+      benchmarkApprovalBytes: benchmarkApprovalBytes(plan),
       availableBytes: async () => COMPACT_MINIMUM_FREE_RESERVE_BYTES + peakBound + 1,
       remoteTestSeams: {
         resolver: async () => [{ address: '93.184.216.34', family: 4 }],

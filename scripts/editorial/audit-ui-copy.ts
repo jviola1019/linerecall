@@ -65,6 +65,49 @@ function sourceLine(node: t.Node): number {
   return node.loc?.start.line ?? 1
 }
 
+function collectRenderedExpressionCopy(
+  node: t.Node | null | undefined,
+  add: (node: t.Node, value: string) => void,
+): void {
+  if (!node) return
+  if (t.isStringLiteral(node)) {
+    add(node, node.value)
+    return
+  }
+  if (t.isTemplateLiteral(node)) {
+    for (const quasi of node.quasis) add(quasi, quasi.value.cooked ?? quasi.value.raw)
+    return
+  }
+  if (t.isConditionalExpression(node)) {
+    collectRenderedExpressionCopy(node.consequent, add)
+    collectRenderedExpressionCopy(node.alternate, add)
+    return
+  }
+  if (t.isLogicalExpression(node)) {
+    if (node.operator !== '&&') collectRenderedExpressionCopy(node.left, add)
+    collectRenderedExpressionCopy(node.right, add)
+    return
+  }
+  if (t.isSequenceExpression(node)) {
+    collectRenderedExpressionCopy(node.expressions.at(-1), add)
+    return
+  }
+  if (t.isArrayExpression(node)) {
+    for (const element of node.elements) {
+      if (element && !t.isSpreadElement(element)) collectRenderedExpressionCopy(element, add)
+    }
+    return
+  }
+  if (
+    t.isParenthesizedExpression(node)
+    || t.isTSAsExpression(node)
+    || t.isTSTypeAssertion(node)
+    || t.isTSNonNullExpression(node)
+  ) {
+    collectRenderedExpressionCopy(node.expression, add)
+  }
+}
+
 export function collectCopyFromSource(path: string, sourceText: string): CopyEntry[] {
   const source = parse(sourceText, {
     sourceType: 'module',
@@ -79,10 +122,18 @@ export function collectCopyFromSource(path: string, sourceText: string): CopyEnt
   }
   const visit = (node: t.Node, ancestors: readonly t.Node[]): void => {
     if (t.isJSXText(node)) add(node, node.value, elementKind(ancestors))
+    if (
+      t.isJSXExpressionContainer(node)
+      && !t.isJSXEmptyExpression(node.expression)
+      && !t.isJSXAttribute(ancestors.at(-1))
+    ) {
+      const kind = elementKind(ancestors)
+      collectRenderedExpressionCopy(node.expression, (copyNode, value) => add(copyNode, value, kind))
+    }
     if (t.isJSXAttribute(node) && t.isJSXIdentifier(node.name) && visibleAttributes.has(node.name.name) && node.value) {
       if (t.isStringLiteral(node.value)) add(node, node.value.value, 'control')
-      if (t.isJSXExpressionContainer(node.value) && t.isStringLiteral(node.value.expression)) {
-        add(node, node.value.expression.value, 'control')
+      if (t.isJSXExpressionContainer(node.value) && !t.isJSXEmptyExpression(node.value.expression)) {
+        collectRenderedExpressionCopy(node.value.expression, (copyNode, value) => add(copyNode, value, 'control'))
       }
     }
     if (t.isObjectProperty(node) && t.isIdentifier(node.key) && copyPropertyNames.has(node.key.name)) {

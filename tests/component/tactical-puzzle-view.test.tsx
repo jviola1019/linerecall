@@ -49,6 +49,8 @@ describe('tactical puzzle route', () => {
     await user.click(screen.getByRole('button', { name: 'Why' }))
     expect(screen.getByRole('complementary', { name: 'Your move' })).toHaveFocus()
     expect(onAnnouncement).toHaveBeenCalledWith('Puzzle evidence opened.')
+    expect(screen.getByRole('status', { name: 'Puzzle status: Your move' })).toHaveTextContent('No hint')
+    expect(screen.getByText('Why this puzzle appears here')).toBeVisible()
 
     const picker = screen.getByRole('combobox', { name: 'Legal move picker' })
     await user.selectOptions(picker, 'g1f3')
@@ -59,6 +61,7 @@ describe('tactical puzzle route', () => {
     await user.selectOptions(screen.getByRole('combobox', { name: 'Legal move picker' }), 'f1b5')
     await user.click(screen.getByRole('button', { name: 'Play move' }))
     await waitFor(() => expect(onAttempt).toHaveBeenCalledOnce())
+    expect(screen.getByRole('status', { name: 'Puzzle status: Solved' })).toBeVisible()
     expect(onAttempt.mock.calls[0]?.[0]).toMatchObject({
       puzzleId: puzzle.puzzleId,
       outcome: 'solved',

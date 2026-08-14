@@ -18,6 +18,14 @@ import {
 } from '../../data/tactical-puzzle-resource.ts'
 import { ChessBoard } from './ChessBoard.tsx'
 import { EmptyState, ErrorState, LoadingState } from './ResourceState.tsx'
+import './training-puzzle.css'
+
+const NORMAL_PUZZLE_TRANSITION_MS = 190
+const PROMOTION_PUZZLE_TRANSITION_MS = 360
+
+function puzzleTransitionDelay(moveUci: string | null): number {
+  return moveUci?.length === 5 ? PROMOTION_PUZZLE_TRANSITION_MS : NORMAL_PUZZLE_TRANSITION_MS
+}
 
 export interface TacticalPuzzleViewProps {
   resource: TacticalPuzzleResource
@@ -75,6 +83,7 @@ function TacticalPuzzleSession({
   const [saveError, setSaveError] = useState<string | null>(null)
   const [pendingSave, setPendingSave] = useState<{ key: string; event: PuzzleAttemptEventV1 } | null>(null)
   const [saving, setSaving] = useState(false)
+  const [transitionLocked, setTransitionLocked] = useState(false)
   const [announcement, setAnnouncement] = useState('')
   const startedAtRef = useRef(Date.now())
   const evidenceRef = useRef<HTMLElement>(null)
@@ -91,6 +100,20 @@ function TacticalPuzzleSession({
   const progressValue = state.completed
     ? puzzle.learnerNodes.length
     : Math.min(state.learnerIndex, puzzle.learnerNodes.length)
+  const phaseLabel = state.completed
+    ? 'Solved'
+    : state.phase === 'forced-reply'
+      ? 'Opponent reply'
+      : 'Your move'
+  const feedbackTone = state.completed
+    ? 'solved'
+    : state.incorrectAttempts > 0
+      ? 'retry'
+      : state.phase === 'forced-reply'
+        ? 'reply'
+        : state.usedHint
+          ? 'hint'
+          : 'ready'
 
   const openEvidence = (): void => {
     const evidence = evidenceRef.current
@@ -176,21 +199,42 @@ function TacticalPuzzleSession({
         const result = playTacticalPuzzleForcedReply(puzzle, state)
         setState(result.state)
         setLastMoveUci(result.transition.moveUci)
+        setTransitionLocked(true)
         if (result.verdict === 'solved') {
           setFeedback('Solved. The learner move and forced reply were verified separately.')
           void recordAttempt('solved', result.state)
           announce('Puzzle solved.')
         } else {
-          setFeedback('Opponent reply complete. Continue the tactic.')
-          announce('Opponent reply played. Your move.')
+          setFeedback('Opponent reply is moving.')
+          announce('Opponent reply is moving. Input remains paused.')
         }
       } catch (error) {
         setSaveError(errorMessage(error))
         announce('The audited opponent reply could not be applied.')
       }
-    }, reducedMotion ? 0 : 190)
+    }, reducedMotion ? 0 : puzzleTransitionDelay(lastMoveUci))
     return () => clearTimeout(timeout)
-  }, [puzzle, reducedMotion, state])
+  }, [lastMoveUci, puzzle, reducedMotion, state])
+
+  useEffect(() => {
+    if (!transitionLocked) return
+    if (reducedMotion) {
+      setTransitionLocked(false)
+      if (state.phase === 'learner' && lastMoveUci !== null) {
+        setFeedback('Opponent reply complete. Continue the tactic.')
+        announce('Opponent reply played. Your move.')
+      }
+      return
+    }
+    const timeout = setTimeout(() => {
+      setTransitionLocked(false)
+      if (state.phase === 'learner' && lastMoveUci !== null) {
+        setFeedback('Opponent reply complete. Continue the tactic.')
+        announce('Opponent reply played. Your move.')
+      }
+    }, puzzleTransitionDelay(lastMoveUci))
+    return () => clearTimeout(timeout)
+  }, [lastMoveUci, reducedMotion, state.phase, transitionLocked])
 
   const handleMove = (moveUci: string): void => {
     try {
@@ -252,6 +296,12 @@ function TacticalPuzzleSession({
         </div>
       </header>
       {resourceNotice ? <p className="resource-notice" role="status">{resourceNotice}</p> : null}
+      <div className="puzzle-status-strip" data-tone={feedbackTone} role="status" aria-label={`Puzzle status: ${phaseLabel}`}>
+        <span className="puzzle-status-mark" aria-hidden="true">{state.completed ? '✓' : state.phase === 'forced-reply' ? '→' : '·'}</span>
+        <strong>{phaseLabel}</strong>
+        <span>{state.incorrectAttempts} incorrect {state.incorrectAttempts === 1 ? 'try' : 'tries'}</span>
+        <span>{state.usedHint ? 'Hint used' : 'No hint'}</span>
+      </div>
       <progress
         className="puzzle-progress-track"
         max={puzzle.learnerNodes.length}
@@ -263,45 +313,47 @@ function TacticalPuzzleSession({
           <ChessBoard
             fen={state.fen}
             orientation={orientation}
-            disabled={state.phase !== 'learner' || saving}
+            disabled={state.phase !== 'learner' || transitionLocked || saving}
             reducedMotion={reducedMotion}
             hintUci={state.usedHint ? expectedMove : null}
             lastMove={lastMoveUci ? { uci: lastMoveUci, status: 'book' } : null}
+            boardControls={(
+              <div className="tactical-thumb-dock" role="group" aria-label="Puzzle actions">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={state.phase !== 'learner' || transitionLocked || state.usedHint || expectedMove === null}
+                  onClick={() => {
+                    setState(useTacticalPuzzleHint(state))
+                    setFeedback('The expected route is marked on the board.')
+                    announce('Hint route shown.')
+                  }}
+                >
+                  Hint
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  aria-controls="puzzle-evidence"
+                  onClick={openEvidence}
+                >
+                  Why
+                </button>
+                {state.completed ? (
+                  <button
+                    type="button"
+                    className="primary-action"
+                    disabled={saving || pendingSave !== null}
+                    onClick={() => selectPuzzle(puzzleIndex + 1)}
+                  >
+                    {saving ? 'Saving…' : 'Next puzzle'}
+                  </button>
+                ) : null}
+              </div>
+            )}
             onMove={handleMove}
             onAnnouncement={announce}
           />
-          <div className="tactical-thumb-dock" role="group" aria-label="Puzzle actions">
-            <button
-              type="button"
-              className="secondary-button"
-              disabled={state.phase !== 'learner' || state.usedHint || expectedMove === null}
-              onClick={() => {
-                setState(useTacticalPuzzleHint(state))
-                setFeedback('The expected route is marked on the board.')
-                announce('Hint route shown.')
-              }}
-            >
-              Hint
-            </button>
-            <button
-              type="button"
-              className="secondary-button"
-              aria-controls="puzzle-evidence"
-              onClick={openEvidence}
-            >
-              Why
-            </button>
-            {state.completed ? (
-              <button
-                type="button"
-                className="primary-action"
-                disabled={saving || pendingSave !== null}
-                onClick={() => selectPuzzle(puzzleIndex + 1)}
-              >
-                {saving ? 'Saving…' : 'Next puzzle'}
-              </button>
-            ) : null}
-          </div>
         </div>
         <aside
           ref={evidenceRef}
@@ -312,7 +364,10 @@ function TacticalPuzzleSession({
         >
           <p className="eyebrow">Evidence</p>
           <h2 id="puzzle-evidence-title">{state.completed ? 'Solution complete' : 'Your move'}</h2>
-          <p role="status">{feedback}</p>
+          <div className="puzzle-feedback-panel" data-tone={feedbackTone} role="status">
+            <span aria-hidden="true">{state.completed ? '✓' : state.incorrectAttempts > 0 ? '!' : state.phase === 'forced-reply' ? '→' : '·'}</span>
+            <p>{feedback}</p>
+          </div>
           {saveError ? <p role="alert" className="error-warning">{saveError}</p> : null}
           {pendingSave ? (
             <button
@@ -333,6 +388,18 @@ function TacticalPuzzleSession({
             <div><dt>Source</dt><dd>Lichess puzzle database · CC0</dd></div>
           </dl>
           <p><strong>Themes:</strong> {puzzle.themes.join(', ')}</p>
+          <details className="puzzle-audit-criteria">
+            <summary>Why this puzzle appears here</summary>
+            <p>
+              Released puzzles must replay legally, carry an opening association, have at least 100 attempts,
+              popularity of at least 80, rating deviation no greater than 100, and a passing engine check at each learner move.
+            </p>
+            <p>
+              This item is linked by {puzzle.association.confidence === 'exact-position'
+                ? 'an exact normalized position match.'
+                : 'a unique opening-family match, not an exact repertoire position.'}
+            </p>
+          </details>
         </aside>
       </div>
       <p className="sr-only" aria-live="polite" aria-atomic="true">{announcement}</p>

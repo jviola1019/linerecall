@@ -20,15 +20,22 @@ test('copy inventory extracts headings, controls, and visible body text', () => 
     export const Example = () => <main>
       <h1>Study one line at a time</h1>
       <button aria-label="Start review">Begin</button>
+      <button aria-label={pending ? 'Saving review' : 'Review ready'} />
       <p>Historical results describe the games in this cohort.</p>
+      <button>{pending ? 'Saving family cycleâ€¦' : 'Practice family'}</button>
     </main>
   `)
   assert.deepEqual(entries.map(({ kind, text }) => ({ kind, text })), [
     { kind: 'heading', text: 'Study one line at a time' },
     { kind: 'control', text: 'Start review' },
     { kind: 'control', text: 'Begin' },
+    { kind: 'control', text: 'Saving review' },
+    { kind: 'control', text: 'Review ready' },
     { kind: 'body', text: 'Historical results describe the games in this cohort.' },
+    { kind: 'control', text: 'Saving family cycleâ€¦' },
+    { kind: 'control', text: 'Practice family' },
   ])
+  assert.equal(analyzeCopy(entries, policy).some(({ rule }) => rule === 'encoding-mojibake'), true)
 })
 
 test('copy audit blocks encoding defects, inflated claims, excessive length, and repeated long prose', () => {

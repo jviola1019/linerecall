@@ -1,4 +1,9 @@
 import { z } from 'zod'
+import {
+  FamilyCoverageEventV1Schema,
+  FamilyTrainingCursorV1Schema,
+} from '../../src/domain/opening-family.ts'
+import { FamilyCoverageCycleEventV1Schema } from '../../src/domain/family-training-journal.ts'
 
 export const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
 export const SAFE_ID = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/u
@@ -146,6 +151,78 @@ export const PuzzleProgressBootstrapResponseSchema = z.object({
 }).strict()
 export type PuzzleProgressBootstrapResponse = z.infer<typeof PuzzleProgressBootstrapResponseSchema>
 
+export {
+  FamilyCoverageCycleEventV1Schema,
+  FamilyCoverageEventV1Schema,
+  FamilyTrainingCursorV1Schema,
+}
+
+export const FamilyTrainingSyncRequestV1Schema = z.object({
+  deviceId: z.string().regex(UUID_V7),
+  coverageEvents: z.array(FamilyCoverageEventV1Schema).max(250).default([]),
+  cycleEvents: z.array(FamilyCoverageCycleEventV1Schema).max(250).default([]),
+  cursorMutation: z.object({
+    mutationId: z.string().regex(UUID_V7),
+    baseVersion: z.number().int().nonnegative(),
+    value: FamilyTrainingCursorV1Schema,
+  }).strict().optional(),
+}).strict().superRefine((request, context) => {
+  if (request.coverageEvents.length + request.cycleEvents.length > 250) {
+    context.addIssue({ code: 'custom', path: ['cycleEvents'], message: 'At most 250 family events may be synced at once' })
+  }
+})
+export type FamilyTrainingSyncRequestV1 = z.infer<typeof FamilyTrainingSyncRequestV1Schema>
+
+export const VersionedFamilyTrainingCursorV1Schema = z.object({
+  version: z.number().int().positive(),
+  mutationId: z.string().regex(UUID_V7),
+  value: FamilyTrainingCursorV1Schema,
+  syncSequence: z.string().regex(/^\d+$/u),
+}).strict()
+export type VersionedFamilyTrainingCursorV1 = z.infer<typeof VersionedFamilyTrainingCursorV1Schema>
+
+export const FamilyTrainingSyncResponseV1Schema = z.object({
+  acceptedCoverageEventIds: z.array(z.string().uuid()).max(250),
+  acceptedCycleEventIds: z.array(z.string().uuid()).max(250),
+  rejectedRecords: z.array(z.object({
+    recordId: z.string().max(128),
+    recordType: z.enum(['coverage', 'cycle']),
+    code: z.enum([
+      'conflicting_event_id', 'duplicate_logical_record', 'future_timestamp_normalized',
+      'unsupported_release', 'unknown_family_membership',
+    ]),
+    message: z.string().max(256),
+  }).strict()).max(250),
+  cursor: VersionedFamilyTrainingCursorV1Schema.nullable(),
+  cursorStatus: z.enum(['appended', 'duplicate']).nullable(),
+  serverTime: z.string().datetime({ offset: true }),
+}).strict()
+
+export const FamilyCoveragePageV1Schema = z.object({
+  records: z.array(z.object({
+    event: FamilyCoverageEventV1Schema,
+    syncSequence: z.string().regex(/^\d+$/u),
+  }).strict()).max(500),
+  nextCursor: z.string().regex(/^\d+$/u),
+  hasMore: z.boolean(),
+  serverTime: z.string().datetime({ offset: true }),
+}).strict()
+
+export const FamilyCyclePageV1Schema = z.object({
+  records: z.array(z.object({
+    event: FamilyCoverageCycleEventV1Schema,
+    syncSequence: z.string().regex(/^\d+$/u),
+  }).strict()).max(500),
+  nextCursor: z.string().regex(/^\d+$/u),
+  hasMore: z.boolean(),
+  serverTime: z.string().datetime({ offset: true }),
+}).strict()
+
+export const FamilyCursorResponseV1Schema = z.object({
+  cursor: VersionedFamilyTrainingCursorV1Schema.nullable(),
+  serverTime: z.string().datetime({ offset: true }),
+}).strict()
+
 export const ErrorResponseSchema = z.object({
   error: z.object({
     code: z.string().min(1).max(128),
@@ -235,11 +312,17 @@ export const PasskeyRecordSchema = z.object({
 }).strict()
 
 export const UnsyncedExportSchema = z.object({
-  schema: z.literal('linerecall-unsynced-events-v3'),
+  schema: z.literal('linerecall-unsynced-events-v4'),
   exportedAt: IsoDateSchema,
   deviceId: z.string().regex(UUID_V7),
   snapshotVersion: z.string().regex(SAFE_ID),
   pendingEvents: z.array(ReviewEventV1Schema).max(50_000),
   rejectedEvents: z.array(z.object({ event: ReviewEventV1Schema, rejection: SyncRejectionSchema }).strict()).max(50_000),
   pendingPuzzleAttempts: z.array(PuzzleAttemptV1Schema).max(50_000),
+  pendingFamilyCoverageEvents: z.array(FamilyCoverageEventV1Schema).max(50_000),
+  pendingFamilyCycleEvents: z.array(FamilyCoverageCycleEventV1Schema).max(50_000),
+  pendingFamilyCursors: z.array(z.object({
+    mutationId: z.string().regex(UUID_V7),
+    value: FamilyTrainingCursorV1Schema,
+  }).strict()).max(10_000),
 }).strict()

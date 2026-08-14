@@ -15,3 +15,47 @@ test('the frontend visual language has no decorative gradients, glass blur, or b
   expect(css).not.toMatch(/\.drill-thumb-dock\s*\{[^}]*position\s*:\s*(?:fixed|sticky)/isu)
   expect(css).not.toMatch(/\.puzzle-board-actions\s*\{[^}]*position\s*:\s*(?:fixed|sticky)/isu)
 })
+
+test('the shared application theme uses one explicit, accessible token system', async () => {
+  const css = await readFile(new URL('../../src/app/styles.css', import.meta.url), 'utf8')
+
+  for (const token of [
+    '--bg',
+    '--surface',
+    '--surface-raised',
+    '--surface-muted',
+    '--text',
+    '--muted',
+    '--border',
+    '--border-strong',
+    '--accent',
+    '--accent-hover',
+    '--focus',
+    '--space-1',
+    '--space-7',
+    '--radius-sm',
+    '--radius-lg',
+    '--control-height',
+    '--font-mono',
+  ]) {
+    expect(css).toContain(`${token}:`)
+  }
+
+  expect(css).toMatch(/font-family:\s*system-ui,\s*-apple-system,\s*BlinkMacSystemFont,\s*"Segoe UI",\s*sans-serif/iu)
+  expect(css).toMatch(/html\s*\{[^}]*min-width:\s*320px/isu)
+  expect(css).toMatch(/button,\s*input,\s*textarea,\s*select\s*\{[^}]*min-height:\s*44px/isu)
+  expect(css).toMatch(/@media\s*\(prefers-reduced-motion:\s*reduce\)/iu)
+  expect(css).toMatch(/@media\s*\(forced-colors:\s*active\)/iu)
+  expect(css).toMatch(/\.primary-action[\s\S]*?background:\s*var\(--accent\)/iu)
+  expect(css).toMatch(/\.secondary-button\s*\{[^}]*background:\s*transparent/isu)
+})
+
+test('shared route surfaces reflow without relying on clipped horizontal card tracks', async () => {
+  const css = await readFile(new URL('../../src/app/styles.css', import.meta.url), 'utf8')
+
+  expect(css).toMatch(/\.family-card-grid\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/isu)
+  expect(css).toMatch(/@media\s*\(max-width:\s*900px\)[\s\S]*?\.family-card-grid\s*\{[^}]*repeat\(2,/isu)
+  expect(css).toMatch(/@media\s*\(max-width:\s*600px\)[\s\S]*?\.family-card-grid\s*\{[^}]*grid-template-columns:\s*1fr/isu)
+  expect(css).toMatch(/\.today-grid\s*\{[^}]*display:\s*grid/isu)
+  expect(css).not.toMatch(/\.family-card-grid\s*\{[^}]*overflow-x:\s*(?:auto|scroll)/isu)
+})

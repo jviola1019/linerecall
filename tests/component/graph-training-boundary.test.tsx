@@ -115,6 +115,16 @@ describe('validated v3 graph-training boundary', () => {
     await user.click(screen.getByRole('tab', { name: 'Evidence' }))
     expect(screen.getByRole('tabpanel', { name: 'evidence analysis' })).toHaveTextContent(/historical play/u)
     expect(screen.getByRole('table')).toBeVisible()
+    expect(screen.getByRole('table')).toHaveTextContent('W / D / L')
+    expect(screen.getByText(/Engine forecasts/u)).toBeVisible()
+
+    const evidenceTab = screen.getByRole('tab', { name: 'Evidence' })
+    evidenceTab.focus()
+    await user.keyboard('{ArrowLeft}')
+    expect(screen.getByRole('tab', { name: 'Alternatives' })).toHaveFocus()
+    expect(screen.getByRole('tabpanel', { name: 'alternatives analysis' })).toBeVisible()
+    await user.keyboard('{Home}')
+    expect(screen.getByRole('tab', { name: 'Line' })).toHaveFocus()
 
     const picker = screen.getByRole('combobox', { name: 'Legal move picker' })
     await user.selectOptions(picker, 'g2g3')
@@ -142,6 +152,7 @@ describe('validated v3 graph-training boundary', () => {
       />,
     )
     await user.click(await screen.findByRole('button', { name: 'Start full repertoire' }))
+    expect(screen.getByRole('progressbar', { name: /variations completed/u })).toBeVisible()
     const remaining = screen.getByText('Remaining paths').closest('div')
     expect(remaining).not.toBeNull()
     expect(within(remaining!).getByText(String(graph.paths.length))).toBeVisible()
@@ -200,16 +211,20 @@ describe('validated v3 graph-training boundary', () => {
       />,
     )
     await user.click(await screen.findByRole('button', { name: 'Start full repertoire' }))
-    const pause = screen.getByRole('button', { name: 'Pause' })
+    const desktopControls = document.querySelector('.desktop-session-controls')
+    if (!(desktopControls instanceof HTMLElement)) throw new Error('Desktop session controls are missing')
+    const pause = within(desktopControls).getByRole('button', { name: 'Pause' })
     await user.click(pause)
-    expect(screen.getByRole('button', { name: 'Resume' })).toHaveAttribute('aria-pressed', 'true')
+    expect(within(desktopControls).getByRole('button', { name: 'Resume' })).toHaveAttribute('aria-pressed', 'true')
 
-    await user.click(screen.getByRole('button', { name: 'Choose variation' }))
+    await user.click(within(desktopControls).getByRole('button', { name: 'Choose variation' }))
     expect(await screen.findByRole('heading', { name: 'Practice every audited branch' })).toBeVisible()
 
     await user.click(screen.getByRole('button', { name: 'Start full repertoire' }))
-    await user.click(screen.getByRole('button', { name: 'Stop training' }))
-    expect(onStop).toHaveBeenCalledTimes(1)
+    const restartedDesktopControls = document.querySelector('.desktop-session-controls')
+    if (!(restartedDesktopControls instanceof HTMLElement)) throw new Error('Restarted desktop session controls are missing')
+    await user.click(within(restartedDesktopControls).getByRole('button', { name: 'Stop training' }))
+    await waitFor(() => expect(onStop).toHaveBeenCalledTimes(1))
   })
 
   test('continues autonomously through every branch and emits one versioned completion per path', async () => {
@@ -442,7 +457,9 @@ describe('validated v3 graph-training boundary', () => {
     })
 
     writable = false
-    await user.click(screen.getByRole('button', { name: 'Stop training' }))
+    const desktopControls = document.querySelector('.desktop-session-controls')
+    if (!(desktopControls instanceof HTMLElement)) throw new Error('Desktop session controls are missing')
+    await user.click(within(desktopControls).getByRole('button', { name: 'Stop training' }))
     expect(onStop).not.toHaveBeenCalled()
     expect(screen.getByRole('heading', { name: 'Continuous graph practice' })).toBeVisible()
     expect(await screen.findByRole('alert')).toHaveTextContent(/latest family progress was not saved|waiting to be saved/u)
@@ -450,7 +467,7 @@ describe('validated v3 graph-training boundary', () => {
     writable = true
     await user.click(screen.getByRole('button', { name: 'Retry saving progress' }))
     await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
-    await user.click(screen.getByRole('button', { name: 'Stop training' }))
+    await user.click(within(desktopControls).getByRole('button', { name: 'Stop training' }))
     await waitFor(() => expect(onStop).toHaveBeenCalledTimes(1))
   })
 })

@@ -25,7 +25,7 @@ const expectedGraph = [
   { archiveId: 'standard-2026-06', sourceId: 'lichess-standard-rated-q2-2026' as const, month: '2026-06', sha256: 'b'.repeat(64) },
 ]
 
-test('puzzle association requires the exact complete approved graph identity', () => {
+test('legacy puzzle review fixture still requires its exact complete graph identity', () => {
   assert.doesNotThrow(() => assertPuzzleGraphPrerequisite({
     schemaVersion: '3', completeBaselineMaximumPly: '30', adaptiveMaximumPly: '100', completed: expectedGraph, expected: expectedGraph,
   }))

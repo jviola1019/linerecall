@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from 'react'
+import { Chess, type PieceSymbol, type Square } from 'chess.js'
 import type { BoardOrientation } from '../../domain/board.ts'
 import {
   GRAPH_TRAINING_CONTRACT_ID,
@@ -38,6 +45,7 @@ import type { BoardAnnotation, BoardAnnotationTone } from '../../domain/board-an
 import { BoardAnnotationOverlay, BoardAnnotationPanel } from './BoardAnnotations.tsx'
 import { ChessBoard, type BoardMoveStatus } from './ChessBoard.tsx'
 import { EmptyState, ErrorState, LoadingState } from './ResourceState.tsx'
+import './training-puzzle.css'
 
 export type GraphTrainingResource =
   | { status: 'disabled'; reason: string }
@@ -68,6 +76,12 @@ export interface GraphTrainingBoundaryProps {
   onCoverageCycleStarted?: (cycle: {
     packId: string
     coverageCycleId: string
+  }) => void | Promise<void>
+  onNamedVariationCycleStarted?: (cycle: {
+    packId: string
+    coverageCycleId: string
+    pathGroupId: string
+    continuation: boolean
   }) => void | Promise<void>
   onRestartFullCoverage?: (options?: { autoStart?: boolean }) => void | Promise<void>
   onRetry?: () => void
@@ -107,7 +121,7 @@ function pathLabel(
   summary: ReturnType<typeof listGraphTrainingPaths>[number],
   pathDisplayNameById: Readonly<Record<string, string>> | undefined,
 ): string {
-  return `${pathDisplayName(summary, pathDisplayNameById)} — ${summary.learnerDecisionCount} learner moves, terminal ply ${summary.terminalPly}`
+  return `${pathDisplayName(summary, pathDisplayNameById)} — ${summary.learnerDecisionCount} learner moves, ${terminalLabel(summary.terminalStatus)} at ply ${summary.terminalPly}`
 }
 
 function acceptedMoveStatus(state: GraphTrainingSessionState): BoardMoveStatus | undefined {
@@ -116,6 +130,12 @@ function acceptedMoveStatus(state: GraphTrainingSessionState): BoardMoveStatus |
 }
 
 const PATH_PAGE_SIZE = 40
+const NORMAL_VISUAL_SETTLE_MS = 190
+const PROMOTION_VISUAL_SETTLE_MS = 360
+
+function visualSettleDelay(moveUci: string | null | undefined, baseDelay = NORMAL_VISUAL_SETTLE_MS): number {
+  return moveUci?.length === 5 ? PROMOTION_VISUAL_SETTLE_MS : baseDelay
+}
 
 function feedbackLabel(value: string): string {
   const labels: Record<string, string> = {
@@ -130,6 +150,38 @@ function feedbackLabel(value: string): string {
     unsupported_move: 'Outside the audited graph',
   }
   return labels[value] ?? value.replaceAll('_', ' ').replace(/^./u, (character) => character.toUpperCase())
+}
+
+function terminalLabel(value: string): string {
+  const labels: Record<string, string> = {
+    evidence_terminal: 'Evidence end',
+    depth_capped: 'Depth limit reached',
+    insufficient_sample: 'Sample threshold reached',
+    quarantined: 'Quarantined',
+  }
+  return labels[value] ?? feedbackLabel(value)
+}
+
+function cohortSourceLabel(source: 'broadcast' | 'lichess-standard'): string {
+  return source === 'broadcast' ? 'Official broadcasts' : 'Lichess rated games'
+}
+
+function principalVariationSan(epd: string, uciMoves: readonly string[]): string[] {
+  const chess = new Chess(`${epd} 0 1`)
+  const san: string[] = []
+  for (const uci of uciMoves.slice(0, 10)) {
+    try {
+      const move = chess.move({
+        from: uci.slice(0, 2) as Square,
+        to: uci.slice(2, 4) as Square,
+        ...(uci[4] ? { promotion: uci[4] as PieceSymbol } : {}),
+      })
+      san.push(move.san)
+    } catch {
+      return [...san, `${uci} (unavailable)`]
+    }
+  }
+  return san
 }
 
 function GraphTrainingWorkspace({
@@ -149,6 +201,7 @@ function GraphTrainingWorkspace({
   onAutoStartPathGroupConsumed,
   onCoverageScopeChange,
   onCoverageCycleStarted,
+  onNamedVariationCycleStarted,
   onRestartFullCoverage,
   familyId,
   journalRepository,
@@ -192,12 +245,14 @@ function GraphTrainingWorkspace({
   const [queuedCursorCount, setQueuedCursorCount] = useState(0)
   const [exitPending, setExitPending] = useState(false)
   const [startPending, setStartPending] = useState(false)
+  const [boardTransitionLocked, setBoardTransitionLocked] = useState(false)
   const [generationRestoreBlocked, setGenerationRestoreBlocked] = useState(false)
   const reportedCompletionKeys = useRef(new Set<string>())
   const pendingCompletionKeys = useRef(new Set<string>())
   const autoStartHandled = useRef(false)
   const autoStartPathGroupHandled = useRef(false)
   const analysisContextRef = useRef<HTMLElement>(null)
+  const analysisTabRefs = useRef(new Map<'line' | 'alternatives' | 'evidence', HTMLButtonElement>())
   const availablePathGroupsRef = useRef(availablePathGroups)
   availablePathGroupsRef.current = availablePathGroups
   const cursorWriter = useMemo(
@@ -207,6 +262,12 @@ function GraphTrainingWorkspace({
   const announce = (value: string): void => {
     setLocalAnnouncement(value)
     onAnnouncement?.(value)
+  }
+  const announceLocal = (value: string): void => {
+    // Routine autoplay belongs to this workspace live region. Keeping it
+    // local prevents a later opponent transition from erasing a higher-value
+    // global storage or validation announcement.
+    setLocalAnnouncement(value)
   }
 
   const toggleAnnotationMode = (): void => {
@@ -233,6 +294,24 @@ function GraphTrainingWorkspace({
       : tab === 'alternatives'
         ? 'Known alternative lines opened.'
         : 'Current line opened.')
+  }
+
+  const handleAnalysisTabKeyDown = (
+    event: KeyboardEvent<HTMLButtonElement>,
+    currentTab: 'line' | 'alternatives' | 'evidence',
+  ): void => {
+    const tabs = ['line', 'alternatives', 'evidence'] as const
+    const currentIndex = tabs.indexOf(currentTab)
+    let nextIndex: number | null = null
+    if (event.key === 'ArrowRight') nextIndex = (currentIndex + 1) % tabs.length
+    if (event.key === 'ArrowLeft') nextIndex = (currentIndex - 1 + tabs.length) % tabs.length
+    if (event.key === 'Home') nextIndex = 0
+    if (event.key === 'End') nextIndex = tabs.length - 1
+    if (nextIndex === null) return
+    event.preventDefault()
+    const next = tabs[nextIndex]!
+    setAnalysisTab(next)
+    analysisTabRefs.current.get(next)?.focus()
   }
 
   useEffect(() => {
@@ -408,12 +487,26 @@ function GraphTrainingWorkspace({
       setSession((current) => {
         if (!current || current.phase !== 'opponent_move_ready') return current
         const next = applyPendingOpponentGraphMove(adapter, current)
-        announce(`${next.lastTransition?.moveUci ?? 'Opponent move'} played for the opponent.`)
+        setBoardTransitionLocked(true)
+        announceLocal(`${next.lastTransition?.moveUci ?? 'Opponent move'} played for the opponent.`)
         return next
       })
-    }, reducedMotion ? 0 : 190)
+    }, reducedMotion ? 0 : visualSettleDelay(session.lastTransition?.moveUci))
     return () => clearTimeout(timeout)
-  }, [adapter, manualPacingEnabled, paused, reducedMotion, session?.phase, session?.currentNodeId])
+  }, [adapter, manualPacingEnabled, paused, reducedMotion, session?.phase, session?.currentNodeId, session?.lastTransition?.moveUci])
+
+  useEffect(() => {
+    if (!boardTransitionLocked) return
+    if (reducedMotion) {
+      setBoardTransitionLocked(false)
+      return
+    }
+    const timeout = setTimeout(
+      () => setBoardTransitionLocked(false),
+      visualSettleDelay(session?.lastTransition?.moveUci),
+    )
+    return () => clearTimeout(timeout)
+  }, [boardTransitionLocked, reducedMotion, session?.lastTransition?.moveUci])
 
   useEffect(() => {
     if (paused || manualPacingEnabled || session?.phase !== 'path_complete') return
@@ -421,12 +514,12 @@ function GraphTrainingWorkspace({
       setSession((current) => {
         if (!current || current.phase !== 'path_complete') return current
         const next = continueGraphTrainingSession(adapter, current)
-        announce(next.phase === 'session_complete' ? 'Path batch complete.' : 'Next audited path started.')
+        announceLocal(next.phase === 'session_complete' ? 'Path batch complete.' : 'Next audited path started.')
         return next
       })
-    }, reducedMotion ? 0 : 240)
+    }, reducedMotion ? 0 : visualSettleDelay(session.lastTransition?.moveUci, 240))
     return () => clearTimeout(timeout)
-  }, [adapter, manualPacingEnabled, paused, reducedMotion, session?.phase, session?.activePathId])
+  }, [adapter, manualPacingEnabled, paused, reducedMotion, session?.phase, session?.activePathId, session?.lastTransition?.moveUci])
 
   useEffect(() => {
     if (paused || manualPacingEnabled || session?.phase !== 'session_complete' || !autonomousPlan) return
@@ -486,10 +579,11 @@ function GraphTrainingWorkspace({
     }
   }
 
-  const startSelectedVariation = (
+  const startSelectedVariation = async (
     pathGroupId = selectedPathGroupId,
     continuation = false,
-  ): boolean => {
+  ): Promise<boolean> => {
+    if (startPending) return false
     const group = availablePathGroups.find(({ id }) => id === pathGroupId)
       ?? pathGroupByPathId?.[selectedPathId]
     const selectedPathIds = [...new Set(group?.pathIds ?? [selectedPathId])]
@@ -509,6 +603,18 @@ function GraphTrainingWorkspace({
         dueCardIds,
         coverageCycleOrdinal: cycleOrdinal,
       })
+      if (!group && onNamedVariationCycleStarted) {
+        throw new Error('Named-variation persistence requires an exact promoted branch')
+      }
+      setStartPending(true)
+      if (group) {
+        await onNamedVariationCycleStarted?.({
+          packId: adapter.graph.pack.id,
+          coverageCycleId: selection.coverageCycleId,
+          pathGroupId: group.id,
+          continuation,
+        })
+      }
       setAutonomousPlan(plan)
       setActiveBatchIndex(0)
       setCompletedBeforeBatch([])
@@ -525,8 +631,11 @@ function GraphTrainingWorkspace({
       announce(`${selectedPathIds.length} audited path${selectedPathIds.length === 1 ? '' : 's'} queued for ${group?.label ?? 'this variation'}.`)
       return true
     } catch (error) {
+      setPersistenceError(`Named variation could not start: ${message(error)}`)
       announce(message(error))
       return false
+    } finally {
+      setStartPending(false)
     }
   }
 
@@ -612,9 +721,10 @@ function GraphTrainingWorkspace({
     ) return
     autoStartPathGroupHandled.current = true
     setSelectedPathGroupId(autoStartPathGroupId)
-    if (startSelectedVariation(autoStartPathGroupId, true)) {
-      onAutoStartPathGroupConsumed?.()
-    }
+    void startSelectedVariation(autoStartPathGroupId, true).then((started) => {
+      if (started) onAutoStartPathGroupConsumed?.()
+      else autoStartPathGroupHandled.current = false
+    })
   }, [
     autoStartPathGroupId,
     generationRestoreBlocked,
@@ -627,7 +737,8 @@ function GraphTrainingWorkspace({
     setSession((current) => {
       if (!current || current.phase !== 'opponent_move_ready') return current
       const next = applyPendingOpponentGraphMove(adapter, current)
-      announce(`${next.lastTransition?.moveUci ?? 'Opponent move'} played for the opponent.`)
+      setBoardTransitionLocked(true)
+      announceLocal(`${next.lastTransition?.moveUci ?? 'Opponent move'} played for the opponent.`)
       return next
     })
   }
@@ -636,7 +747,7 @@ function GraphTrainingWorkspace({
     setSession((current) => {
       if (!current || current.phase !== 'path_complete') return current
       const next = continueGraphTrainingSession(adapter, current)
-      announce(next.phase === 'session_complete' ? 'Path batch complete.' : 'Next audited path started.')
+      announceLocal(next.phase === 'session_complete' ? 'Path batch complete.' : 'Next audited path started.')
       return next
     })
   }
@@ -787,8 +898,22 @@ function GraphTrainingWorkspace({
         <header>
           <p className="eyebrow">Validated family graph</p>
           <h2 id="graph-path-title">Practice every audited branch</h2>
-          <p>Full repertoire practice continues through each branch without hiding less common continuations.</p>
+          <p>Choose a scope once. LineRecall then walks every included path to its audited evidence end and continues automatically.</p>
         </header>
+        <div className="practice-scope-grid" aria-label="Practice scope options">
+          <article data-scope="family">
+            <strong>Full family</strong>
+            <span>Every audited path in this pack, including less common branches.</span>
+          </article>
+          <article data-scope="variation">
+            <strong>Named variation</strong>
+            <span>Every distinct route assigned to one named branch.</span>
+          </article>
+          <article data-scope="path">
+            <strong>Single path</strong>
+            <span>One exact route for focused study.</span>
+          </article>
+        </div>
         <label className="graph-path-search">
           <span>Find a variation</span>
           <input
@@ -812,7 +937,7 @@ function GraphTrainingWorkspace({
                 onClick={() => setSelectedPathId(path.id)}
               >
                 <span>{pathDisplayName(path, pathDisplayNameById)}</span>
-                <small>{path.learnerDecisionCount} learner moves · terminal ply {path.terminalPly}</small>
+                <small>{path.learnerDecisionCount} learner moves · {terminalLabel(path.terminalStatus)} at ply {path.terminalPly}</small>
               </button>
             </li>
           ))}
@@ -854,16 +979,27 @@ function GraphTrainingWorkspace({
             {startPending ? 'Saving coverage cycle…' : 'Start full repertoire'}
           </button>
           {availablePathGroups.length > 0 ? (
-            <button type="button" className="secondary-button" onClick={() => { startSelectedVariation() }}>
-              Practice selected variation
+            <button type="button" className="secondary-button" disabled={startPending} onClick={() => { void startSelectedVariation() }}>
+              {startPending ? 'Saving variation cycle…' : 'Practice selected variation'}
             </button>
           ) : null}
           <button type="button" className="secondary-button" onClick={startSelected}>Practice selected path</button>
         </div>
         <label className="toggle-row">
           <input type="checkbox" checked={manualPacingEnabled} onChange={(event) => setManualPacingEnabled(event.currentTarget.checked)} />
-          <span>Pause after each move</span>
+          <span><strong>Manual pacing</strong> · pause after each move and opponent reply</span>
         </label>
+        <details className="practice-criteria">
+          <summary>What counts as an audited practice path?</summary>
+          <p>
+            Learner book moves need at least 500 games in a declared evidence cohort and an exact Stockfish check.
+            Playable and exploratory moves may appear in analysis, but they do not silently become required recall moves.
+          </p>
+          <p>
+            Practice stops only at the recorded evidence end, a sample boundary, quarantine, or the ply-100 safety limit.
+            Engine forecasts are labeled separately and never extend a short line.
+          </p>
+        </details>
         {paths.length > 1_000 ? <p className="field-help">Paths continue in bounded batches; all {paths.length.toLocaleString('en-US')} remain in this run.</p> : null}
         <p className="sr-only" aria-live="polite" aria-atomic="true">{localAnnouncement}</p>
       </section>
@@ -1000,35 +1136,44 @@ function GraphTrainingWorkspace({
           <p className="eyebrow">{pathDisplayName(path, pathDisplayNameById)}</p>
           <h2 id="graph-training-title">Continuous graph practice</h2>
           <p>Path {activePathOrdinal} of {coverage.totalPathCount} · {statusText} · move {Math.min(session.activePathNodeIndex + 1, path.nodeIds.length)} of {path.nodeIds.length}</p>
+          <progress
+            className="family-coverage-progress"
+            max={Math.max(1, coverage.totalPathCount)}
+            value={coverage.completedPathCount}
+            aria-label={`${coverage.completedPathCount} of ${coverage.totalPathCount} variations completed`}
+          />
         </div>
-        <div className="inline-controls">
+        <div className="inline-controls desktop-session-controls">
           {onSetOrientation ? (
-            <button type="button" className="secondary-button" onClick={() => onSetOrientation(orientation === 'white' ? 'black' : 'white')}>
-              Flip board
+            <button type="button" className="secondary-button" aria-label="Flip board" onClick={() => onSetOrientation(orientation === 'white' ? 'black' : 'white')}>
+              <span className="control-label-wide">Flip board</span><span className="control-label-compact" aria-hidden="true">Flip</span>
             </button>
           ) : null}
           <button
             type="button"
             className="secondary-button"
+            aria-label={paused ? 'Resume' : 'Pause'}
             aria-pressed={paused}
             onClick={() => {
               setPaused((current) => !current)
               announce(paused ? 'Training resumed.' : 'Training paused. The current position was kept.')
             }}
           >
-            {paused ? 'Resume' : 'Pause'}
+            <span className="control-label-wide">{paused ? 'Resume' : 'Pause'}</span><span className="control-label-compact" aria-hidden="true">{paused ? 'Resume' : 'Pause'}</span>
           </button>
           <button
             type="button"
             className="secondary-button"
+            aria-label="Skip variation"
             disabled={!canSkipPath}
             onClick={skipPath}
           >
-            Skip variation
+            <span className="control-label-wide">Skip variation</span><span className="control-label-compact" aria-hidden="true">Skip</span>
           </button>
           <button
             type="button"
             className="secondary-button"
+            aria-label="Choose variation"
             disabled={exitPending}
             onClick={() => {
               void persistBeforeExit(() => {
@@ -1038,25 +1183,85 @@ function GraphTrainingWorkspace({
               }, 'Variation chooser opened. The saved cursor was kept.')
             }}
           >
-            Choose variation
+            <span className="control-label-wide">Choose variation</span><span className="control-label-compact" aria-hidden="true">Choose</span>
           </button>
           {onStop ? (
             <button
               type="button"
               className="secondary-button"
+              aria-label="Stop training"
               disabled={exitPending}
               onClick={() => { void persistBeforeExit(onStop, 'Training stopped after progress was saved.') }}
             >
-              Stop training
+              <span className="control-label-wide">Stop training</span><span className="control-label-compact" aria-hidden="true">Stop</span>
             </button>
           ) : null}
+        </div>
+        <div className="mobile-session-controls">
+          <button
+            type="button"
+            className="secondary-button"
+            aria-label={paused ? 'Resume' : 'Pause'}
+            aria-pressed={paused}
+            onClick={() => {
+              setPaused((current) => !current)
+              announce(paused ? 'Training resumed.' : 'Training paused. The current position was kept.')
+            }}
+          >
+            {paused ? 'Resume' : 'Pause'}
+          </button>
+          <details className="mobile-session-menu">
+            <summary aria-label="More session options">More</summary>
+            <div className="mobile-session-menu-panel" role="group" aria-label="Session options">
+              {onSetOrientation ? (
+                <button type="button" className="secondary-button" aria-label="Flip board" onClick={() => onSetOrientation(orientation === 'white' ? 'black' : 'white')}>
+                  Flip board
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="secondary-button"
+                aria-label="Skip variation"
+                disabled={!canSkipPath}
+                onClick={skipPath}
+              >
+                Skip variation
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                aria-label="Choose variation"
+                disabled={exitPending}
+                onClick={() => {
+                  void persistBeforeExit(() => {
+                    setSession(null)
+                    setAutonomousPlan(null)
+                    setPaused(false)
+                  }, 'Variation chooser opened. The saved cursor was kept.')
+                }}
+              >
+                Choose variation
+              </button>
+              {onStop ? (
+                <button
+                  type="button"
+                  className="secondary-button"
+                  aria-label="Stop training"
+                  disabled={exitPending}
+                  onClick={() => { void persistBeforeExit(onStop, 'Training stopped after progress was saved.') }}
+                >
+                  Stop training
+                </button>
+              ) : null}
+            </div>
+          </details>
         </div>
       </header>
       <div className="graph-training-board">
         <ChessBoard
           fen={fen}
           orientation={orientation}
-          disabled={paused || !waitingForLearner || annotationMode}
+          disabled={paused || boardTransitionLocked || !waitingForLearner || annotationMode}
           reducedMotion={reducedMotion}
           hintUci={session.usedHint ? expected[0]?.uci ?? null : null}
           lastMove={session.lastTransition && moveStatus ? { uci: session.lastTransition.moveUci, status: moveStatus } : null}
@@ -1071,31 +1276,33 @@ function GraphTrainingWorkspace({
               onExitEditing={() => setAnnotationMode(false)}
             />
           )}
+          boardControls={(
+            <div className="graph-thumb-dock" role="toolbar" aria-label="Training tools">
+              <button
+                type="button"
+                disabled={boardTransitionLocked || !waitingForLearner || session.usedHint || expected.length === 0 || annotationMode}
+                onClick={() => {
+                  setSession(markGraphTrainingHint(adapter, session))
+                  announce(expected.length > 0 ? 'Hint route shown.' : 'No audited route is available.')
+                }}
+              >
+                Hint
+              </button>
+              <button type="button" onClick={() => openMobileAnalysis('alternatives')}>Lines</button>
+              <button type="button" onClick={() => openMobileAnalysis('evidence')}>Why</button>
+              <button
+                type="button"
+                aria-pressed={annotationMode}
+                disabled={boardTransitionLocked || !waitingForLearner}
+                onClick={toggleAnnotationMode}
+              >
+                {annotationMode ? 'Resume' : 'Annotate'}
+              </button>
+            </div>
+          )}
           onMove={handleMove}
           onAnnouncement={announce}
         />
-        <div className="graph-thumb-dock" role="toolbar" aria-label="Training tools">
-          <button
-            type="button"
-            disabled={!waitingForLearner || session.usedHint || expected.length === 0 || annotationMode}
-            onClick={() => {
-              setSession(markGraphTrainingHint(adapter, session))
-              announce(expected.length > 0 ? 'Hint route shown.' : 'No audited route is available.')
-            }}
-          >
-            Hint
-          </button>
-          <button type="button" onClick={() => openMobileAnalysis('alternatives')}>Lines</button>
-          <button type="button" onClick={() => openMobileAnalysis('evidence')}>Why</button>
-          <button
-            type="button"
-            aria-pressed={annotationMode}
-            disabled={!waitingForLearner}
-            onClick={toggleAnnotationMode}
-          >
-            {annotationMode ? 'Resume' : 'Annotate'}
-          </button>
-        </div>
         {annotationMode ? (
           <BoardAnnotationPanel
             annotations={annotations}
@@ -1120,12 +1327,18 @@ function GraphTrainingWorkspace({
         <div className="analysis-tabs" role="tablist" aria-label="Position analysis">
           {(['line', 'alternatives', 'evidence'] as const).map((tab) => (
             <button
+              ref={(node) => {
+                if (node) analysisTabRefs.current.set(tab, node)
+                else analysisTabRefs.current.delete(tab)
+              }}
               type="button"
               role="tab"
               key={tab}
               aria-selected={analysisTab === tab}
               aria-controls={`graph-analysis-${tab}`}
+              tabIndex={analysisTab === tab ? 0 : -1}
               onClick={() => setAnalysisTab(tab)}
+              onKeyDown={(event) => handleAnalysisTabKeyDown(event, tab)}
             >
               {tab === 'line' ? 'Line' : tab === 'alternatives' ? 'Alternatives' : 'Evidence'}
             </button>
@@ -1159,12 +1372,20 @@ function GraphTrainingWorkspace({
               <h4>Known moves from this position</h4>
               {currentEdges.length > 0 ? (
                 <ul className="graph-alternative-list">
-                  {currentEdges.map((edge) => (
-                    <li key={edge.id}>
-                      <span><code>{edge.san}</code> · {edge.role === 'book' ? 'Book' : edge.role === 'playable' ? 'Playable' : 'Exploratory'}</span>
-                      <span>{Math.round(edge.evidence.conditionalUsage * 100)}% usage</span>
-                    </li>
-                  ))}
+                  {currentEdges.map((edge) => {
+                    const cohort = edge.evidence.cohorts.find(
+                      ({ cohortId }) => cohortId === edge.evidence.selectionCohortId,
+                    )
+                    return (
+                      <li key={edge.id}>
+                        <span><code>{edge.san}</code> · {edge.role === 'book' ? 'Book' : edge.role === 'playable' ? 'Playable' : 'Exploratory'}</span>
+                        <span>
+                          {Math.round(edge.evidence.conditionalUsage * 100)}% usage
+                          {cohort ? ` · ${cohort.aggregate.moveN.toLocaleString('en-US')} games` : ''}
+                        </span>
+                      </li>
+                    )
+                  })}
                 </ul>
               ) : <p>No sampled continuation is stored at this terminal.</p>}
             </>
@@ -1175,30 +1396,86 @@ function GraphTrainingWorkspace({
                 <div className="graph-evidence-scroll" tabIndex={0} aria-label="Move evidence table">
                   <table className="graph-evidence-table">
                     <thead>
-                      <tr><th scope="col">Move</th><th scope="col">Role</th><th scope="col">Games</th><th scope="col">Usage</th><th scope="col">Engine</th></tr>
+                      <tr>
+                        <th scope="col">Move</th>
+                        <th scope="col">Role</th>
+                        <th scope="col">Games</th>
+                        <th scope="col">W / D / L</th>
+                        <th scope="col">Score</th>
+                        <th scope="col">Usage</th>
+                        <th scope="col">Engine</th>
+                      </tr>
                     </thead>
                     <tbody>
-                      {currentEdges.map((edge) => (
-                        <tr key={edge.id}>
+                      {currentEdges.map((edge) => {
+                        const selectedCohort = edge.evidence.cohorts.find(
+                          ({ cohortId }) => cohortId === edge.evidence.selectionCohortId,
+                        )
+                        return <tr key={edge.id}>
                           <th scope="row"><code>{edge.san}</code></th>
                           <td>{edge.role === 'book' ? 'Book' : edge.role === 'playable' ? 'Playable' : 'Exploratory'}</td>
-                          <td>{edge.evidence.cohorts.reduce((total, cohort) => total + cohort.n, 0).toLocaleString('en-US')}</td>
+                          <td>
+                            {selectedCohort ? selectedCohort.aggregate.moveN.toLocaleString('en-US') : 'Unavailable'}
+                            {selectedCohort && selectedCohort.aggregate.moveN < 500
+                              ? <small className="sample-warning">Low sample</small>
+                              : null}
+                          </td>
+                          <td>{selectedCohort
+                            ? `${selectedCohort.aggregate.wins.toLocaleString('en-US')} / ${selectedCohort.aggregate.draws.toLocaleString('en-US')} / ${selectedCohort.aggregate.losses.toLocaleString('en-US')}`
+                            : 'Unavailable'}</td>
+                          <td>{selectedCohort?.aggregate.score !== null && selectedCohort?.aggregate.score !== undefined
+                            ? `${Math.round(selectedCohort.aggregate.score * 1_000) / 10}%`
+                            : 'No games'}</td>
                           <td>{Math.round(edge.evidence.conditionalUsage * 100)}%</td>
                           <td>{edge.evidence.engine.status === 'verified'
-                            ? `${edge.evidence.engine.centipawnLoss ?? 0} cp loss`
+                            ? edge.evidence.engine.centipawnLoss === null
+                              ? 'Verified mate result'
+                              : `${edge.evidence.engine.centipawnLoss} cp loss`
                             : edge.evidence.engine.status === 'quarantined' ? 'Quarantined' : 'Unverified'}</td>
                         </tr>
-                      ))}
+                      })}
                     </tbody>
                   </table>
                 </div>
               ) : <p>No empirical move evidence is stored at this terminal.</p>}
-              <p className="field-help">Game counts remain separated by source cohort in the signed graph. Percentages describe historical play, not a promised result.</p>
+              {currentEdges.length > 0 ? (
+                <div className="engine-forecast-list">
+                  <h5>Engine forecasts</h5>
+                  <p>Forecasts are engine analysis, not backtested continuations.</p>
+                  {currentEdges.filter(({ evidence }) => evidence.engine.check !== null).slice(0, 5).map((edge) => {
+                    const check = edge.evidence.engine.check!
+                    const selectedCohort = edge.evidence.cohorts.find(
+                      ({ cohortId }) => cohortId === edge.evidence.selectionCohortId,
+                    )
+                    return (
+                      <details key={`forecast:${edge.id}`}>
+                        <summary>
+                          <code>{edge.san}</code>
+                          <span>{check.centipawnLoss === null ? 'Mate comparison' : `${check.centipawnLoss} cp from best`}</span>
+                        </summary>
+                        <p><strong>Analyzed line:</strong> {principalVariationSan(currentNode.epd, check.movePrincipalVariationUci).join(' ')}</p>
+                        <p><strong>Best line:</strong> {principalVariationSan(currentNode.epd, check.bestPrincipalVariationUci).join(' ')}</p>
+                        {selectedCohort ? (
+                          <p>
+                            <strong>Evidence cohort:</strong> {cohortSourceLabel(selectedCohort.source)}, {selectedCohort.timeControl}, through {selectedCohort.cutoff}.
+                          </p>
+                        ) : null}
+                      </details>
+                    )
+                  })}
+                  {currentEdges.every(({ evidence }) => evidence.engine.check === null)
+                    ? <p>No exact engine forecast is stored for moves at this position.</p>
+                    : null}
+                </div>
+              ) : null}
+              <p className="field-help">W/D/L is from the learner side. Cohorts remain separate in the signed graph. Percentages describe historical play, not a promised result.</p>
             </>
           )}
         </section>
         {paused ? (
           <p role="status">Resume when you are ready. No move or review has been recorded.</p>
+        ) : boardTransitionLocked ? (
+          <p role="status">The opponent piece is finishing its move before input resumes.</p>
         ) : waitingForLearner ? (
           <>
             <button
@@ -1273,6 +1550,7 @@ export function GraphTrainingBoundary({
   onAutoStartPathGroupConsumed,
   onCoverageScopeChange,
   onCoverageCycleStarted,
+  onNamedVariationCycleStarted,
   onRestartFullCoverage,
   onRetry,
   familyId,
@@ -1332,6 +1610,7 @@ export function GraphTrainingBoundary({
       {...(onAutoStartPathGroupConsumed ? { onAutoStartPathGroupConsumed } : {})}
       {...(onCoverageScopeChange ? { onCoverageScopeChange } : {})}
       {...(onCoverageCycleStarted ? { onCoverageCycleStarted } : {})}
+      {...(onNamedVariationCycleStarted ? { onNamedVariationCycleStarted } : {})}
       {...(onRestartFullCoverage ? { onRestartFullCoverage } : {})}
       {...(familyId ? { familyId } : {})}
       {...(journalRepository ? { journalRepository } : {})}

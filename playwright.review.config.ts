@@ -8,9 +8,11 @@ const requestedBrowser = process.env.LINERECALL_E2E_BROWSER
 const browserName: 'chromium' | 'firefox' | 'webkit' = requestedBrowser === 'firefox' || requestedBrowser === 'webkit'
   ? requestedBrowser
   : 'chromium'
-const browserChannel: 'chrome' | 'msedge' = process.env.LINERECALL_E2E_CHANNEL === 'msedge'
-  ? 'msedge'
-  : 'chrome'
+const requestedChannel = process.env.LINERECALL_E2E_CHANNEL
+if (requestedChannel !== undefined && requestedChannel !== 'chrome' && requestedChannel !== 'msedge') {
+  throw new Error('LINERECALL_E2E_CHANNEL must be chrome or msedge when supplied')
+}
+const externalServer = process.env.LINERECALL_REVIEW_EXTERNAL_SERVER === '1'
 
 export default defineConfig({
   testDir: './tests/e2e-review',
@@ -28,7 +30,7 @@ export default defineConfig({
   use: {
     baseURL: `http://127.0.0.1:${requestedPort}`,
     browserName,
-    ...(browserName === 'chromium' ? { channel: browserChannel } : {}),
+    ...(browserName === 'chromium' && requestedChannel ? { channel: requestedChannel } : {}),
     bypassCSP: false,
     colorScheme: 'dark',
     reducedMotion: 'no-preference',
@@ -36,10 +38,14 @@ export default defineConfig({
     screenshot: 'only-on-failure',
     video: 'off',
   },
-  webServer: {
-    command: `npm run build:review-harness && npx vite preview --config vite.review-harness.config.ts --host 127.0.0.1 --port ${requestedPort} --strictPort`,
-    url: `http://127.0.0.1:${requestedPort}/index.html`,
-    reuseExistingServer: false,
-    timeout: 30_000,
-  },
+  ...(externalServer
+    ? {}
+    : {
+        webServer: {
+          command: `node node_modules/vite/bin/vite.js preview --config vite.review-harness.config.ts --host 127.0.0.1 --port ${requestedPort} --strictPort`,
+          url: `http://127.0.0.1:${requestedPort}/index.html`,
+          reuseExistingServer: false,
+          timeout: 30_000,
+        },
+      }),
 })

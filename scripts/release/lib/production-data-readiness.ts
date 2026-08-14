@@ -1,7 +1,8 @@
 import { z } from 'zod'
+import { ProductionWireAppManifestV3Schema } from '../../../src/data/production-wire.ts'
 
 const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/u)
-const SafeReleaseIdSchema = z.string().regex(/^[a-z0-9][a-z0-9._-]{2,127}$/u)
+const SafeReleaseIdSchema = z.string().regex(/^[a-z0-9][a-z0-9._-]{2,159}$/u)
 
 const CompleteCorpusSchema = z.object({
   manifestSha256: Sha256Schema,
@@ -48,6 +49,7 @@ export const ProductionDataReadinessSchema = z.object({
     illegalEdges: z.literal(0),
     quarantinedEdgesInDrills: z.literal(0),
     unresolvedDataDiscrepancies: z.literal(0),
+    familyGraphBuildSha256: Sha256Schema,
   }).strict(),
   engine: z.object({
     name: z.literal('Stockfish 18'),
@@ -56,6 +58,7 @@ export const ProductionDataReadinessSchema = z.object({
     multiPv: z.literal(5),
     nodes: z.literal(250_000),
     learnerNodesChecked: z.number().int().positive(),
+    proofInventorySha256: Sha256Schema,
     engineSha256: Sha256Schema,
     nnueSha256: z.array(Sha256Schema).min(1),
   }).strict(),
@@ -63,6 +66,7 @@ export const ProductionDataReadinessSchema = z.object({
     sampledLines: z.number().int().min(1).max(250),
     conflictingBaseEcoInDrills: z.literal(0),
     oracleContentShipped: z.literal(false),
+    crosscheckReportSha256: Sha256Schema,
   }).strict(),
   puzzles: z.object({
     sourceDigestApproved: z.literal(true),
@@ -104,16 +108,7 @@ export const ProductionDataReadinessSchema = z.object({
   }
 })
 
-export const ProductionAppSnapshotManifestSchema = z.object({
-  v: z.literal(3),
-  schema: z.literal('linerecall-app-wire-v3'),
-  releaseId: SafeReleaseIdSchema,
-  selectionPolicy: z.object({
-    practiceBranches: z.literal('all-eligible-audited'),
-    maximumPracticeBranches: z.null(),
-    terminal: z.literal('evidence-defined-through-ply-100'),
-  }).strict(),
-}).passthrough()
+export const ProductionAppSnapshotManifestSchema = ProductionWireAppManifestV3Schema
 
 export type ProductionDataReadiness = z.infer<typeof ProductionDataReadinessSchema>
 

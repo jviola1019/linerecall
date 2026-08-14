@@ -1,6 +1,7 @@
 import { z } from 'zod'
 
 export const COMPACT_EVIDENCE_SCHEMA_VERSION = 3 as const
+export const COMPACT_ADAPTER_STATE_SCHEMA_VERSION = 2 as const
 export const COMPACT_STORAGE_MODEL = 'bounded-two-pass-content-addressed-v3' as const
 export const COMPLETE_BASELINE_MAX_PLY = 30 as const
 export const ADAPTIVE_EVIDENCE_MAX_PLY = 100 as const
@@ -184,6 +185,7 @@ const CompactPassReceiptBaseSchema = z.object({
     chessJs: z.string().min(1),
     zstd: z.string().min(1),
     sourceSnapshotSha256: Sha256Schema,
+    adapterStateSchemaVersion: z.literal(COMPACT_ADAPTER_STATE_SCHEMA_VERSION),
   }).strict(),
 }).strict()
 
@@ -200,6 +202,7 @@ const CompactCandidatePassReceiptSchema = CompactPassReceiptBaseSchema.extend({
 
 const CompactExactPassReceiptSchema = CompactPassReceiptBaseSchema.extend({
   pass: z.literal('exact'),
+  priorExactStateSha256: Sha256Schema.nullable(),
   finalCandidateSetReceiptSha256: Sha256Schema,
   completeBaselineObservationsRetained: SafeNonnegativeIntegerSchema,
   adaptiveCandidateObservationsRetained: SafeNonnegativeIntegerSchema,
@@ -326,6 +329,7 @@ export const CompactBenchmarkBootstrapReceiptSchema = z.object({
     peakBytesPerAcceptedGame: z.number().finite().nonnegative(),
     retainedBytesPerAcceptedGame: z.number().finite().nonnegative(),
   }).strict(),
+  enforcedLimits: CompactPipelineLimitsSchema,
   enforcedBounds: CompactStorageBoundsSchema,
   pipelineReceiptSha256s: z.array(Sha256Schema).length(156),
   note: z.string().min(1).max(2048),
@@ -346,6 +350,26 @@ export const CompactBenchmarkBootstrapReceiptSchema = z.object({
   }
 })
 
+export const CompactBenchmarkApprovalReceiptSchema = z.object({
+  schemaVersion: z.literal(1),
+  kind: z.literal('linerecall-compact-v3-benchmark-approval'),
+  approvalStatus: z.literal('approved'),
+  releaseEligible: z.literal(false),
+  approvedAt: IsoDateTimeSchema,
+  approvedBy: z.string().min(1).max(256),
+  reviewNote: z.string().min(1).max(2048),
+  bootstrapReceiptSha256: Sha256Schema,
+  bootstrap: CompactBenchmarkBootstrapReceiptSchema,
+}).strict().superRefine((receipt, context) => {
+  if (Date.parse(receipt.approvedAt) < Date.parse(receipt.bootstrap.completedAt)) {
+    context.addIssue({
+      code: 'custom',
+      path: ['approvedAt'],
+      message: 'Benchmark approval cannot predate the completed bootstrap replay',
+    })
+  }
+})
+
 export type CompactSourceArchive = z.infer<typeof CompactSourceArchiveSchema>
 export type CompactPipelineLimits = z.infer<typeof CompactPipelineLimitsSchema>
 export type CompactStorageBounds = z.infer<typeof CompactStorageBoundsSchema>
@@ -355,3 +379,4 @@ export type CompactArtifactReceipt = z.infer<typeof CompactArtifactReceiptSchema
 export type CompactPassReceipt = z.infer<typeof CompactPassReceiptSchema>
 export type CompactArchiveCheckpoint = z.infer<typeof CompactArchiveCheckpointSchema>
 export type CompactBenchmarkBootstrapReceipt = z.infer<typeof CompactBenchmarkBootstrapReceiptSchema>
+export type CompactBenchmarkApprovalReceipt = z.infer<typeof CompactBenchmarkApprovalReceiptSchema>

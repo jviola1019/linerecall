@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createWriteStream } from 'node:fs'
-import { mkdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises'
+import { link, mkdir, readFile, stat, unlink, writeFile } from 'node:fs/promises'
 import { once } from 'node:events'
 import { dirname, join, resolve } from 'node:path'
 import { finished } from 'node:stream/promises'
@@ -19,22 +19,25 @@ import {
   createPuzzleSourceBinding,
   parsePuzzleSourceFields,
   puzzleCandidateFromRow,
-  type PuzzleAssociationIndex,
   type PuzzleFilterReason,
 } from './puzzle-contracts.ts'
 import { streamPuzzleCsvRecords } from './puzzle-csv-stream.ts'
-import { TaxonomySearchIndexSchema } from '../../src/data/taxonomy-schema.ts'
-import { assertBroadcastManifestApproved, type BroadcastManifestV1 } from './broadcast-contracts.ts'
-import { LichessStandardManifestSchema, REPERTOIRE_MAX_PLY, type LichessStandardManifest } from './evidence-contracts.ts'
-import { assertPuzzleGraphPrerequisite, type PuzzleGraphArchiveIdentity } from './puzzle-contracts.ts'
+import {
+  PuzzleV3CandidateEnvelopeV1Schema,
+  PuzzleV3CandidateManifestV1Schema,
+} from './puzzle-v3-contracts.ts'
+import { loadPuzzleV3Prerequisites } from './puzzle-v3-prerequisites.ts'
 
 const DEFAULT_MANIFEST = 'data/manifests/lichess-puzzles.source.json'
 const DEFAULT_SOURCE = '.cache/puzzles/lichess_db_puzzle.csv.zst'
 const DEFAULT_RECEIPT = 'data/manifests/lichess-puzzles.integrity.json'
-const DEFAULT_GRAPH = 'data/generated/v3/evidence-graph.sqlite'
 const DEFAULT_BROADCAST_MANIFEST = 'data/manifests/broadcasts.source.json'
 const DEFAULT_STANDARD_MANIFEST = 'data/manifests/lichess-standard-q2-2026.source.json'
-const DEFAULT_TAXONOMY = 'data/generated/taxonomy/search-index.json'
+const DEFAULT_STOCKFISH_MANIFEST = 'data/manifests/stockfish-18.source.json'
+const DEFAULT_V3_WORK = 'data/generated/v3/corpus'
+const DEFAULT_V3_PLANS = 'data/generated/v3/plans'
+const DEFAULT_ASSOCIATION_MANIFEST = 'data/generated/v3/puzzle-family-association.json'
+const DEFAULT_ENGINE_CAMPAIGN = 'data/generated/v3/puzzle-engine-campaign.json'
 const DEFAULT_OUTPUT = 'data/generated/v3/puzzles'
 
 interface Arguments {
@@ -105,74 +108,14 @@ async function verifyApprovedReceipt(
   return receipt
 }
 
-function tagForTaxonomyName(name: string): string {
-  return name
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/gu, '')
-    .replace(/[^A-Za-z0-9]+/gu, '_')
-    .replace(/^_+|_+$/gu, '')
-}
-
-async function taxonomyTags(path: string): Promise<Map<string, string[]>> {
-  const search = TaxonomySearchIndexSchema.parse(await readJson(path))
-  const tags = new Map<string, string[]>()
-  for (const line of search.entries) {
-    const tag = tagForTaxonomyName(line.name)
-    const ids = tags.get(tag) ?? []
-    ids.push(line.id)
-    tags.set(tag, ids)
-  }
-  for (const ids of tags.values()) ids.sort()
-  return tags
-}
-
-async function requireCompleteGraph(graphPath: string, args: Arguments): Promise<{ sha256: string; archives: number }> {
-  const broadcastValue = await readJson(resolve(args.options.get('broadcast-manifest') ?? DEFAULT_BROADCAST_MANIFEST))
-  assertBroadcastManifestApproved(broadcastValue)
-  const broadcast: BroadcastManifestV1 = broadcastValue
-  const standard: LichessStandardManifest = LichessStandardManifestSchema.parse(
-    await readJson(resolve(args.options.get('standard-manifest') ?? DEFAULT_STANDARD_MANIFEST)),
-  )
-  const expected: PuzzleGraphArchiveIdentity[] = [
-    ...broadcast.archives.map((archive) => ({
-      archiveId: `broadcast-${archive.month}`,
-      sourceId: 'lichess-broadcasts' as const,
-      month: archive.month,
-      sha256: archive.sha256,
-    })),
-    ...standard.archives.map((archive) => ({
-      archiveId: `standard-${archive.month}`,
-      sourceId: 'lichess-standard-rated-q2-2026' as const,
-      month: archive.month,
-      sha256: archive.sha256,
-    })),
-  ]
-  const database = new DatabaseSync(graphPath, { readOnly: true })
-  try {
-    const metadata = new Map((database.prepare('SELECT key,value FROM graph_metadata').all() as unknown as Array<{ key: string; value: string }>)
-      .map(({ key, value }) => [key, value]))
-    const completed = database.prepare(`
-      SELECT archive_id AS archiveId, source_id AS sourceId, month, sha256
-      FROM archive_runs WHERE status='complete' ORDER BY archive_id
-    `).all() as unknown as PuzzleGraphArchiveIdentity[]
-    assertPuzzleGraphPrerequisite({
-      schemaVersion: metadata.get('schemaVersion'),
-      completeBaselineMaximumPly: metadata.get('completeBaselineMaxPly'),
-      adaptiveMaximumPly: metadata.get('adaptiveEvidenceMaxPly'),
-      completed,
-      expected,
-    })
-  } finally {
-    database.close()
-  }
-  return { sha256: await sha256File(graphPath), archives: expected.length }
-}
-
 interface PuzzleTotals {
   rowsSeen: number
   candidates: number
   duplicates: number
-  rejected: Partial<Record<PuzzleFilterReason | 'record_too_long' | 'field_too_long' | 'too_many_fields', number>>
+  rejected: Partial<Record<
+    PuzzleFilterReason | 'record_too_long' | 'field_too_long' | 'too_many_fields' | 'unlinked_association',
+    number
+  >>
   association: Record<'exact-position' | 'opening-family' | 'unlinked', number>
 }
 
@@ -184,42 +127,53 @@ function increment(
 }
 
 async function ingest(args: Arguments): Promise<void> {
+  const releaseId = args.options.get('release-id')
+  if (!releaseId) throw new Error('Production puzzle ingestion requires --release-id')
   const manifest = await loadManifest(resolve(args.options.get('manifest') ?? DEFAULT_MANIFEST))
   const sourcePath = resolve(args.options.get('source') ?? DEFAULT_SOURCE)
-  const receipt = await verifyApprovedReceipt(
-    manifest,
-    sourcePath,
-    resolve(args.options.get('receipt') ?? DEFAULT_RECEIPT),
-  )
+  const receiptPath = resolve(args.options.get('receipt') ?? DEFAULT_RECEIPT)
+  const receipt = PuzzleIntegrityReceiptSchema.parse(await readJson(receiptPath))
   const sourceBinding = createPuzzleSourceBinding(manifest, receipt)
-  const graphPath = resolve(args.options.get('graph') ?? DEFAULT_GRAPH)
-  const graphIdentity = await requireCompleteGraph(graphPath, args)
-  const tagMap = await taxonomyTags(resolve(args.options.get('taxonomy') ?? DEFAULT_TAXONOMY))
+  // Validate all compact-v3, family, and engine inputs before hashing or
+  // streaming the 302 MB puzzle export. Missing current evidence therefore
+  // blocks quickly and cannot fall back to the historical schema-v2 graph.
+  const prerequisites = await loadPuzzleV3Prerequisites({
+    root: resolve('.'),
+    releaseId,
+    workDirectory: resolve(args.options.get('v3-work-dir') ?? DEFAULT_V3_WORK),
+    plansDirectory: resolve(args.options.get('v3-plans-dir') ?? DEFAULT_V3_PLANS),
+    broadcastManifestPath: resolve(args.options.get('broadcast-manifest') ?? DEFAULT_BROADCAST_MANIFEST),
+    standardManifestPath: resolve(args.options.get('standard-manifest') ?? DEFAULT_STANDARD_MANIFEST),
+    stockfishManifestPath: resolve(args.options.get('stockfish-manifest') ?? DEFAULT_STOCKFISH_MANIFEST),
+    associationManifestPath: resolve(args.options.get('family-association') ?? DEFAULT_ASSOCIATION_MANIFEST),
+    engineCampaignPath: resolve(args.options.get('engine-campaign') ?? DEFAULT_ENGINE_CAMPAIGN),
+    puzzleSource: sourceBinding,
+  })
   const outputDirectory = resolve(args.options.get('output') ?? DEFAULT_OUTPUT)
-  await mkdir(outputDirectory, { recursive: true })
   const outputPath = join(outputDirectory, 'candidates.ndjson.gz')
   const temporaryOutputPath = join(outputDirectory, '.candidates.ndjson.gz.partial')
   const temporaryDedupePath = join(outputDirectory, '.puzzle-dedupe.sqlite')
-  const graph = new DatabaseSync(graphPath, { readOnly: true })
-  const dedupe = new DatabaseSync(temporaryDedupePath)
-  dedupe.exec('CREATE TABLE puzzle_ids(id TEXT PRIMARY KEY) STRICT; PRAGMA synchronous = OFF;')
-  const exactPosition = graph.prepare('SELECT 1 AS found FROM position_outcomes WHERE epd = ? LIMIT 1')
-  const insertPuzzleId = dedupe.prepare('INSERT OR IGNORE INTO puzzle_ids(id) VALUES (?)')
-  const associationIndex: PuzzleAssociationIndex = {
-    hasExactPosition: (epd) => exactPosition.get(epd) !== undefined,
-    taxonomyLineIdsForTag: (tag) => tagMap.get(tag) ?? [],
-  }
-  const totals: PuzzleTotals = {
-    rowsSeen: 0,
-    candidates: 0,
-    duplicates: 0,
-    rejected: {},
-    association: { 'exact-position': 0, 'opening-family': 0, unlinked: 0 },
-  }
-  const gzip = createGzip({ level: 9 })
-  const output = createWriteStream(temporaryOutputPath, { flags: 'wx' })
-  gzip.pipe(output)
+  let dedupe: DatabaseSync | null = null
+  let gzip: ReturnType<typeof createGzip> | null = null
+  let output: ReturnType<typeof createWriteStream> | null = null
+  let promotedOutput = false
+  let manifestWritten = false
   try {
+    await verifyApprovedReceipt(manifest, sourcePath, receiptPath)
+    await mkdir(outputDirectory, { recursive: true })
+    dedupe = new DatabaseSync(temporaryDedupePath)
+    dedupe.exec('CREATE TABLE puzzle_ids(id TEXT PRIMARY KEY) STRICT; PRAGMA synchronous = OFF;')
+    const insertPuzzleId = dedupe.prepare('INSERT OR IGNORE INTO puzzle_ids(id) VALUES (?)')
+    const totals: PuzzleTotals = {
+      rowsSeen: 0,
+      candidates: 0,
+      duplicates: 0,
+      rejected: {},
+      association: { 'exact-position': 0, 'opening-family': 0, unlinked: 0 },
+    }
+    gzip = createGzip({ level: 9 })
+    output = createWriteStream(temporaryOutputPath, { flags: 'wx' })
+    gzip.pipe(output)
     let firstRecord = true
     for await (const record of streamPuzzleCsvRecords(createZstdPgnStream(sourcePath))) {
       if (firstRecord) {
@@ -243,10 +197,25 @@ async function ingest(args: Arguments): Promise<void> {
         totals.duplicates += 1
         continue
       }
-      const candidate = puzzleCandidateFromRow(parsed.row, associationIndex)
-      totals.candidates += 1
+      const candidate = puzzleCandidateFromRow(parsed.row, prerequisites.association)
       totals.association[candidate.association.confidence] += 1
-      if (!gzip.write(`${JSON.stringify(candidate)}\n`)) await once(gzip, 'drain')
+      const familyIds = [...prerequisites.association.familyIdsForAssociation(candidate.association)]
+      if (candidate.association.confidence === 'unlinked') {
+        increment(totals.rejected, 'unlinked_association')
+        continue
+      }
+      if (familyIds.length === 0) {
+        throw new Error(`Linked puzzle ${candidate.puzzleId} has no canonical family ownership`)
+      }
+      const envelope = PuzzleV3CandidateEnvelopeV1Schema.parse({
+        schemaVersion: 1,
+        releaseId,
+        evidenceBindingSha256: prerequisites.evidenceBindingSha256,
+        familyIds,
+        candidate,
+      })
+      totals.candidates += 1
+      if (!gzip.write(`${JSON.stringify(envelope)}\n`)) await once(gzip, 'drain')
     }
     if (totals.rowsSeen !== manifest.source.publishedPuzzleTotal) {
       throw new Error(
@@ -257,39 +226,43 @@ async function ingest(args: Arguments): Promise<void> {
     await finished(output)
     const outputDetails = await stat(temporaryOutputPath)
     const outputSha256 = await sha256File(temporaryOutputPath)
-    const result = {
-      schemaVersion: 3,
+    const result = PuzzleV3CandidateManifestV1Schema.parse({
+      schemaVersion: 1,
+      releaseId,
       generatedAt: new Date().toISOString(),
       releaseEligible: false,
-      source: sourceBinding,
-      graph: {
-        schemaVersion: 3,
-        completeBaselineMaximumPly: REPERTOIRE_MAX_PLY,
-        adaptiveMaximumPly: 100,
-        completedArchives: graphIdentity.archives,
-        sha256: graphIdentity.sha256,
-      },
+      evidence: prerequisites.evidence,
+      evidenceBindingSha256: prerequisites.evidenceBindingSha256,
       selection: manifest.selection,
       totals,
       candidates: {
         path: 'candidates.ndjson.gz',
         bytes: outputDetails.size,
         sha256: outputSha256,
+        contentEncoding: 'gzip',
+        recordSchema: 'PuzzleV3CandidateEnvelopeV1',
       },
       blockedGates: [
-        'Every retained learner node still requires Stockfish 18 sanity verification.',
-        'Only engine-verified candidates may be promoted into a release subset.',
+        'stockfish-proof-per-learner-node',
+        'promoted-tactical-shards',
       ],
-    }
-    await rename(temporaryOutputPath, outputPath)
+    })
+    // link() is an atomic create-if-absent operation. Unlike rename(), it can
+    // never replace a prior immutable candidate shard.
+    await link(temporaryOutputPath, outputPath)
+    promotedOutput = true
+    await unlink(temporaryOutputPath)
     await writeFile(join(outputDirectory, 'manifest.json'), `${JSON.stringify(result, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' })
+    manifestWritten = true
     process.stdout.write(`Wrote ${totals.candidates} engine-pending puzzle candidates to ${outputDirectory}\n`)
   } finally {
-    if (!gzip.destroyed) gzip.destroy()
-    graph.close()
-    dedupe.close()
+    if (gzip && !gzip.destroyed) gzip.destroy()
+    if (output && !output.destroyed) output.destroy()
+    prerequisites.association.close()
+    dedupe?.close()
     await unlink(temporaryDedupePath).catch(() => undefined)
     await unlink(temporaryOutputPath).catch(() => undefined)
+    if (promotedOutput && !manifestWritten) await unlink(outputPath).catch(() => undefined)
   }
 }
 
@@ -298,9 +271,11 @@ function help(): void {
 
 Commands:
   integrity  Compute a pending local SHA-256 receipt. This never self-approves.
-  ingest     Require an approved receipt, stream/filter/dedupe the archive, and emit engine-pending candidates.
+  ingest     Require complete compact-v3 exact states, family associations, an approved digest, and a verified
+             Stockfish campaign; then emit release-bound, engine-pending candidates. --release-id is required.
 
-No command downloads the puzzle archive or fetches source-game PGNs.
+No command downloads the puzzle archive, runs Stockfish, or fetches source-game PGNs. Historical schema-v2
+graph_metadata/archive_runs data is never accepted by the production ingest command.
 `)
 }
 

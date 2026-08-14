@@ -10,8 +10,11 @@ import {
 import {
   MAX_PROGRESS_IMPORT_BYTES,
   exportProgressJson,
-  importProgressJson,
 } from '../../infrastructure/progress-repository.ts'
+import {
+  importPortableProgressJson,
+  type PortableProgressImport,
+} from '../../infrastructure/portable-progress-bundle.ts'
 
 export interface ProgressViewProps {
   progress: ProgressV1
@@ -22,7 +25,9 @@ export interface ProgressViewProps {
   saveError: string | null
   puzzleProgress?: PuzzleProgress
   familyCompletionCount?: Readonly<Record<string, number>>
-  onImport: (progress: ProgressV1) => void
+  onImport: (progress: ProgressV1) => void | Promise<void>
+  onPortableExport?: () => Promise<string>
+  onPortableImport?: (candidate: Extract<PortableProgressImport, { kind: 'bundle-v1' }>) => Promise<void>
   onAnnouncement: (message: string) => void
 }
 
@@ -42,12 +47,12 @@ function variationIdentity(variation: VariationProgressSummary | undefined): Rea
   )
 }
 
-function downloadProgress(progress: ProgressV1): void {
-  const blob = new Blob([exportProgressJson(progress)], { type: 'application/json;charset=utf-8' })
+function downloadProgress(source: string, fullBundle: boolean): void {
+  const blob = new Blob([source], { type: 'application/json;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
   anchor.href = url
-  anchor.download = `linerecall-progress-${new Date().toISOString().slice(0, 10)}.json`
+  anchor.download = `linerecall-${fullBundle ? 'training-bundle' : 'progress'}-${new Date().toISOString().slice(0, 10)}.json`
   anchor.rel = 'noopener'
   document.body.append(anchor)
   anchor.click()
@@ -71,6 +76,8 @@ export function ProgressView({
   puzzleProgress,
   familyCompletionCount = {},
   onImport,
+  onPortableExport,
+  onPortableImport,
   onAnnouncement,
 }: ProgressViewProps): React.JSX.Element {
   const cards = useMemo(() => Object.values(progress.cards).sort((left, right) => {
@@ -100,10 +107,13 @@ export function ProgressView({
     [puzzleProgress],
   )
   const completedFamilyPaths = Object.values(familyCompletionCount).reduce((total, count) => total + count, 0)
-  const [candidate, setCandidate] = useState<ProgressV1 | null>(null)
+  const [candidate, setCandidate] = useState<PortableProgressImport | null>(null)
   const [fileName, setFileName] = useState<string | null>(null)
   const [importError, setImportError] = useState<string | null>(null)
+  const [exportError, setExportError] = useState<string | null>(null)
+  const [transferBusy, setTransferBusy] = useState<'export' | 'import' | null>(null)
   const importErrorId = useId()
+  const exportErrorId = useId()
   const importInputRef = useRef<HTMLInputElement>(null)
   const confirmImportRef = useRef<HTMLButtonElement>(null)
 
@@ -136,13 +146,58 @@ export function ProgressView({
       return
     }
     try {
-      const parsed = importProgressJson(await file.text())
+      const parsed = importPortableProgressJson(await file.text())
       setCandidate(parsed)
       setFileName(file.name)
-      onAnnouncement(`Validated ${file.name}. Confirm replacement to import ${Object.keys(parsed.cards).length} cards.`)
+      const cardCount = parsed.kind === 'bundle-v1'
+        ? Object.keys(parsed.bundle.openingProgress.cards).length
+        : Object.keys(parsed.progress.cards).length
+      onAnnouncement(parsed.kind === 'bundle-v1'
+        ? `Validated ${file.name}. Confirm replacement of opening, puzzle, and family progress. The bundle contains ${cardCount} opening cards.`
+        : `Validated ${file.name}. Confirm replacement of ${cardCount} opening cards. Puzzle and family progress will be kept.`)
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : 'Progress file is invalid.'
       setImportError(message)
+    }
+  }
+
+  const prepareExport = async (): Promise<void> => {
+    setExportError(null)
+    setTransferBusy('export')
+    try {
+      const fullBundle = onPortableExport !== undefined
+      const source = fullBundle ? await onPortableExport() : exportProgressJson(progress)
+      downloadProgress(source, fullBundle)
+      onAnnouncement(fullBundle
+        ? 'Portable training bundle prepared with opening, puzzle, and family progress.'
+        : 'Progress JSON export prepared.')
+    } catch (caught) {
+      setExportError(caught instanceof Error ? caught.message : 'Training data could not be exported.')
+    } finally {
+      setTransferBusy(null)
+    }
+  }
+
+  const confirmReplacement = async (): Promise<void> => {
+    if (!candidate) return
+    setImportError(null)
+    setTransferBusy('import')
+    try {
+      if (candidate.kind === 'bundle-v1') {
+        if (!onPortableImport) throw new Error('This storage adapter cannot replace the complete portable training bundle')
+        await onPortableImport(candidate)
+        onAnnouncement('Opening, puzzle, and family progress were replaced from the portable bundle.')
+      } else {
+        await onImport(candidate.progress)
+        onAnnouncement('Opening progress and settings were replaced. Existing puzzle and family progress were kept.')
+      }
+      setCandidate(null)
+      setFileName(null)
+      queueMicrotask(() => importInputRef.current?.focus())
+    } catch (caught) {
+      setImportError(caught instanceof Error ? caught.message : 'Training data could not be imported.')
+    } finally {
+      setTransferBusy(null)
     }
   }
 
@@ -222,19 +277,18 @@ export function ProgressView({
           <h2 id="transfer-title">Keep a portable copy</h2>
           <p>
             Storage mode: <strong>{repositoryKind === 'cloud' ? 'cloud account' : repositoryKind === 'artifact' ? 'personal Artifact storage' : 'session only'}</strong>.
-            Exported JSON is versioned and strictly validated on import.
+            Exported JSON is versioned and strictly validated on import. Complete bundles include opening recall, tactical puzzles, and autonomous family coverage.
           </p>
         </div>
         <div className="transfer-actions">
           <button
             type="button"
             className="secondary-button"
-            onClick={() => {
-              downloadProgress(progress)
-              onAnnouncement('Progress JSON export prepared.')
-            }}
+            disabled={transferBusy !== null}
+            aria-describedby={exportError ? exportErrorId : undefined}
+            onClick={() => { void prepareExport() }}
           >
-            Export progress JSON
+            {transferBusy === 'export' ? 'Preparing export…' : 'Export progress JSON'}
           </button>
           <label className="file-button">
             <span>Choose progress JSON</span>
@@ -244,31 +298,43 @@ export function ProgressView({
               accept="application/json,.json"
               aria-invalid={importError ? true : undefined}
               aria-describedby={importError ? importErrorId : undefined}
+              disabled={transferBusy !== null}
               onChange={(event) => { void chooseImport(event) }}
             />
           </label>
         </div>
+        {exportError ? <p id={exportErrorId} className="field-error" role="alert">{exportError}</p> : null}
         {importError ? <p id={importErrorId} className="field-error" role="alert">{importError}</p> : null}
         {candidate ? (
           <div className="import-confirmation" role="group" aria-label="Confirm progress import">
-            <p><strong>{fileName}</strong> is valid: {Object.keys(candidate.cards).length} cards, {candidate.streak.current}-day streak. Importing replaces current progress and settings.</p>
+            {candidate.kind === 'bundle-v1' ? (
+              <p>
+                <strong>{fileName}</strong> is a complete bundle: {Object.keys(candidate.bundle.openingProgress.cards).length} opening cards,{' '}
+                {Object.keys(candidate.bundle.puzzleProgress.puzzles).length} attempted puzzles,{' '}
+                {candidate.bundle.familyJournal.coverageEvents.length} family-path completions, and{' '}
+                {candidate.bundle.familyJournal.latestCursors.length} resumable family cursors. Confirming replaces all current opening, puzzle, and family training data.
+              </p>
+            ) : (
+              <p>
+                <strong>{fileName}</strong> is an older progress-only file: {Object.keys(candidate.progress.cards).length} cards, {candidate.progress.streak.current}-day streak.
+                Confirming replaces opening progress and settings only. Current puzzle progress and family coverage stay unchanged.
+              </p>
+            )}
             <div className="inline-controls">
               <button
                 ref={confirmImportRef}
                 type="button"
-                onClick={() => {
-                  onImport(candidate)
-                  setCandidate(null)
-                  setFileName(null)
-                  onAnnouncement('Progress and settings imported and queued for saving.')
-                  queueMicrotask(() => importInputRef.current?.focus())
-                }}
+                disabled={transferBusy !== null}
+                onClick={() => { void confirmReplacement() }}
               >
-                Replace current progress
+                {transferBusy === 'import'
+                  ? 'Replacing…'
+                  : candidate.kind === 'bundle-v1' ? 'Replace all training data' : 'Replace current progress'}
               </button>
               <button
                 type="button"
                 className="text-button"
+                disabled={transferBusy !== null}
                 onClick={() => {
                   setCandidate(null)
                   setFileName(null)

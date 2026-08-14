@@ -34,6 +34,27 @@ Current data blockers are concrete:
 - the approved puzzle source receipt has not produced an engine-approved,
   graph-associated release shard.
 
+### Live-source recheck on 2026-08-13
+
+The live upstream pages were rechecked without changing any approved input.
+The [opening taxonomy repository](https://github.com/lichess-org/chess-openings)
+still documents its `Opening family: Variation` convention and CC0 public-domain
+dedication. The [Lichess database](https://database.lichess.org/) now includes a
+July 2026 broadcast archive and reports 1,186,335 broadcast games in total.
+LineRecall intentionally remains pinned to the approved 78-archive cutoff
+through June 2026 and its 1,146,297 historical records; July is outside this
+release and cannot enter by a silent manifest refresh.
+
+The upstream totals and license notices were checked again on 2026-08-13. The
+July broadcast row remains 40,038 games, so the live broadcast total remains
+1,186,335; this does not alter the approved through-June cutoff. The live
+puzzle page still reports 6,057,356 puzzles, but now says the export
+was updated on 2026-08-02 and documents an additional `DailyDate` column. The
+approved LineRecall receipt identifies the earlier 302,111,223-byte artifact
+last modified on 2026-07-01. That exact receipt remains the only authorized
+input. Adopting the newer upstream bytes or schema requires a new local digest,
+bounded-parser review, explicit approval, and a fresh promotion campaign.
+
 ## Opening taxonomy
 
 - Source: `lichess-org/chess-openings`

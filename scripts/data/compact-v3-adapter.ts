@@ -10,6 +10,7 @@ import { Readable } from 'node:stream'
 import { createZstdDecompress } from 'node:zlib'
 import { DatabaseSync } from 'node:sqlite'
 import {
+  COMPACT_ADAPTER_STATE_SCHEMA_VERSION,
   CompactArchiveCheckpointSchema,
   CompactPreflightPlanSchema,
   type CompactArchiveCheckpoint,
@@ -17,6 +18,7 @@ import {
   type CompactPassReceipt,
   type CompactPreflightPlan,
 } from './compact-v3-contracts.ts'
+import { validateCompactBenchmarkApproval } from './compact-v3-benchmark-approval.ts'
 import {
   CompactCandidatePass,
   CompactExactPass,
@@ -62,7 +64,7 @@ import {
 } from './compact-v3-remote.ts'
 
 const SHA256 = /^[a-f0-9]{64}$/u
-const STATE_SCHEMA_VERSION = 1
+export { COMPACT_ADAPTER_STATE_SCHEMA_VERSION } from './compact-v3-contracts.ts'
 const PGN_LIMITS = Object.freeze({
   ...DEFAULT_PGN_LIMITS,
   maxPlies: 1_000,
@@ -77,6 +79,7 @@ export interface CompactV3AdapterOptions {
   archivePath: string
   workDirectory: string
   toolchain: CompactToolchainReceipt
+  benchmarkApprovalBytes?: Uint8Array
   executionPurpose?: CompactExecutionPurpose
   /** Test seam for the same free-space probe used by the orchestrator. */
   availableBytes?: () => Promise<number>
@@ -137,7 +140,7 @@ function executionPurposeFor(options: CompactV3AdapterOptions): CompactExecution
   return options.executionPurpose ?? 'evidence-candidate'
 }
 
-function configurationSha256(
+export function compactAdapterConfigurationSha256(
   plan: CompactPreflightPlan,
   sourceSnapshotSha256: string,
   executionPurpose: CompactExecutionPurpose,
@@ -149,6 +152,7 @@ function configurationSha256(
     limits: plan.limits,
     bounds: plan.bounds,
     benchmark: plan.benchmark,
+    adapterStateSchemaVersion: COMPACT_ADAPTER_STATE_SCHEMA_VERSION,
     executionPurpose,
     sourceSnapshotSha256,
   })).digest('hex')
@@ -180,6 +184,19 @@ function rollbackDatabaseTransaction(database: DatabaseSync): void {
   } catch (error) {
     if (!/no transaction is active/iu.test((error as Error).message)) throw error
   }
+}
+
+function sha256Bytes(value: string, label: string): Buffer {
+  if (!SHA256.test(value)) throw new Error(`${label} must be a lowercase SHA-256`)
+  return Buffer.from(value, 'hex')
+}
+
+function gameIdentityBytes(game: GraphAcceptedGame): Buffer {
+  return createHash('sha256')
+    .update(game.sourceId, 'utf8')
+    .update(Buffer.from([0]))
+    .update(game.deduplicationKey, 'utf8')
+    .digest()
 }
 
 function assertPublishedRecordTotals(
@@ -320,8 +337,8 @@ async function verifiedPassState(
   if (!seed) return null
   approvedArchiveIndex(corpus, seed.archive)
   if (
-    configurationSha256(planForCheckpoint(currentPlan, seed), sourceSnapshotSha256, executionPurpose) !==
-    configurationSha256(currentPlan, sourceSnapshotSha256, executionPurpose)
+    compactAdapterConfigurationSha256(planForCheckpoint(currentPlan, seed), sourceSnapshotSha256, executionPurpose) !==
+    compactAdapterConfigurationSha256(currentPlan, sourceSnapshotSha256, executionPurpose)
   ) {
     throw new Error(`Compact archive ${archiveId} used a different approved configuration`)
   }
@@ -339,10 +356,17 @@ async function verifiedPassState(
   if (receipt.toolchain.sourceSnapshotSha256 !== sourceSnapshotSha256) {
     throw new Error(`Compact ${pass} receipt belongs to another source snapshot`)
   }
+  const absoluteOutputPath = artifactPath(workDirectory, receipt.output.path)
+  const state = new DatabaseSync(absoluteOutputPath, { readOnly: true })
+  try {
+    validateAdapterStateDatabase(state, pass, true)
+  } finally {
+    state.close()
+  }
   return {
     checkpoint,
     receipt,
-    absoluteOutputPath: artifactPath(workDirectory, receipt.output.path),
+    absoluteOutputPath,
   }
 }
 
@@ -353,6 +377,7 @@ function candidateAccountingFromFinalState(
 ): ExpectedCandidateAccounting {
   const database = new DatabaseSync(path, { readOnly: true })
   try {
+    validateAdapterStateDatabase(database, 'candidate', true)
     const metadata = readCandidateMetadata(database)
     const finalApproved = options.corpus.archives.at(-1)
     const finalArchiveId = !finalApproved
@@ -364,7 +389,7 @@ function candidateAccountingFromFinalState(
       !metadata || metadata.lastArchiveIndex !== options.corpus.archives.length - 1 ||
       metadata.lastArchiveId !== finalArchiveId ||
       metadata.sourceManifestSha256 !== options.corpus.sourceManifestSha256 ||
-      metadata.configurationSha256 !== configurationSha256(
+      metadata.configurationSha256 !== compactAdapterConfigurationSha256(
         options.plan,
         options.toolchain.sourceSnapshotSha256,
         executionPurposeFor(options),
@@ -710,12 +735,103 @@ async function streamCheckedStateToSink(
   )
 }
 
+type SqliteColumn = { name: string; type: string; notnull: number; pk: number }
+
+const SHARED_STATE_COLUMNS = {
+  compact_adapter_metadata: [
+    ['singleton', 'INTEGER'], ['schema_version', 'INTEGER'], ['pass', 'TEXT'],
+    ['source_manifest_sha256', 'TEXT'], ['configuration_sha256', 'TEXT'],
+    ['last_archive_id', 'TEXT'], ['last_archive_index', 'INTEGER'],
+    ['sketch_snapshot', 'BLOB'], ['final_candidate_receipt_sha256', 'TEXT'],
+  ],
+  compact_adapter_games: [
+    ['game_identity_sha256', 'BLOB'], ['corruption_guard_sha256', 'BLOB'],
+    ['first_archive_index', 'INTEGER'],
+  ],
+  compact_adapter_archives: [
+    ['pass', 'TEXT'], ['archive_id', 'TEXT'], ['archive_index', 'INTEGER'],
+    ['source_id', 'TEXT'], ['source_manifest_sha256', 'TEXT'], ['month', 'TEXT'],
+    ['archive_sha256', 'TEXT'], ['compressed_bytes', 'INTEGER'], ['records_seen', 'INTEGER'],
+    ['accepted', 'INTEGER'], ['deduplicated', 'INTEGER'], ['rejected_json', 'TEXT'],
+  ],
+} as const
+
+const PASS_STATE_COLUMNS = {
+  candidate: {
+    candidates: [
+      ['fingerprint', 'BLOB'], ['cohort_id', 'TEXT'], ['kind', 'TEXT'],
+      ['first_estimate', 'INTEGER'], ['maximum_estimate', 'INTEGER'],
+    ],
+  },
+  exact: {
+    positions: [['position_id', 'INTEGER'], ['fingerprint', 'BLOB'], ['epd', 'TEXT']],
+    edges: [
+      ['edge_id', 'INTEGER'], ['fingerprint', 'BLOB'], ['from_position_id', 'INTEGER'],
+      ['uci', 'TEXT'], ['san', 'TEXT'], ['to_position_id', 'INTEGER'],
+    ],
+    outcomes: [
+      ['kind', 'TEXT'], ['reference_id', 'INTEGER'], ['cohort_id', 'TEXT'], ['month', 'TEXT'],
+      ['time_control', 'TEXT'], ['rating_band', 'TEXT'], ['rating_detail', 'TEXT'],
+      ['min_ply', 'INTEGER'], ['n', 'INTEGER'], ['white_wins', 'INTEGER'],
+      ['draws', 'INTEGER'], ['black_wins', 'INTEGER'],
+    ],
+  },
+} as const
+
+function sqliteUserVersion(database: DatabaseSync): number {
+  const row = database.prepare('PRAGMA user_version').get() as { user_version: number }
+  return row.user_version
+}
+
+function userTableNames(database: DatabaseSync): string[] {
+  return (database.prepare(`
+    SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name
+  `).all() as unknown as Array<{ name: string }>).map(({ name }) => name)
+}
+
+function assertTableLayout(
+  database: DatabaseSync,
+  table: string,
+  expected: readonly (readonly [string, string])[],
+): void {
+  const columns = database.prepare(`PRAGMA table_info(${table})`).all() as unknown as SqliteColumn[]
+  if (
+    columns.length !== expected.length ||
+    expected.some(([name, type], index) => columns[index]?.name !== name || columns[index]?.type.toUpperCase() !== type)
+  ) {
+    throw new Error(`Compact adapter ${table} layout does not match schema ${COMPACT_ADAPTER_STATE_SCHEMA_VERSION}`)
+  }
+}
+
+function validateAdapterStateDatabase(database: DatabaseSync, pass: PassName, metadataRequired: boolean): void {
+  if (sqliteUserVersion(database) !== COMPACT_ADAPTER_STATE_SCHEMA_VERSION) {
+    throw new Error(`Compact adapter state schema is not version ${COMPACT_ADAPTER_STATE_SCHEMA_VERSION}`)
+  }
+  for (const [table, columns] of Object.entries(SHARED_STATE_COLUMNS)) {
+    assertTableLayout(database, table, columns)
+  }
+  for (const [table, columns] of Object.entries(PASS_STATE_COLUMNS[pass])) {
+    assertTableLayout(database, table, columns)
+  }
+  const metadata = database.prepare(`
+    SELECT schema_version AS schemaVersion, pass FROM compact_adapter_metadata WHERE singleton = 1
+  `).get() as { schemaVersion: number; pass: PassName } | undefined
+  if (metadataRequired && !metadata) throw new Error('Compact adapter state lacks required metadata')
+  if (metadata && (
+    metadata.schemaVersion !== COMPACT_ADAPTER_STATE_SCHEMA_VERSION || metadata.pass !== pass
+  )) throw new Error('Compact adapter metadata uses another state schema or pass')
+}
+
 function createAdapterTables(database: DatabaseSync, pass: PassName): void {
+  const inherited = userTableNames(database).includes('compact_adapter_metadata')
+  if (inherited && sqliteUserVersion(database) !== COMPACT_ADAPTER_STATE_SCHEMA_VERSION) {
+    throw new Error(`Inherited compact adapter state is not schema ${COMPACT_ADAPTER_STATE_SCHEMA_VERSION}`)
+  }
   database.exec(`
     PRAGMA foreign_keys = ON;
     CREATE TABLE IF NOT EXISTS compact_adapter_metadata (
       singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
-      schema_version INTEGER NOT NULL CHECK(schema_version = ${STATE_SCHEMA_VERSION}),
+      schema_version INTEGER NOT NULL CHECK(schema_version = ${COMPACT_ADAPTER_STATE_SCHEMA_VERSION}),
       pass TEXT NOT NULL CHECK(pass IN ('candidate', 'exact')),
       source_manifest_sha256 TEXT NOT NULL CHECK(length(source_manifest_sha256) = 64),
       configuration_sha256 TEXT NOT NULL CHECK(length(configuration_sha256) = 64),
@@ -725,11 +841,9 @@ function createAdapterTables(database: DatabaseSync, pass: PassName): void {
       final_candidate_receipt_sha256 TEXT
     ) STRICT;
     CREATE TABLE IF NOT EXISTS compact_adapter_games (
-      source_id TEXT NOT NULL,
-      deduplication_key TEXT NOT NULL,
-      corruption_guard_sha256 TEXT NOT NULL CHECK(length(corruption_guard_sha256) = 64),
-      first_archive_id TEXT NOT NULL,
-      PRIMARY KEY(source_id, deduplication_key)
+      game_identity_sha256 BLOB PRIMARY KEY CHECK(length(game_identity_sha256) = 32),
+      corruption_guard_sha256 BLOB NOT NULL CHECK(length(corruption_guard_sha256) = 32),
+      first_archive_index INTEGER NOT NULL CHECK(first_archive_index >= 0)
     ) WITHOUT ROWID, STRICT;
     CREATE TABLE IF NOT EXISTS compact_adapter_archives (
       pass TEXT NOT NULL CHECK(pass IN ('candidate', 'exact')),
@@ -747,11 +861,13 @@ function createAdapterTables(database: DatabaseSync, pass: PassName): void {
       PRIMARY KEY(pass, archive_id),
       UNIQUE(pass, archive_index)
     ) WITHOUT ROWID, STRICT;
+    PRAGMA user_version = ${COMPACT_ADAPTER_STATE_SCHEMA_VERSION};
   `)
   const existing = database.prepare('SELECT pass FROM compact_adapter_metadata WHERE singleton = 1').get() as
     | { pass: PassName }
     | undefined
   if (existing && existing.pass !== pass) throw new Error('Compact adapter state belongs to another pass')
+  validateAdapterStateDatabase(database, pass, false)
 }
 
 function readCandidateMetadata(database: DatabaseSync): CandidateStateMetadata | null {
@@ -788,7 +904,7 @@ function assertPriorMetadata(
     !metadata || !prior || metadata.lastArchiveIndex !== archiveIndex - 1 ||
     metadata.lastArchiveId !== prior.receipt.archive.archiveId ||
     metadata.sourceManifestSha256 !== options.corpus.sourceManifestSha256 ||
-    metadata.configurationSha256 !== configurationSha256(
+    metadata.configurationSha256 !== compactAdapterConfigurationSha256(
       options.plan,
       options.toolchain.sourceSnapshotSha256,
       executionPurposeFor(options),
@@ -810,24 +926,26 @@ function assertPriorArchiveRows(database: DatabaseSync, pass: PassName, archiveI
 
 function insertAcceptedGame(
   database: DatabaseSync,
-  archiveId: string,
+  archiveIndex: number,
   game: GraphAcceptedGame,
 ): boolean {
+  const gameIdentity = gameIdentityBytes(game)
+  const corruptionGuard = sha256Bytes(game.corruptionGuardSha256, 'Game corruption guard')
   const existing = database.prepare(`
     SELECT corruption_guard_sha256 AS corruptionGuardSha256
-    FROM compact_adapter_games WHERE source_id = ? AND deduplication_key = ?
-  `).get(game.sourceId, game.deduplicationKey) as { corruptionGuardSha256: string } | undefined
+    FROM compact_adapter_games WHERE game_identity_sha256 = ?
+  `).get(gameIdentity) as { corruptionGuardSha256: Uint8Array } | undefined
   if (existing) {
-    if (existing.corruptionGuardSha256 !== game.corruptionGuardSha256) {
-      throw new Error(`Cross-archive game key conflicts with different content: ${game.deduplicationKey}`)
+    if (!Buffer.from(existing.corruptionGuardSha256).equals(corruptionGuard)) {
+      throw new Error(`Cross-archive game key conflicts with different content (fingerprint ${gameIdentity.toString('hex')})`)
     }
     return false
   }
   database.prepare(`
     INSERT INTO compact_adapter_games(
-      source_id, deduplication_key, corruption_guard_sha256, first_archive_id
-    ) VALUES (?, ?, ?, ?)
-  `).run(game.sourceId, game.deduplicationKey, game.corruptionGuardSha256, archiveId)
+      game_identity_sha256, corruption_guard_sha256, first_archive_index
+    ) VALUES (?, ?, ?)
+  `).run(gameIdentity, corruptionGuard, archiveIndex)
   return true
 }
 
@@ -872,9 +990,9 @@ function writeCandidateMetadata(
       last_archive_id, last_archive_index, sketch_snapshot, final_candidate_receipt_sha256
     ) VALUES (1, ?, 'candidate', ?, ?, ?, ?, ?, NULL)
   `).run(
-    STATE_SCHEMA_VERSION,
+    COMPACT_ADAPTER_STATE_SCHEMA_VERSION,
     options.corpus.sourceManifestSha256,
-    configurationSha256(
+    compactAdapterConfigurationSha256(
       options.plan,
       options.toolchain.sourceSnapshotSha256,
       executionPurposeFor(options),
@@ -897,9 +1015,9 @@ function writeExactMetadata(
       last_archive_id, last_archive_index, sketch_snapshot, final_candidate_receipt_sha256
     ) VALUES (1, ?, 'exact', ?, ?, ?, ?, NULL, ?)
   `).run(
-    STATE_SCHEMA_VERSION,
+    COMPACT_ADAPTER_STATE_SCHEMA_VERSION,
     options.corpus.sourceManifestSha256,
-    configurationSha256(
+    compactAdapterConfigurationSha256(
       options.plan,
       options.toolchain.sourceSnapshotSha256,
       executionPurposeFor(options),
@@ -912,13 +1030,21 @@ function writeExactMetadata(
 
 function candidateLookup(path: string): { has(fingerprint: string, cohortId: string): boolean; close(): void } {
   const database = new DatabaseSync(path, { readOnly: true })
-  const statement = database.prepare(
-    'SELECT 1 AS found FROM candidates WHERE fingerprint = ? AND cohort_id = ?',
-  )
+  const statement = (() => {
+    try {
+    validateAdapterStateDatabase(database, 'candidate', true)
+      return database.prepare(
+      'SELECT 1 AS found FROM candidates WHERE fingerprint = ? AND cohort_id = ?',
+      )
+    } catch (error) {
+      database.close()
+      throw error
+    }
+  })()
   return {
     has(fingerprint, cohortId) {
       if (!SHA256.test(fingerprint)) throw new Error('Candidate fingerprint is invalid')
-      return statement.get(fingerprint, cohortId) !== undefined
+      return statement.get(Buffer.from(fingerprint, 'hex'), cohortId) !== undefined
     },
     close() { database.close() },
   }
@@ -1027,7 +1153,7 @@ async function processCandidate(
         reject(accounting, parsed.reason)
         continue
       }
-      if (!insertAcceptedGame(index.database, options.plan.archive.archiveId, parsed.game)) {
+      if (!insertAcceptedGame(index.database, archiveIndex, parsed.game)) {
         accounting.deduplicated = safeIncrement(accounting.deduplicated, 'Deduplicated games')
         continue
       }
@@ -1135,7 +1261,7 @@ async function processExact(
         reject(accounting, parsed.reason)
         continue
       }
-      if (!insertAcceptedGame(store.database, options.plan.archive.archiveId, parsed.game)) {
+      if (!insertAcceptedGame(store.database, archiveIndex, parsed.game)) {
         accounting.deduplicated = safeIncrement(accounting.deduplicated, 'Deduplicated games')
         continue
       }
@@ -1189,6 +1315,7 @@ async function processExact(
     )
     return {
       pass: 'exact',
+      priorExactStateSha256: prior?.receipt.output.sha256 ?? null,
       finalCandidateSetReceiptSha256: finalCandidateReceiptSha256,
       ...accounting,
       completeBaselineObservationsRetained: totals.completeBaselineObservationsRetained,
@@ -1228,6 +1355,16 @@ function openLocalArchiveStream(options: CompactV3AdapterOptions): AsyncIterable
 }
 
 async function preflightBeforeInput(options: CompactV3AdapterOptions): Promise<void> {
+  if (options.toolchain.adapterStateSchemaVersion !== COMPACT_ADAPTER_STATE_SCHEMA_VERSION) {
+    throw new Error('Toolchain adapter-state schema version is stale')
+  }
+  if (executionPurposeFor(options) === 'evidence-candidate') {
+    validateCompactBenchmarkApproval(
+      options.plan,
+      options.benchmarkApprovalBytes,
+      options.toolchain.sourceSnapshotSha256,
+    )
+  }
   let availableBytes: number
   if (options.availableBytes) {
     availableBytes = await options.availableBytes()
@@ -1266,6 +1403,7 @@ async function runAdapterWithInput(
       ...(remoteInputAcquisition ? { remoteInputAcquisition } : {}),
       outputExtension: 'sqlite',
       toolchain: options.toolchain,
+      ...(options.benchmarkApprovalBytes ? { benchmarkApprovalBytes: options.benchmarkApprovalBytes } : {}),
       executionPurpose: executionPurposeFor(options),
       ...(options.availableBytes ? { availableBytes: options.availableBytes } : {}),
       ...(options.now ? { now: options.now } : {}),

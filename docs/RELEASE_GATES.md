@@ -117,10 +117,14 @@ invalidates all recorded evidence.
   determine pass/fail.
 - Persistence and sync: exact-candidate session-memory and JSON transfer,
   pre-hydration mutation protection, scoped streak maps, save warnings, and no
-  `localStorage`/IndexedDB access; plus staging cloud and supported Artifact
-  storage create/read/update, append-only replay, multi-device ordering,
-  migration, quota/rejection/outage behavior, export, and deletion. Local mocks
-  are not a substitute for those provider-backed staging cases.
+  `localStorage`/IndexedDB access. The portable bundle must round-trip opening,
+  puzzle, and complete family-journal state atomically; an adapter without
+  snapshot/replace must fail visibly rather than emit a partial bundle. The
+  hosted cloud adapter/API/PostgreSQL implementation still requires staging
+  create/read/update, append-only replay, multi-device ordering, non-owner
+  pooled RLS, migration, quota/rejection/outage behavior, export, and deletion.
+  Supported Artifact storage needs its own family-journal adapter and staging
+  evidence. Local mocks are not a substitute for those provider-backed cases.
 - Manual security: OWASP client-side/adversarial review and real-browser CSP
   confirmation.
 - Legal/trademark: qualified review of the provisional LineRecall name,

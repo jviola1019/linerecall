@@ -15,6 +15,12 @@ import {
   validateImportPgnBounds,
   validationDetails,
 } from './contracts.js'
+import {
+  FamilyCoveragePageQuerySchema,
+  FamilyCursorQuerySchema,
+  FamilyCyclePageQuerySchema,
+  FamilyTrainingSyncRequestV1Schema,
+} from './family-training-contracts.js'
 import { ApiError, isApiError } from './errors.js'
 import type { AuthenticatedActor, ServiceDependencies } from './ports.js'
 
@@ -405,6 +411,49 @@ export async function createApp(dependencies: ServiceDependencies, options: AppO
     await rateLimit(request, reply, { name: 'sync-bootstrap', limit: 60, windowMs: 60_000, subject: 'user' }, actor)
     const query = parseBody(BootstrapQuerySchema, request.query)
     return dependencies.sync.bootstrap(actor.userId, BigInt(query.cursor), query.limit, now())
+  })
+
+  app.post('/v1/family-training/sync', async (request, reply) => {
+    const actor = await actorFor(request)
+    await rateLimit(request, reply, { name: 'family-sync-burst', limit: 20, windowMs: 1_000, subject: 'user' }, actor)
+    await rateLimit(request, reply, { name: 'family-sync', limit: 60, windowMs: 60_000, subject: 'user' }, actor)
+    if (Buffer.byteLength(JSON.stringify(request.body), 'utf8') > 262_144) {
+      throw new ApiError(413, 'sync_payload_too_large', 'Family sync requests are limited to 256 KiB')
+    }
+    const input = parseBody(FamilyTrainingSyncRequestV1Schema, request.body)
+    return dependencies.sync.syncFamilyTraining(actor.userId, input, now())
+  })
+
+  app.get('/v1/family-training/coverage', async (request, reply) => {
+    const actor = await actorFor(request)
+    await rateLimit(request, reply, { name: 'family-bootstrap', limit: 60, windowMs: 60_000, subject: 'user' }, actor)
+    const query = parseBody(FamilyCoveragePageQuerySchema, request.query)
+    return dependencies.sync.pageFamilyCoverage(actor.userId, {
+      releaseId: query.releaseId,
+      familyId: query.familyId,
+      cursor: BigInt(query.cursor),
+      limit: query.limit,
+    }, now())
+  })
+
+  app.get('/v1/family-training/cycles', async (request, reply) => {
+    const actor = await actorFor(request)
+    await rateLimit(request, reply, { name: 'family-bootstrap', limit: 60, windowMs: 60_000, subject: 'user' }, actor)
+    const query = parseBody(FamilyCyclePageQuerySchema, request.query)
+    return dependencies.sync.pageFamilyCycles(actor.userId, {
+      releaseId: query.releaseId,
+      familyId: query.familyId,
+      side: query.side,
+      cursor: BigInt(query.cursor),
+      limit: query.limit,
+    }, now())
+  })
+
+  app.get('/v1/family-training/cursor', async (request, reply) => {
+    const actor = await actorFor(request)
+    await rateLimit(request, reply, { name: 'family-bootstrap', limit: 60, windowMs: 60_000, subject: 'user' }, actor)
+    const query = parseBody(FamilyCursorQuerySchema, request.query)
+    return dependencies.sync.loadFamilyCursor(actor.userId, query, now())
   })
 
   app.post('/v1/repertoires/imports', { bodyLimit: 1_050_000 }, async (request, reply) => {

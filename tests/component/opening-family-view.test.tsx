@@ -184,6 +184,9 @@ describe('canonical opening-family repertoire', () => {
     expect(screen.queryByText(/Untrusted graph label/u)).not.toBeInTheDocument()
     expect(within(screen.getByRole('group', { name: 'Repertoire pack' })).getAllByRole('button')).toHaveLength(2)
     expect(screen.getByText('1', { selector: '.family-detail-facts dd' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'One run, every audited path' })).toBeVisible()
+    expect(screen.getByText(/N ≥ 500/u)).toBeVisible()
+    expect(screen.getByText(/grade screen between moves/u)).toBeVisible()
   })
 
   test('exposes and trains every signed pack on the selected side', async () => {
@@ -303,6 +306,152 @@ describe('canonical opening-family repertoire', () => {
     expect(packButtons[1]).toHaveAttribute('aria-pressed', 'true')
   }, 30_000)
 
+  test('restores a cross-pack named branch, auto-starts its next pack, and never double-counts completion', async () => {
+    const user = userEvent.setup()
+    const family = catalog.families.find(({ id }) => id === 'caro-kann')
+    if (!family) throw new Error('Required family is missing')
+    const promotion = await createSyntheticFamilyPromotion(family, { packCount: 2 })
+    const manifest = structuredClone(promotion.manifest)
+    const first = promotion.graphs[0]!
+    const second = promotion.graphs[1]!
+    const firstMembership = manifest.pathMemberships.find(({ packId, pathId }) =>
+      packId === first.pack.id && pathId === first.paths[0]!.id)!
+    const secondMembership = manifest.pathMemberships.find(({ packId, pathId }) =>
+      packId === second.pack.id && pathId === second.paths[0]!.id)!
+    secondMembership.primaryBranchId = firstMembership.primaryBranchId
+    secondMembership.secondaryBranchIds = secondMembership.secondaryBranchIds
+      .filter((branchId) => branchId !== firstMembership.primaryBranchId)
+    const resources = { ...promotion.resources, manifest }
+    const repository = new MemoryFamilyTrainingJournalRepository()
+    const generationId = '70000000-0000-4000-8000-000000000001'
+    const firstCycleId = `${first.pack.id}::coverage:3`
+    await repository.appendCycleEvent({
+      schemaVersion: 1,
+      eventId: '70000000-0000-4000-8000-000000000002',
+      releaseId: manifest.releaseId,
+      familyId: family.id,
+      side: 'white',
+      generationId,
+      generationOrdinal: 0,
+      kind: 'pack_bound',
+      packId: first.pack.id,
+      packCoverageCycleId: firstCycleId,
+      occurredAt: '2026-08-13T10:00:00.000Z',
+    })
+    await repository.appendCycleEvent({
+      schemaVersion: 1,
+      eventId: '70000000-0000-4000-8000-000000000003',
+      releaseId: manifest.releaseId,
+      familyId: family.id,
+      side: 'white',
+      generationId,
+      generationOrdinal: 0,
+      kind: 'cycle_started',
+      occurredAt: '2026-08-13T10:00:00.000Z',
+    })
+    await repository.appendCoverageEvent({
+      schemaVersion: 1,
+      eventId: '70000000-0000-4000-8000-000000000004',
+      releaseId: manifest.releaseId,
+      familyId: family.id,
+      packId: first.pack.id,
+      pathId: first.paths[0]!.id,
+      coverageCycleId: firstCycleId,
+      completedAt: '2026-08-13T10:01:00.000Z',
+    })
+    await repository.appendCursor({
+      schemaVersion: 1,
+      releaseId: manifest.releaseId,
+      familyId: family.id,
+      side: 'white',
+      coverageCycleId: firstCycleId,
+      authoritativeDueCardIds: [],
+      reviewedCardIds: [],
+      completedPathIds: [first.paths[0]!.id],
+      pendingPathIds: [],
+      batchIndex: 0,
+    })
+    let completionOrdinal = 5
+    const onPathCompleted = vi.fn(async (_familyId: string, completion: {
+      packId: string
+      pathId: string
+      coverageCycleId: string
+      completedAt: string
+    }) => {
+      await repository.appendCoverageEvent({
+        schemaVersion: 1,
+        eventId: `70000000-0000-4000-8000-${String(completionOrdinal++).padStart(12, '0')}`,
+        releaseId: manifest.releaseId,
+        familyId: family.id,
+        packId: completion.packId,
+        pathId: completion.pathId,
+        coverageCycleId: completion.coverageCycleId,
+        completedAt: completion.completedAt,
+      })
+    })
+    const props = {
+      ...detailProps(family),
+      mode: 'training' as const,
+      reducedMotion: true,
+      graphResources: { [family.id]: resources },
+      familyTrainingJournal: repository,
+      onPathCompleted,
+    }
+    const firstRender = render(<OpeningFamilyView {...props} />)
+    const packButtons = within(screen.getByRole('group', { name: 'Repertoire pack' })).getAllByRole('button')
+    await waitFor(() => expect(packButtons[1]).toHaveAttribute('aria-pressed', 'true'))
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Continuous graph practice' })).toBeVisible())
+    expect(screen.getByText('1 of 2 Manifest variation paths completed.')).toBeVisible()
+    await waitFor(async () => {
+      const generation = latestFamilyCoverageGeneration(await repository.listCycleEvents({
+        releaseId: manifest.releaseId,
+        familyId: family.id,
+        side: 'white',
+      }))
+      expect(generation?.packCycleIds[second.pack.id]).toBe(`${second.pack.id}::coverage:0`)
+      expect(await repository.loadCursor({
+        releaseId: manifest.releaseId,
+        familyId: family.id,
+        side: 'white',
+        packId: second.pack.id,
+        coverageCycleId: `${second.pack.id}::coverage:0`,
+      })).not.toBeNull()
+    })
+    firstRender.unmount()
+
+    render(<OpeningFamilyView {...props} />)
+    const restoredPackButtons = within(screen.getByRole('group', { name: 'Repertoire pack' })).getAllByRole('button')
+    await waitFor(() => expect(restoredPackButtons[1]).toHaveAttribute('aria-pressed', 'true'))
+    expect(await screen.findByText('1 of 2 Manifest variation paths completed.')).toBeVisible()
+
+    const play = async (uci: string): Promise<void> => {
+      const picker = await screen.findByRole('combobox', { name: 'Legal move picker' })
+      await waitFor(() => expect(picker).toBeEnabled())
+      await user.selectOptions(picker, uci)
+      await user.click(screen.getByRole('button', { name: 'Play move' }))
+    }
+    await play('g1f3')
+    await waitFor(() => expect(screen.getByText(/move 3 of 6/u)).toBeVisible())
+    await play('g2g3')
+    await waitFor(() => expect(screen.getByText(/move 5 of 6/u)).toBeVisible())
+    await play('f1g2')
+    expect(await screen.findByText('2 of 2 Manifest variation paths completed.')).toBeVisible()
+    await waitFor(async () => {
+      expect(await repository.listCoverageEvents({
+        releaseId: manifest.releaseId,
+        familyId: family.id,
+      })).toHaveLength(2)
+    })
+    cleanup()
+    render(<OpeningFamilyView {...props} />)
+    expect(await screen.findByText('2 of 2 Manifest variation paths completed.')).toBeVisible()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(await repository.listCoverageEvents({
+      releaseId: manifest.releaseId,
+      familyId: family.id,
+    })).toHaveLength(2)
+  }, 30_000)
+
   test('starting full practice after choosing paths records a new family generation', async () => {
     const user = userEvent.setup()
     const family = catalog.families.find(({ id }) => id === 'caro-kann')
@@ -333,7 +482,9 @@ describe('canonical opening-family repertoire', () => {
       expect(generation?.packCycleIds[firstPackId]).toBe(`${firstPackId}::coverage:0`)
     })
 
-    await user.click(screen.getByRole('button', { name: 'Choose variation' }))
+    const desktopControls = document.querySelector('.desktop-session-controls')
+    expect(desktopControls).not.toBeNull()
+    await user.click(within(desktopControls as HTMLElement).getByRole('button', { name: 'Choose variation' }))
     expect(await screen.findByRole('heading', { name: 'Practice every audited branch' })).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Start full repertoire' }))
     expect(await screen.findByRole('heading', { name: 'Continuous graph practice' })).toBeVisible()
@@ -349,6 +500,59 @@ describe('canonical opening-family repertoire', () => {
       expect(generation?.packCycleIds).toEqual({
         [firstPackId]: `${firstPackId}::coverage:1`,
       })
+    })
+  }, 30_000)
+
+  test('starts a named branch in a fresh durable generation and leaves single-path study unbound', async () => {
+    const user = userEvent.setup()
+    const family = catalog.families.find(({ id }) => id === 'caro-kann')
+    if (!family) throw new Error('Required family is missing')
+    const promotion = await createSyntheticFamilyPromotion(family, { packCount: 2 })
+    const repository = new MemoryFamilyTrainingJournalRepository()
+    const firstPackId = promotion.graphs[0]!.pack.id
+    render(
+      <OpeningFamilyView
+        {...detailProps(family)}
+        mode="training"
+        reducedMotion
+        graphResources={{ [family.id]: promotion.resources }}
+        familyTrainingJournal={repository}
+      />,
+    )
+    await user.click(await screen.findByRole('button', { name: 'Start full repertoire' }))
+    await waitFor(async () => expect((latestFamilyCoverageGeneration(await repository.listCycleEvents({
+      releaseId: promotion.manifest.releaseId,
+      familyId: family.id,
+      side: 'white',
+    })))?.generationOrdinal).toBe(0))
+    const chooseVariation = (): HTMLButtonElement => within(
+      document.querySelector('.desktop-session-controls')!,
+    ).getByRole('button', { name: 'Choose variation' })
+    await user.click(chooseVariation())
+    await user.click(await screen.findByRole('button', { name: 'Practice selected variation' }))
+    expect(await screen.findByRole('heading', { name: 'Continuous graph practice' })).toBeVisible()
+    await waitFor(async () => {
+      const latest = latestFamilyCoverageGeneration(await repository.listCycleEvents({
+        releaseId: promotion.manifest.releaseId,
+        familyId: family.id,
+        side: 'white',
+      }))
+      expect(latest?.generationOrdinal).toBe(1)
+      expect(latest?.packCycleIds[firstPackId]).toBe(`${firstPackId}::coverage:1`)
+    })
+
+    await user.click(chooseVariation())
+    await user.click(await screen.findByRole('button', { name: 'Practice selected path' }))
+    expect(await screen.findByRole('heading', { name: 'Continuous graph practice' })).toBeVisible()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const afterSinglePath = latestFamilyCoverageGeneration(await repository.listCycleEvents({
+      releaseId: promotion.manifest.releaseId,
+      familyId: family.id,
+      side: 'white',
+    }))
+    expect(afterSinglePath?.generationOrdinal).toBe(1)
+    expect(afterSinglePath?.packCycleIds).toEqual({
+      [firstPackId]: `${firstPackId}::coverage:1`,
     })
   }, 30_000)
 

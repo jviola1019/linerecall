@@ -2,7 +2,7 @@ import { Component, StrictMode, type ErrorInfo, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { App } from './app/App.tsx'
 import './app/styles.css'
-import { EmbeddedOpeningDataSource } from './data/embedded-opening-data-source.ts'
+import { createEmbeddedOpeningDataSource } from './data/embedded-production-data-source.ts'
 
 interface ErrorBoundaryState {
   error: Error | null
@@ -39,7 +39,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryStat
 const container = document.getElementById('root')
 if (!container) throw new Error('LineRecall root element is missing')
 
-const dataSource = new EmbeddedOpeningDataSource()
+const dataSource = createEmbeddedOpeningDataSource()
 // The static shell is parsed and operable before this module. Start the exact
 // same cached integrity/schema-validation promise immediately so it can make
 // progress while React mounts; App still owns all success/error UI handling.

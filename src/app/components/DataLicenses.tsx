@@ -169,7 +169,7 @@ export function DataLicenses({ audit, selectedLine }: { audit: DataManifest; sel
         <dl className="audit-grid prominent-audit-grid">
           <div><dt>Browsable lines</dt><dd>{number(audit.audit.browsableLines)}</dd></div>
           <div><dt>Verified side variants</dt><dd>{number(audit.audit.verifiedVariants)}</dd></div>
-          <div><dt>Drillable variants</dt><dd>{number(audit.audit.drillableVariants)}</dd></div>
+          <div><dt>Legacy verified side records</dt><dd>{number(audit.audit.drillableVariants)}</dd></div>
           <div><dt>Quarantined variants</dt><dd>{number(audit.audit.quarantinedVariants)}</dd></div>
           <div><dt>ECO partitions</dt><dd>{number(audit.audit.partitions)}</dd></div>
           <div><dt>Generated</dt><dd><time dateTime={audit.generatedAt}>{audit.generatedAt}</time></dd></div>

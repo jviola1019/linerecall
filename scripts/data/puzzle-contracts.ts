@@ -61,6 +61,11 @@ export interface PuzzleGraphArchiveIdentity {
   sha256: string
 }
 
+/**
+ * Historical review-fixture validator only. It describes the retired
+ * graph_metadata/archive_runs evidence shape and is retained for regression
+ * tests; production puzzle ingestion must use loadPuzzleV3Prerequisites.
+ */
 export function assertPuzzleGraphPrerequisite(input: {
   schemaVersion: string | undefined
   completeBaselineMaximumPly: string | undefined

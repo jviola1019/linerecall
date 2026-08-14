@@ -1,13 +1,12 @@
 import { useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react'
 import type { OpeningSearchMatch } from '../domain/input-validation.ts'
-import type { DataManifest, OpeningPartition, VerifiedLine } from '../domain/opening-data.ts'
+import type { DataManifest, OpeningPartition } from '../domain/opening-data.ts'
 import {
   createEmptyProgress,
   createCard,
   localDateKey,
   scheduleReview,
   updateReviewStreak,
-  updateScopedReviewStreaks,
   CardProgressSchema,
   ProgressV1Schema,
   type CardProgress,
@@ -19,15 +18,13 @@ import {
   type OpeningDataCore,
   type OpeningDataSource,
 } from '../data/opening-data-source.ts'
-import { positionGraphFromWire } from '../data/position-graph.ts'
-import type { PositionGraph } from '../domain/deviation.ts'
 import {
   DebouncedProgressWriter,
   MemoryProgressRepository,
   selectProgressRepository,
 } from '../infrastructure/progress-repository.ts'
 import { DataLicenses } from './components/DataLicenses.tsx'
-import { DrillView, type ReviewCommitMetadata } from './components/DrillView.tsx'
+import type { ReviewCommitMetadata } from '../domain/review-commit.ts'
 import { OpeningBrowser, type PartitionResource } from './components/OpeningBrowser.tsx'
 import { ProgressView } from './components/ProgressView.tsx'
 import {
@@ -61,15 +58,23 @@ import {
 import {
   countUniqueCompletedFamilyPaths,
   MemoryFamilyTrainingJournalRepository,
+  supportsFamilyTrainingJournalTransfer,
+  type FamilyTrainingJournalSnapshotV1,
   type FamilyTrainingJournalRepository,
 } from '../domain/family-training-journal.ts'
+import {
+  PortableProgressBundleV1Schema,
+  createPortableProgressBundle,
+  exportPortableProgressJson,
+  type PortableProgressImport,
+} from '../infrastructure/portable-progress-bundle.ts'
 import {
   appHashForRoute,
   parseAppHash,
   type AppHashRoute,
 } from './hash-route.ts'
 
-type AppView = 'today' | 'repertoire' | 'family' | 'train' | 'puzzles' | 'explore' | 'drill' | 'progress' | 'data'
+type AppView = 'today' | 'repertoire' | 'family' | 'train' | 'puzzles' | 'explore' | 'progress' | 'data'
 type PrimaryView = 'today' | 'repertoire' | 'puzzles' | 'explore' | 'progress'
 
 interface AppState {
@@ -87,7 +92,6 @@ interface AppState {
   partitionRetry: number
   audit: { status: 'idle' | 'loading' | 'ready' | 'error'; value: DataManifest | null; error: string | null }
   auditRetry: number
-  drillLine: VerifiedLine | null
   selectedFamilyId: string | null
   selectedFamilySide: 'white' | 'black'
 }
@@ -109,7 +113,6 @@ type AppAction =
   | { type: 'retry_audit' }
   | { type: 'select_line'; lineId: string; firstVariantId: string | null }
   | { type: 'select_variant'; variantId: string }
-  | { type: 'start_drill'; line: VerifiedLine }
   | { type: 'apply_route'; route: AppHashRoute }
   | { type: 'select_family_side'; familyId: string; side: 'white' | 'black' }
 
@@ -128,14 +131,8 @@ const INITIAL_STATE: AppState = {
   partitionRetry: 0,
   audit: { status: 'idle', value: null, error: null },
   auditRetry: 0,
-  drillLine: null,
   selectedFamilyId: null,
   selectedFamilySide: 'white',
-}
-
-const EMPTY_POSITION_GRAPH: PositionGraph = {
-  edgesByPosition: new Map(),
-  edgesByPositionMove: new Map(),
 }
 
 function firstVariantFor(partition: OpeningPartition, lineId: string | null): string | null {
@@ -214,7 +211,6 @@ function reducer(state: AppState, action: AppAction): AppState {
     case 'retry_audit': return { ...state, auditRetry: state.auditRetry + 1 }
     case 'select_line': return { ...state, selectedLineId: action.lineId, selectedVariantId: action.firstVariantId }
     case 'select_variant': return { ...state, selectedVariantId: action.variantId }
-    case 'start_drill': return { ...state, view: 'drill', drillLine: action.line }
     case 'apply_route': {
       if (action.route.view === 'family') {
         return { ...state, view: 'family', selectedFamilyId: action.route.familyId }
@@ -367,6 +363,20 @@ function familySideFullyReady(
   if (!manifestResult.success) return false
   const expected = manifestResult.data.packRefs.filter((ref) => ref.side === side)
   return expected.length > 0 && validatedFamilyGraphs(resources, side).length === expected.length
+}
+
+function familyCompletionCountsFromSnapshot(
+  snapshot: FamilyTrainingJournalSnapshotV1,
+  resources: FamilyGraphResources,
+): Record<string, number> {
+  const counts: Record<string, number> = {}
+  for (const [familyId, resourceSet] of Object.entries(resources)) {
+    const manifest = OpeningFamilyManifestV1Schema.safeParse(resourceSet.manifest)
+    if (!manifest.success || manifest.data.id !== familyId) continue
+    counts[familyId] = countUniqueCompletedFamilyPaths(snapshot.coverageEvents.filter((event) =>
+      event.releaseId === manifest.data.releaseId && event.familyId === familyId))
+  }
+  return counts
 }
 
 export function App({
@@ -703,9 +713,11 @@ export function App({
     const familyId = state.selectedFamilyId
     const resourceSet = effectiveFamilyGraphResources[familyId]
     const manifest = OpeningFamilyManifestV1Schema.safeParse(resourceSet?.manifest)
-    const releaseId = manifest.success
-      ? manifest.data.releaseId
-      : state.core.reviewFamilyCatalog.generatedAt
+    // Family completion is release-scoped. The review catalog timestamp is
+    // not a release identifier and must never be sent to a journal adapter
+    // while the promoted manifest is still loading.
+    if (!manifest.success || manifest.data.id !== familyId) return
+    const releaseId = manifest.data.releaseId
     void activeFamilyTrainingJournal.listCoverageEvents({
       releaseId,
       familyId,
@@ -792,6 +804,77 @@ export function App({
     writerRef.current?.schedule(next)
   }
 
+  const replaceOpeningProgress = async (next: ProgressV1): Promise<void> => {
+    if (progressHydration !== 'ready' || writerRef.current === null) {
+      throw new Error('Progress is still loading; no data was replaced')
+    }
+    const validated = ProgressV1Schema.parse(next)
+    await writerRef.current.saveImmediately(validated)
+    progressRef.current = validated
+    setProgress(validated)
+    setSaveError(null)
+  }
+
+  const exportPortableTrainingData = async (): Promise<string> => {
+    if (!supportsFamilyTrainingJournalTransfer(activeFamilyTrainingJournal)) {
+      throw new Error('This family-journal storage adapter cannot export a complete portable bundle')
+    }
+    const familyJournal = await activeFamilyTrainingJournal.exportSnapshot()
+    return exportPortableProgressJson(createPortableProgressBundle({
+      openingProgress: progressRef.current,
+      puzzleProgress,
+      familyJournal,
+    }))
+  }
+
+  const replacePortableTrainingData = async (
+    candidate: Extract<PortableProgressImport, { kind: 'bundle-v1' }>,
+  ): Promise<void> => {
+    if (progressHydration !== 'ready' || writerRef.current === null) {
+      throw new Error('Progress is still loading; no data was replaced')
+    }
+    if (!supportsFamilyTrainingJournalTransfer(activeFamilyTrainingJournal)) {
+      throw new Error('This family-journal storage adapter cannot replace a complete portable bundle')
+    }
+    const bundle = PortableProgressBundleV1Schema.parse(candidate.bundle)
+    const previousOpening = ProgressV1Schema.parse(progressRef.current)
+    const previousPuzzle = PuzzleProgressV1Schema.parse(puzzleProgress)
+    const previousFamily = await activeFamilyTrainingJournal.exportSnapshot()
+
+    try {
+      await activeFamilyTrainingJournal.replaceSnapshot(bundle.familyJournal)
+      await activePuzzleProgressRepository.save(bundle.puzzleProgress)
+      await writerRef.current.saveImmediately(bundle.openingProgress)
+    } catch (caught) {
+      const rollbackFailures: string[] = []
+      try {
+        await activeFamilyTrainingJournal.replaceSnapshot(previousFamily)
+      } catch (rollbackError) {
+        rollbackFailures.push(`family journal: ${errorMessage(rollbackError)}`)
+      }
+      try {
+        await activePuzzleProgressRepository.save(previousPuzzle)
+      } catch (rollbackError) {
+        rollbackFailures.push(`puzzle progress: ${errorMessage(rollbackError)}`)
+      }
+      try {
+        await writerRef.current.saveImmediately(previousOpening)
+      } catch (rollbackError) {
+        rollbackFailures.push(`opening progress: ${errorMessage(rollbackError)}`)
+      }
+      const rollbackDetail = rollbackFailures.length === 0
+        ? 'Previous stored data was restored.'
+        : `Storage rollback needs attention (${rollbackFailures.join('; ')}). Export the current session before leaving.`
+      throw new Error(`Training bundle could not be imported: ${errorMessage(caught)}. ${rollbackDetail}`)
+    }
+
+    progressRef.current = bundle.openingProgress
+    setProgress(bundle.openingProgress)
+    setPuzzleProgress(bundle.puzzleProgress)
+    setFamilyCompletionCount(familyCompletionCountsFromSnapshot(bundle.familyJournal, effectiveFamilyGraphResources))
+    setSaveError(null)
+  }
+
   const updateSettings = (settings: Partial<ProgressV1['settings']>): void => {
     const current = progressRef.current
     const next = {
@@ -800,30 +883,6 @@ export function App({
       settings: { ...current.settings, ...settings },
     }
     saveProgress(next)
-  }
-
-  const handleReview = (card: CardProgress, commit: ReviewCommitMetadata): string | undefined => {
-    const now = new Date()
-    const reviewLocalDate = localDateKey(now)
-    const current = progressRef.current
-    const scopedStreaks = updateScopedReviewStreaks(current, card.lineId, reviewLocalDate)
-    const next = {
-      ...current,
-      updatedAt: now.toISOString(),
-      cards: { ...current.cards, [card.cardId]: card },
-      streak: updateReviewStreak(current.streak, reviewLocalDate),
-      ...scopedStreaks,
-    }
-    saveProgress(next)
-    if (!onReviewCommit) return undefined
-    try {
-      return onReviewCommit({ ...commit, card })
-    } catch (error) {
-      const failure = error instanceof Error ? error : new Error('Connected review queue rejected the review')
-      setSaveError(`The local review was saved, but connected sync rejected it: ${failure.message}. Export progress before leaving.`)
-      announce('The review was saved locally, but connected sync needs attention.')
-      return undefined
-    }
   }
 
   const handleTacticalPuzzleAttempt = async (event: PuzzleAttemptEventV1): Promise<void> => {
@@ -958,12 +1017,6 @@ export function App({
   const selectedLine = partition?.lines.find((line) => line.sourceLineId === state.selectedLineId) ?? null
   const selectedVariant = partition?.verifiedLines.find((line) => line.id === state.selectedVariantId) ?? null
   const selectedForProvenance = selectedVariant ?? selectedLine
-  const positionGraph = useMemo(
-    () => state.core && state.drillLine
-      ? positionGraphFromWire(state.core.search)
-      : EMPTY_POSITION_GRAPH,
-    [state.core, state.drillLine],
-  )
 
   const selectLine = (lineId: string): void => {
     const firstVariantId = partition ? firstVariantFor(partition, lineId) : null
@@ -1053,18 +1106,9 @@ export function App({
   }
 
   const navigateTo = (
-    view: Exclude<AppView, 'family' | 'train' | 'drill'>,
+    view: Exclude<AppView, 'family' | 'train'>,
     label: string,
   ): void => navigateRoute({ view }, label)
-
-  const startTraining = (line: VerifiedLine): void => {
-    focusViewAfterNavigationRef.current = true
-    commitViewChange(() => dispatch({ type: 'start_drill', line }))
-    if (progress.settings.boardOrientation !== line.trainedSide) {
-      updateSettings({ boardOrientation: line.trainedSide })
-    }
-    announce(`Starting ${line.name}, training ${line.trainedSide}. Flow grading is ${progress.settings.manualGrading ? 'paused for confirmation' : 'automatic'}.`)
-  }
 
   const openFamily = (familyId: string): void => {
     const family = readyCore?.reviewFamilyCatalog.families.find(({ id }) => id === familyId)
@@ -1073,6 +1117,18 @@ export function App({
       return
     }
     navigateRoute({ view: 'family', familyId }, family.canonicalName)
+  }
+
+  const openFamilyForSourceLine = (sourceLineId: string): void => {
+    const matches = readyCore?.reviewFamilyCatalog.families.filter((family) =>
+      family.taxonomyLineIds.includes(sourceLineId)) ?? []
+    if (matches.length !== 1) {
+      announce(matches.length === 0
+        ? 'This taxonomy line has no canonical opening-family assignment in the audited release.'
+        : 'This taxonomy line has conflicting opening-family assignments. Navigation was stopped.')
+      return
+    }
+    openFamily(matches[0]!.id)
   }
 
   const selectFamilySide = (familyId: string, side: 'white' | 'black'): void => {
@@ -1344,7 +1400,7 @@ export function App({
               onSelectLine={selectLine}
               onSelectVariant={(variantId) => dispatch({ type: 'select_variant', variantId })}
               onSelectSearchResult={selectSearchResult}
-              onStartDrill={startTraining}
+              onOpenFamily={openFamilyForSourceLine}
               onRetryPartition={() => dispatch({ type: 'retry_partition' })}
               onAnnouncement={announce}
             />
@@ -1361,21 +1417,6 @@ export function App({
             reducedMotion={progress.settings.reducedMotion}
           />
         ) : null}
-        {appReady && state.view === 'drill' ? (
-          <DrillView
-            line={state.drillLine}
-            graph={positionGraph}
-            progress={progress}
-            orientation={progress.settings.boardOrientation}
-            onSetOrientation={(boardOrientation) => updateSettings({ boardOrientation })}
-            onReview={handleReview}
-            manualGrading={progress.settings.manualGrading}
-            reducedMotion={progress.settings.reducedMotion}
-            onSetManualGrading={(manualGrading) => updateSettings({ manualGrading })}
-            onAnnouncement={announce}
-            onReturnToBrowser={() => navigateTo('repertoire', 'Repertoire')}
-          />
-        ) : null}
         {appReady && state.view === 'progress' ? (
           <ProgressView
             progress={progress}
@@ -1386,7 +1427,9 @@ export function App({
             saveError={saveError}
             puzzleProgress={puzzleProgress}
             familyCompletionCount={familyCompletionCount}
-            onImport={(imported) => saveProgress(imported)}
+            onImport={replaceOpeningProgress}
+            onPortableExport={exportPortableTrainingData}
+            onPortableImport={replacePortableTrainingData}
             onAnnouncement={announce}
           />
         ) : null}

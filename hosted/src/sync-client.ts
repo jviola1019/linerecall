@@ -5,7 +5,7 @@ import {
   type PuzzleProgress,
   type PuzzleProgressRepository,
 } from '../../src/domain/puzzle-progress.ts'
-import type { ReviewCommitMetadata } from '../../src/app/components/DrillView.tsx'
+import type { ReviewCommitMetadata } from '../../src/domain/review-commit.ts'
 import {
   PuzzleAttemptSyncRequestSchema,
   PuzzleAttemptSyncResponseSchema,
@@ -24,6 +24,7 @@ import {
   type SyncResponseV1,
 } from './contracts.ts'
 import { HttpProblem, expectJson, sameOriginRequest, type FetchLike } from './http.ts'
+import type { PendingFamilyTrainingExportV1 } from './family-training-client.ts'
 
 export type SyncState =
   | { status: 'idle' | 'syncing' | 'synced'; pending: number; message: string }
@@ -437,15 +438,18 @@ export class ConnectedSyncClient {
     for (const listener of this.#errorListeners) listener(error)
   }
 
-  exportUnsynced(): void {
+  exportUnsynced(family: PendingFamilyTrainingExportV1 = {
+    pendingFamilyCoverageEvents: [], pendingFamilyCycleEvents: [], pendingFamilyCursors: [],
+  }): void {
     const payload = UnsyncedExportSchema.parse({
-      schema: 'linerecall-unsynced-events-v3',
+      schema: 'linerecall-unsynced-events-v4',
       exportedAt: new Date().toISOString(),
       deviceId: this.deviceId,
       snapshotVersion: this.#snapshotVersion,
       pendingEvents: [...this.#pending.values()],
       rejectedEvents: this.#rejected,
       pendingPuzzleAttempts: [...this.#pendingPuzzleAttempts.values()],
+      ...family,
     })
     downloadJson(`linerecall-unsynced-${new Date().toISOString().slice(0, 10)}.json`, payload)
   }

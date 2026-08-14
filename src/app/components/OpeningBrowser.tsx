@@ -52,7 +52,7 @@ export interface OpeningBrowserProps {
   onSelectLine: (lineId: string) => void
   onSelectVariant: (variantId: string) => void
   onSelectSearchResult: (match: OpeningSearchMatch) => void
-  onStartDrill: (line: VerifiedLine) => void
+  onOpenFamily: (sourceLineId: string) => void
   onRetryPartition: () => void
   onAnnouncement: (message: string) => void
 }
@@ -367,7 +367,7 @@ function EcoRail({
                     onClick={() => onSelect(entry.eco)}
                   >
                     <span className="eco-pill">{entry.eco}</span>
-                    <span className="eco-copy"><strong>{entry.names[0]}</strong><small>{entry.lineCount} {entry.lineCount === 1 ? 'line' : 'lines'} · {entry.drillableVariantCount} drillable</small></span>
+                    <span className="eco-copy"><strong>{entry.names[0]}</strong><small>{entry.lineCount} {entry.lineCount === 1 ? 'line' : 'lines'} · {entry.drillableVariantCount} historical side records</small></span>
                   </button>
                 ))}
               </div>
@@ -385,13 +385,13 @@ function LineDetail({
   variants,
   selectedVariantId,
   onSelectVariant,
-  onStartDrill,
+  onOpenFamily,
 }: {
   line: BrowsableLine
   variants: readonly VerifiedLine[]
   selectedVariantId: string | null
   onSelectVariant: (variantId: string) => void
-  onStartDrill: (line: VerifiedLine) => void
+  onOpenFamily: (sourceLineId: string) => void
 }): React.JSX.Element {
   const tabGroupId = useId()
   const variantRefs = useRef<Array<HTMLButtonElement | null>>([])
@@ -436,8 +436,9 @@ function LineDetail({
 
       {variants.length > 0 ? (
         <section className="variant-section" aria-labelledby="verified-variants-title">
-          <h3 id="verified-variants-title">Engine-checked training sides</h3>
-          <div className="variant-tabs" role="tablist" aria-label="Training side">
+          <h3 id="verified-variants-title">Historical side evidence</h3>
+          <p className="field-help">These archived side records are available for comparison. Practice uses the canonical family graph.</p>
+          <div className="variant-tabs" role="tablist" aria-label="Historical side evidence">
             {variants.map((variant, index) => (
               <button
                 ref={(node) => { variantRefs.current[index] = node }}
@@ -451,7 +452,7 @@ function LineDetail({
                 onKeyDown={(event) => handleVariantKey(event, index)}
                 onClick={() => onSelectVariant(variant.id)}
               >
-                {variant.trainedSide === 'white' ? 'Train White' : 'Train Black'}
+                {variant.trainedSide === 'white' ? 'White perspective' : 'Black perspective'}
               </button>
             ))}
           </div>
@@ -465,32 +466,32 @@ function LineDetail({
               <div className="status-row">
                 <span className={`eligibility-badge ${selectedVariant.drillEligible ? 'eligible' : 'quarantined'}`}>
                   <span aria-hidden="true">{selectedVariant.drillEligible ? '✓' : '⊘'}</span>
-                  {selectedVariant.drillEligible ? 'Drill eligible' : 'Quarantined'}
+                  {selectedVariant.drillEligible ? 'Historical check passed' : 'Historical record quarantined'}
                 </span>
                 <span>Scid cross-check: {selectedVariant.crosscheckStatus.replaceAll('_', ' ')}</span>
               </div>
               {selectedVariant.quarantineReasons.length > 0 ? (
-                <div className="inline-warning" role="note"><strong>Not drillable:</strong> {selectedVariant.quarantineReasons.join(' ')}</div>
+                <div className="inline-warning" role="note"><strong>Not released for practice:</strong> {selectedVariant.quarantineReasons.join(' ')}</div>
               ) : null}
               <EvidenceTable bands={selectedVariant.terminalStats} caption={`${selectedVariant.trainedSide} trained-side terminal results`} />
-              <button
-                type="button"
-                className="primary-action"
-                disabled={!selectedVariant.drillEligible}
-                onClick={() => onStartDrill(selectedVariant)}
-              >
-                Start spaced-repetition drill
-              </button>
             </div>
           ) : null}
         </section>
       ) : (
         <div className="inline-warning" role="note">
           {line.backtestEligible
-            ? 'This line has enough historical games to browse, but it is not part of the released engine-verified training graph.'
-            : 'This line does not meet the N=500 terminal-position threshold and is not available for drills.'}
+            ? 'This line has enough historical games to browse, but no side-specific record is included in this historical snapshot.'
+            : 'This line does not meet the N=500 terminal-position threshold. Its evidence remains available for reference.'}
         </div>
       )}
+
+      <button
+        type="button"
+        className="primary-action"
+        onClick={() => onOpenFamily(line.sourceLineId)}
+      >
+        Open opening family
+      </button>
 
       <details className="terminal-stats-details">
         <summary>All terminal results for both sides</summary>
@@ -503,18 +504,18 @@ function LineDetail({
 
 export function OpeningBrowser(props: OpeningBrowserProps): React.JSX.Element {
   const partition = props.partition.value
-  const drillableSourceIds = useMemo(() => new Set(
+  const historicallyVerifiedSourceIds = useMemo(() => new Set(
     partition?.verifiedLines
       .filter((line) => line.drillEligible)
       .map((line) => line.sourceLineId) ?? [],
   ), [partition])
   const orderedLines = useMemo(() => [...(partition?.lines ?? [])].sort((left, right) => {
-    const drillableDifference = Number(drillableSourceIds.has(right.sourceLineId)) - Number(drillableSourceIds.has(left.sourceLineId))
-    if (drillableDifference !== 0) return drillableDifference
+    const verifiedDifference = Number(historicallyVerifiedSourceIds.has(right.sourceLineId)) - Number(historicallyVerifiedSourceIds.has(left.sourceLineId))
+    if (verifiedDifference !== 0) return verifiedDifference
     const eligibleDifference = Number(right.backtestEligible) - Number(left.backtestEligible)
     if (eligibleDifference !== 0) return eligibleDifference
     return left.name.localeCompare(right.name, 'en') || left.sourceLineId.localeCompare(right.sourceLineId, 'en')
-  }), [drillableSourceIds, partition])
+  }), [historicallyVerifiedSourceIds, partition])
   const selectedLine = partition?.lines.find((line) => line.sourceLineId === props.selectedLineId) ?? orderedLines[0] ?? null
   const variants = selectedLine
     ? partition?.verifiedLines.filter((line) => line.sourceLineId === selectedLine.sourceLineId) ?? []
@@ -565,7 +566,7 @@ export function OpeningBrowser(props: OpeningBrowserProps): React.JSX.Element {
                     onClick={() => props.onSelectLine(line.sourceLineId)}
                   >
                     <strong>{line.name}</strong>
-                    <small>N={line.terminalSampleSize.toLocaleString('en-US')} · {line.backtestEligible ? `${line.verifiedVariantIds.length} verified` : 'below threshold'}</small>
+                    <small>N={line.terminalSampleSize.toLocaleString('en-US')} · {line.backtestEligible ? `${line.verifiedVariantIds.length} side records` : 'below threshold'}</small>
                   </button>
                 ))}
               </div>
@@ -575,7 +576,7 @@ export function OpeningBrowser(props: OpeningBrowserProps): React.JSX.Element {
                   variants={variants}
                   selectedVariantId={props.selectedVariantId}
                   onSelectVariant={props.onSelectVariant}
-                  onStartDrill={props.onStartDrill}
+                  onOpenFamily={props.onOpenFamily}
                 />
               ) : null}
             </div>

@@ -8,8 +8,14 @@ import { tmpdir } from 'node:os'
 import {
   auditFamilyPromotion,
 } from '../../scripts/release/lib/family-promotion-audit.ts'
+import { derivePuzzlePromotionReceipt } from '../../scripts/data/puzzle-v3-promotion.ts'
+import { sha256Json } from '../../scripts/data/puzzle-v3-contracts.ts'
 import { createSyntheticTranspositionGraph } from '../fixtures/synthetic-repertoire-graph.ts'
-import { createSyntheticTacticalPuzzle } from '../fixtures/synthetic-tactical-puzzle.ts'
+import { createSyntheticVerifiedPuzzlePromotionEvidence } from '../fixtures/synthetic-puzzle-promotion-evidence.ts'
+import {
+  createSyntheticFamilyGraphProvenanceDocument,
+} from '../fixtures/synthetic-repertoire-evidence.ts'
+import { createSyntheticFamilyCampaignBindings } from '../fixtures/synthetic-family-campaign-bindings.ts'
 
 type Receipt = {
   path: string
@@ -53,9 +59,17 @@ function contentRef(receipt: Receipt) {
   }
 }
 
-async function fixture(): Promise<{ root: string; index: any }> {
+async function fixture(options: {
+  omitProvenanceFor?: 'node' | 'path'
+  tamperNestedReceipt?: boolean
+  puzzleProofFailure?: 'missing' | 'arbitrary-reference' | 'cross-campaign'
+} = {}): Promise<{ root: string; index: any }> {
   const root = await mkdtemp(join(tmpdir(), 'linerecall-family-promotion-'))
   const graph = await createSyntheticTranspositionGraph()
+  graph.pack.provenanceRef = 'synthetic-pack-provenance'
+  for (const node of graph.nodes) node.provenanceRef = 'synthetic-node-provenance'
+  for (const edge of graph.edges) edge.provenanceRef = 'synthetic-edge-provenance'
+  for (const path of graph.paths) path.provenanceRef = 'synthetic-path-provenance'
   const graphReceipt = await writeJson(root, 'resources/graph.json.gz', graph, 'gzip')
   const inventoryReceipt = await writeJson(root, 'resources/inventory.json', {
     schemaVersion: 1,
@@ -64,19 +78,145 @@ async function fixture(): Promise<{ root: string; index: any }> {
     sourceReceiptSha256: HASH,
     eligibleEdgeIds: graph.edges.filter(({ eligibleForDrill }) => eligibleForDrill).map(({ id }) => id),
   }, 'identity')
-  const provenanceReceipt = await writeJson(root, 'resources/provenance.json.gz', {
-    schemaVersion: 1,
+  const nestedEvidenceReceipts = await Promise.all(([
+    'taxonomy',
+    'broadcast-corpus',
+    'lichess-standard-corpus',
+    'engine',
+    'scid',
+  ] as const).map(async (kind) => {
+    const receipt = await writeJson(root, `resources/evidence/${kind}.json`, {
+      schemaVersion: 1,
+      kind,
+      synthetic: true,
+      productionEvidence: false,
+    }, 'identity')
+    return { kind, path: receipt.path, sha256: receipt.sha256, bytes: receipt.bytes }
+  }))
+  const provenanceReceipt = await writeJson(
+    root,
+    'resources/provenance.json.gz',
+    createSyntheticFamilyGraphProvenanceDocument({
+      releaseId: RELEASE,
+      familyId: 'synthetic-family',
+      provenanceRefs: [
+        'synthetic-pack-provenance',
+        ...(options.omitProvenanceFor === 'node' ? [] : ['synthetic-node-provenance']),
+        'synthetic-edge-provenance',
+        ...(options.omitProvenanceFor === 'path' ? [] : ['synthetic-path-provenance']),
+      ],
+      receipts: nestedEvidenceReceipts,
+    }),
+    'gzip',
+  )
+  if (options.tamperNestedReceipt) {
+    await writeFile(join(root, nestedEvidenceReceipts[0]!.path), '{"tampered":true}\n')
+  }
+  const completedAt = '2026-07-28T12:00:00.000Z'
+  const broadcastGate = await writeJson(root, 'receipts/broadcast.json', {
+    schemaVersion: 1, releaseId: RELEASE, status: 'pass', completedAt,
+    gate: 'lichess-broadcasts-through-2026-06', archiveCount: 78,
+    archivesComplete: true, digestsVerified: true,
+    recordsSeen: 1_146_297, publishedRecords: 1_146_297,
+    accepted: 800_176, rejected: 346_121, deduplicated: 0, accountingReconciles: true,
+    finalExactReceiptSha256: BROADCAST_EXACT_RECEIPT,
+  }, 'identity')
+  const q2Gate = await writeJson(root, 'receipts/q2.json', {
+    schemaVersion: 1, releaseId: RELEASE, status: 'pass', completedAt,
+    gate: 'lichess-standard-q2-2026', archiveMonths: ['2026-04', '2026-05', '2026-06'],
+    archiveCount: 3, archivesComplete: true, digestsVerified: true,
+    recordsSeen: 267_333_507, publishedRecords: 267_333_507, publishedCompressedBytes: 87_256_474_116,
+    accepted: 200_000_000, rejected: 67_333_507, deduplicated: 0, accountingReconciles: true,
+    finalExactReceiptSha256: Q2_EXACT_RECEIPT,
+  }, 'identity')
+  const evidenceGate = await writeJson(root, 'receipts/evidence-reconciliation.json', {
+    schemaVersion: 1, releaseId: RELEASE, status: 'pass', completedAt,
+    gate: 'compact-v3-family-evidence-reconciliation',
+    broadcastExactReceiptSha256: BROADCAST_EXACT_RECEIPT,
+    q2ExactReceiptSha256: Q2_EXACT_RECEIPT,
+    eligibleInventorySourceSha256s: [HASH],
+    sourceEdgeInventoryComplete: true,
+    topNPracticeCutoffApplied: false,
+    hiddenEligiblePracticeBranches: 0,
+    provenanceMissing: 0,
+    illegalEdges: 0,
+    quarantinedEdgesInDrills: 0,
+  }, 'identity')
+  const campaign = await createSyntheticFamilyCampaignBindings({
     releaseId: RELEASE,
-    synthetic: true,
-  }, 'gzip')
-  const puzzleReceipt = await writeJson(root, 'resources/puzzles.json.gz', {
+    familyId: 'synthetic-family',
+    graph,
+    graphReceipt,
+    eligibleInventoryReceipt: inventoryReceipt,
+    writeJson: (path, value) => writeJson(root, path, value, 'identity'),
+    completedAt,
+  })
+  const verifiedPuzzle = createSyntheticVerifiedPuzzlePromotionEvidence({
+    releaseId: RELEASE,
+    familyId: 'synthetic-family',
+    puzzleSourceSha256: HASH,
+    broadcastExactReceiptSha256: BROADCAST_EXACT_RECEIPT,
+    q2ExactReceiptSha256: Q2_EXACT_RECEIPT,
+    graphReconciliationSha256: evidenceGate.sha256,
+    engineSha256: HASH,
+    nnueSha256: HASH,
+  })
+  const shippedPuzzle = structuredClone(verifiedPuzzle.puzzle)
+  if (options.puzzleProofFailure === 'arbitrary-reference') {
+    const arbitrary = `pengine_${'f'.repeat(16)}`
+    shippedPuzzle.engine.proofRefs[0] = arbitrary
+    shippedPuzzle.learnerNodes[0]!.engineProofRef = arbitrary
+  }
+  const puzzleShard = {
     schemaVersion: 1,
     id: 'blob_0000000000000000',
     releaseId: RELEASE,
     generatedAt: '2026-07-28T12:00:00.000Z',
     familyIds: ['synthetic-family'],
-    puzzles: [createSyntheticTacticalPuzzle()],
-  }, 'gzip')
+    puzzles: [shippedPuzzle],
+  }
+  const puzzleReceipt = await writeJson(root, 'resources/puzzles.json.gz', puzzleShard, 'gzip')
+  const inventoryEvidence = structuredClone(verifiedPuzzle.evidence)
+  const inventoryEnvelope = structuredClone(verifiedPuzzle.envelope)
+  if (options.puzzleProofFailure === 'cross-campaign') {
+    inventoryEvidence.engineCampaign.executableSha256 = 'f'.repeat(64)
+    inventoryEnvelope.evidenceBindingSha256 = sha256Json(inventoryEvidence)
+  }
+  const puzzleProofInventory = {
+    schemaVersion: 1,
+    releaseId: RELEASE,
+    generatedAt: '2026-07-28T12:00:00.000Z',
+    evidence: inventoryEvidence,
+    evidenceBindingSha256: sha256Json(inventoryEvidence),
+    shards: [{
+      shardSha256: puzzleReceipt.sha256,
+      familyIds: ['synthetic-family'],
+      verified: options.puzzleProofFailure === 'missing' ? [] : [inventoryEnvelope],
+    }],
+  }
+  const puzzleProofInventoryReceipt = await writeJson(
+    root,
+    'resources/puzzle-proof-inventory.json.gz',
+    puzzleProofInventory,
+    'gzip',
+  )
+  const puzzleGateValue = options.puzzleProofFailure
+    ? {
+        schemaVersion: 1, releaseId: RELEASE, status: 'pass', completedAt,
+        gate: 'lichess-puzzle-promotion', sourceDigestApproved: true, sourceSha256: HASH,
+        promotedShardCount: 1, promotedPuzzleCount: 1, legalityComplete: true,
+        associationComplete: true, engineChecksComplete: true, duplicatePuzzleIds: 0,
+        evidenceBindingSha256: sha256Json(inventoryEvidence),
+        engineCampaignSha256: inventoryEvidence.engineCampaign.campaignSha256,
+        proofInventory: puzzleProofInventoryReceipt,
+      }
+    : derivePuzzlePromotionReceipt({
+        inventory: puzzleProofInventory,
+        promotedShards: [{ sha256: puzzleReceipt.sha256, shard: puzzleShard }],
+        proofInventory: puzzleProofInventoryReceipt,
+        completedAt,
+      })
+  const puzzleGate = await writeJson(root, 'receipts/puzzle-promotion.json', puzzleGateValue, 'identity')
   const taxonomyLineIds = Array.from(
     { length: 3_790 },
     (_, index) => `tax_${index.toString(16).padStart(24, '0')}`,
@@ -134,57 +274,25 @@ async function fixture(): Promise<{ root: string; index: any }> {
   }, 'gzip')
 
   const gates = {
-    broadcast: await writeJson(root, 'receipts/broadcast.json', {
-      schemaVersion: 1, releaseId: RELEASE, status: 'pass', completedAt: '2026-07-28T12:00:00.000Z',
-      gate: 'lichess-broadcasts-through-2026-06', archiveCount: 78,
-      archivesComplete: true, digestsVerified: true,
-      recordsSeen: 1_146_297, publishedRecords: 1_146_297,
-      accepted: 800_176, rejected: 346_121, deduplicated: 0, accountingReconciles: true,
-      finalExactReceiptSha256: BROADCAST_EXACT_RECEIPT,
-    }, 'identity'),
-    q2: await writeJson(root, 'receipts/q2.json', {
-      schemaVersion: 1, releaseId: RELEASE, status: 'pass', completedAt: '2026-07-28T12:00:00.000Z',
-      gate: 'lichess-standard-q2-2026', archiveMonths: ['2026-04', '2026-05', '2026-06'],
-      archiveCount: 3, archivesComplete: true, digestsVerified: true,
-      recordsSeen: 267_333_507, publishedRecords: 267_333_507, publishedCompressedBytes: 87_256_474_116,
-      accepted: 200_000_000, rejected: 67_333_507, deduplicated: 0, accountingReconciles: true,
-      finalExactReceiptSha256: Q2_EXACT_RECEIPT,
-    }, 'identity'),
-    evidence: await writeJson(root, 'receipts/evidence-reconciliation.json', {
-      schemaVersion: 1, releaseId: RELEASE, status: 'pass', completedAt: '2026-07-28T12:00:00.000Z',
-      gate: 'compact-v3-family-evidence-reconciliation',
-      broadcastExactReceiptSha256: BROADCAST_EXACT_RECEIPT,
-      q2ExactReceiptSha256: Q2_EXACT_RECEIPT,
-      eligibleInventorySourceSha256s: [HASH],
-      sourceEdgeInventoryComplete: true,
-      topNPracticeCutoffApplied: false,
-    }, 'identity'),
-    engine: await writeJson(root, 'receipts/engine.json', {
-      schemaVersion: 1, releaseId: RELEASE, status: 'pass', completedAt: '2026-07-28T12:00:00.000Z',
-      gate: 'stockfish-18-family-graphs', engineName: 'Stockfish 18', threads: 1, hashMb: 128,
-      multiPv: 5, nodesPerPosition: 250_000, learnerNodesChecked: 3,
-      allDrillableLearnerNodesChecked: true, engineSha256: HASH, nnueSha256: [HASH],
-    }, 'identity'),
-    scid: await writeJson(root, 'receipts/scid.json', {
-      schemaVersion: 1, releaseId: RELEASE, status: 'pass', completedAt: '2026-07-28T12:00:00.000Z',
-      gate: 'scid-family-crosscheck', stratifiedSampleComplete: true, sampledLines: 1,
-      conflictingBaseEcoInDrills: 0, oracleContentShipped: false,
-    }, 'identity'),
-    puzzles: await writeJson(root, 'receipts/puzzle-promotion.json', {
-      schemaVersion: 1, releaseId: RELEASE, status: 'pass', completedAt: '2026-07-28T12:00:00.000Z',
-      gate: 'lichess-puzzle-promotion', sourceDigestApproved: true, sourceSha256: HASH,
-      promotedShardCount: 1, promotedPuzzleCount: 1, legalityComplete: true,
-      associationComplete: true, engineChecksComplete: true, duplicatePuzzleIds: 0,
-    }, 'identity'),
+    broadcast: broadcastGate,
+    q2: q2Gate,
+    evidence: evidenceGate,
+    engine: campaign.enginePromotionReceipt,
+    scid: campaign.scidPromotionReceipt,
+    puzzles: puzzleGate,
   }
   const index = {
     schemaVersion: 1,
     releaseId: RELEASE,
     selectionPolicy: { practiceBranches: 'all-eligible-audited', maximumPracticeBranches: null },
     catalog: catalogReceipt,
+    familyGraphBuild: campaign.familyGraphBuild,
+    engineProofInventory: campaign.engineProofInventory,
+    scidCrosscheckReport: campaign.scidCrosscheckReport,
     families: [{ familyId: 'synthetic-family', manifest: manifestReceipt, provenance: provenanceReceipt }],
     packs: [{ familyId: 'synthetic-family', packId: graph.pack.id, graph: graphReceipt, eligibleInventory: inventoryReceipt }],
     puzzleShards: [{ familyIds: ['synthetic-family'], shard: puzzleReceipt }],
+    puzzleProofInventory: puzzleProofInventoryReceipt,
     promotionReceipts: gates,
   }
   await writeJson(root, 'index.json', index, 'identity')
@@ -201,6 +309,16 @@ test('promotion audit passes only a complete receipt-bound family release with e
   assert.equal(report.counts.puzzleShards, 1)
   assert.ok(report.counts.eligibleEdges > 0)
   assert.ok(report.gates.every(({ status }) => status === 'pass'))
+})
+
+test('promotion audit rejects missing, arbitrary, and cross-campaign puzzle proofs', async () => {
+  for (const failure of ['missing', 'arbitrary-reference', 'cross-campaign'] as const) {
+    const fixtureValue = await fixture({ puzzleProofFailure: failure })
+    const report = await auditFamilyPromotion({ root: fixtureValue.root, indexPath: 'index.json' })
+    assert.equal(report.status, 'blocked', failure)
+    assert.ok(report.findings.some(({ code }) => code === 'puzzles-promotion-receipt-invalid'), failure)
+    assert.equal(report.gates.find(({ id }) => id === 'puzzles-promotion-receipt')?.status, 'blocked', failure)
+  }
 })
 
 test('promotion audit blocks absent hard-gate receipts, path traversal, and omitted eligible edges', async () => {
@@ -264,6 +382,10 @@ test('promotion audit rejects an eligible inventory not bound to reconciled exac
       eligibleInventorySourceSha256s: [HASH],
       sourceEdgeInventoryComplete: true,
       topNPracticeCutoffApplied: false,
+      hiddenEligiblePracticeBranches: 0,
+      provenanceMissing: 0,
+      illegalEdges: 0,
+      quarantinedEdgesInDrills: 0,
     },
     'identity',
   )
@@ -274,4 +396,20 @@ test('promotion audit rejects an eligible inventory not bound to reconciled exac
   })
   assert.equal(mismatchedReport.status, 'blocked')
   assert.ok(mismatchedReport.findings.some(({ code }) => code === 'source-edge-reconciliation-mismatch'))
+})
+
+test('promotion audit resolves node and path provenance and hashes every nested evidence receipt', async () => {
+  for (const omitted of ['node', 'path'] as const) {
+    const fixtureValue = await fixture({ omitProvenanceFor: omitted })
+    const report = await auditFamilyPromotion({ root: fixtureValue.root, indexPath: 'index.json' })
+    assert.equal(report.status, 'blocked')
+    assert.ok(report.findings.some(({ code, message }) =>
+      code === 'pack-promotion-invalid' && new RegExp(`Graph ${omitted} .* immutable family provenance binding`, 'u').test(message)))
+  }
+
+  const tampered = await fixture({ tamperNestedReceipt: true })
+  const tamperedReport = await auditFamilyPromotion({ root: tampered.root, indexPath: 'index.json' })
+  assert.equal(tamperedReport.status, 'blocked')
+  assert.ok(tamperedReport.findings.some(({ code, message }) =>
+    code === 'family-manifest-invalid' && /receipt|byte|SHA-256/iu.test(message)))
 })

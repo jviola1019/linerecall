@@ -2,6 +2,11 @@ import { Chess, type PieceSymbol, type Square } from 'chess.js'
 import { z } from 'zod'
 import { EcoCodeSchema, EpdSchema, UciMoveSchema } from './opening-data.ts'
 import { normalizedEpd } from './input-validation.ts'
+import {
+  MAX_APPROVED_EVIDENCE_GAMES,
+  TRINOMIAL_PROFILE_LIKELIHOOD_95_METHOD,
+  assertTrinomialScoreProfileLikelihoodInterval,
+} from './statistics.ts'
 
 export const REPERTOIRE_SCHEMA_VERSION = 1 as const
 export const REPERTOIRE_MAX_PLY = 100 as const
@@ -18,6 +23,281 @@ const EdgeIdSchema = z.string().regex(/^edge_[a-f0-9]{20}$/u)
 const PathIdSchema = z.string().regex(/^path_[a-f0-9]{20}$/u)
 const CohortIdSchema = z.string().regex(/^cohort_[a-z0-9-]{3,64}$/u)
 const CardIdSchema = z.string().regex(/^[a-z0-9][a-z0-9_-]{2,95}::pos_[a-f0-9]{16}$/u)
+const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/u)
+const ReceiptIdSchema = z.string().regex(/^receipt_[a-f0-9]{16}$/u)
+const FamilyIdSchema = z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u)
+const ReleaseIdSchema = z.string().regex(/^[a-z0-9][a-z0-9._-]{2,159}$/u)
+const SAFE_RECEIPT_PATH = /^(?!\/)(?!.*\/\/)(?!.*(?:^|\/)\.{1,2}(?:\/|$))[a-zA-Z0-9][a-zA-Z0-9_.-]*(?:\/[a-zA-Z0-9][a-zA-Z0-9_.-]*)*\.json$/u
+
+export const RepertoireProvenanceRefSchema = z.string()
+  .min(3)
+  .max(160)
+  .regex(/^[a-z0-9][a-z0-9._:-]{2,159}$/u)
+
+export const EvidenceSourceSchema = z.enum(['broadcast', 'lichess-standard'])
+export const EvidenceRatingSystemSchema = z.enum(['broadcast-rating', 'lichess-glicko2'])
+export const EvidenceTimeControlSchema = z.enum(['blitz', 'rapid', 'classical'])
+export const CanonicalEvidenceRatingBandSchema = z.enum([
+  '<1800',
+  '1800-1999',
+  '2000-2199',
+  '2200-2399',
+  '2400+',
+])
+export const LichessBeginnerRatingBandSchema = z.enum(['<1200', '1200-1499', '1500-1799'])
+
+const CANONICAL_RATING_BANDS = CanonicalEvidenceRatingBandSchema.options
+const LICHESS_BEGINNER_BANDS = LichessBeginnerRatingBandSchema.options
+const MAX_EVIDENCE_COUNT = MAX_APPROVED_EVIDENCE_GAMES
+
+function isIsoDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(value)) return false
+  const date = new Date(`${value}T00:00:00.000Z`)
+  return Number.isFinite(date.valueOf()) && date.toISOString().slice(0, 10) === value
+}
+
+function ratesEqual(left: number, right: number): boolean {
+  return Math.abs(left - right) <= Math.max(1, Math.abs(left), Math.abs(right)) * Number.EPSILON * 8
+}
+
+const ScoreIntervalSchema = z.object({
+  method: z.literal(TRINOMIAL_PROFILE_LIKELIHOOD_95_METHOD),
+  confidenceLevel: z.literal(0.95),
+  low: z.number().min(0).max(1),
+  high: z.number().min(0).max(1),
+}).strict().superRefine((interval, context) => {
+  if (interval.low > interval.high) {
+    context.addIssue({ code: 'custom', path: ['low'], message: 'Score interval lower bound cannot exceed its upper bound' })
+  }
+})
+
+const EvidenceOutcomeShape = {
+  reachN: z.number().int().nonnegative().max(MAX_EVIDENCE_COUNT),
+  moveN: z.number().int().nonnegative().max(MAX_EVIDENCE_COUNT),
+  whiteWins: z.number().int().nonnegative().max(MAX_EVIDENCE_COUNT),
+  draws: z.number().int().nonnegative().max(MAX_EVIDENCE_COUNT),
+  blackWins: z.number().int().nonnegative().max(MAX_EVIDENCE_COUNT),
+  wins: z.number().int().nonnegative().max(MAX_EVIDENCE_COUNT),
+  losses: z.number().int().nonnegative().max(MAX_EVIDENCE_COUNT),
+  score: z.number().min(0).max(1).nullable(),
+  conditionalUsage: z.number().min(0).max(1),
+  scoreInterval: ScoreIntervalSchema.nullable(),
+} as const
+
+type EvidenceOutcome = z.infer<z.ZodObject<typeof EvidenceOutcomeShape>>
+
+function validateEvidenceOutcome(
+  outcome: EvidenceOutcome,
+  trainedSide: 'white' | 'black',
+  addIssue: (path: PropertyKey[], message: string) => void,
+): void {
+  if (outcome.moveN > outcome.reachN) {
+    addIssue(['moveN'], 'Move N cannot exceed position reach N')
+  }
+  if (outcome.whiteWins + outcome.draws + outcome.blackWins !== outcome.moveN) {
+    addIssue(['whiteWins'], 'Raw White/Draw/Black counts must sum to move N')
+  }
+  const expectedWins = trainedSide === 'white' ? outcome.whiteWins : outcome.blackWins
+  const expectedLosses = trainedSide === 'white' ? outcome.blackWins : outcome.whiteWins
+  if (outcome.wins !== expectedWins || outcome.losses !== expectedLosses) {
+    addIssue(['wins'], 'Trained-side W/D/L must map exactly from raw White/Draw/Black counts')
+  }
+  const expectedUsage = outcome.reachN === 0 ? 0 : outcome.moveN / outcome.reachN
+  if (!ratesEqual(outcome.conditionalUsage, expectedUsage)) {
+    addIssue(['conditionalUsage'], 'Conditional usage must equal move N divided by reach N')
+  }
+  if (outcome.moveN === 0) {
+    if (outcome.score !== null || outcome.scoreInterval !== null) {
+      addIssue(['score'], 'Zero-game evidence must report null score and interval')
+    }
+    return
+  }
+  const expectedScore = (expectedWins + outcome.draws * 0.5) / outcome.moveN
+  if (outcome.score === null || !ratesEqual(outcome.score, expectedScore)) {
+    addIssue(['score'], 'Score must equal (wins + 0.5 * draws) / move N')
+  }
+  if (outcome.scoreInterval === null) {
+    addIssue(['scoreInterval'], 'Score interval must equal the deterministic tagged 95% trinomial profile-likelihood interval')
+  } else {
+    try {
+      assertTrinomialScoreProfileLikelihoodInterval(
+        expectedWins,
+        outcome.draws,
+        expectedLosses,
+        outcome.scoreInterval,
+      )
+    } catch {
+      addIssue(['scoreInterval'], 'Score interval must equal the deterministic tagged 95% trinomial profile-likelihood interval')
+    }
+  }
+}
+
+function summedOutcome(records: readonly EvidenceOutcome[]): Omit<EvidenceOutcome, 'score' | 'conditionalUsage' | 'scoreInterval'> {
+  return records.reduce((sum, record) => ({
+    reachN: sum.reachN + record.reachN,
+    moveN: sum.moveN + record.moveN,
+    whiteWins: sum.whiteWins + record.whiteWins,
+    draws: sum.draws + record.draws,
+    blackWins: sum.blackWins + record.blackWins,
+    wins: sum.wins + record.wins,
+    losses: sum.losses + record.losses,
+  }), { reachN: 0, moveN: 0, whiteWins: 0, draws: 0, blackWins: 0, wins: 0, losses: 0 })
+}
+
+function validateAggregateEquality(
+  aggregate: EvidenceOutcome,
+  children: readonly EvidenceOutcome[],
+  path: PropertyKey[],
+  addIssue: (path: PropertyKey[], message: string) => void,
+): void {
+  const total = summedOutcome(children)
+  for (const key of ['reachN', 'moveN', 'whiteWins', 'draws', 'blackWins', 'wins', 'losses'] as const) {
+    if (aggregate[key] !== total[key]) {
+      addIssue([...path, key], `Aggregate ${key} must equal the sum of its rating bands`)
+    }
+  }
+}
+
+const CanonicalBandEvidenceSchema = z.object({
+  band: CanonicalEvidenceRatingBandSchema,
+  ...EvidenceOutcomeShape,
+}).strict()
+
+const BeginnerBandEvidenceSchema = z.object({
+  band: LichessBeginnerRatingBandSchema,
+  ...EvidenceOutcomeShape,
+}).strict()
+
+export const EvidenceCohortResultSchema = z.object({
+  cohortId: CohortIdSchema,
+  source: EvidenceSourceSchema,
+  ratingSystem: EvidenceRatingSystemSchema,
+  timeControl: EvidenceTimeControlSchema,
+  cutoff: z.string().refine(isIsoDate, 'Cutoff must be a real ISO calendar date'),
+  trainedSide: z.enum(['white', 'black']),
+  aggregate: z.object(EvidenceOutcomeShape).strict(),
+  canonicalBands: z.array(CanonicalBandEvidenceSchema).length(CANONICAL_RATING_BANDS.length),
+  lichessBeginnerBands: z.array(BeginnerBandEvidenceSchema).max(LICHESS_BEGINNER_BANDS.length),
+}).strict().superRefine((cohort, context) => {
+  const expectedRatingSystem = cohort.source === 'broadcast' ? 'broadcast-rating' : 'lichess-glicko2'
+  if (cohort.ratingSystem !== expectedRatingSystem) {
+    context.addIssue({ code: 'custom', path: ['ratingSystem'], message: 'Rating system must match its evidence source' })
+  }
+  if (!unique(cohort.canonicalBands.map(({ band }) => band))
+    || CANONICAL_RATING_BANDS.some((band) => !cohort.canonicalBands.some((value) => value.band === band))) {
+    context.addIssue({ code: 'custom', path: ['canonicalBands'], message: 'Every canonical rating band must appear exactly once' })
+  }
+  const beginnerBands = cohort.lichessBeginnerBands
+  if (cohort.source === 'broadcast' && beginnerBands.length !== 0) {
+    context.addIssue({ code: 'custom', path: ['lichessBeginnerBands'], message: 'Broadcast cohorts cannot claim Lichess beginner-band details' })
+  }
+  if (cohort.source === 'lichess-standard' && (
+    beginnerBands.length !== LICHESS_BEGINNER_BANDS.length
+    || !unique(beginnerBands.map(({ band }) => band))
+    || LICHESS_BEGINNER_BANDS.some((band) => !beginnerBands.some((value) => value.band === band))
+  )) {
+    context.addIssue({ code: 'custom', path: ['lichessBeginnerBands'], message: 'Lichess cohorts must preserve all three beginner-band details exactly once' })
+  }
+
+  const addIssue = (path: PropertyKey[], message: string): void => context.addIssue({ code: 'custom', path, message })
+  validateEvidenceOutcome(cohort.aggregate, cohort.trainedSide, addIssue)
+  for (const [index, band] of cohort.canonicalBands.entries()) {
+    validateEvidenceOutcome(band, cohort.trainedSide, (path, message) =>
+      addIssue(['canonicalBands', index, ...path], message))
+  }
+  for (const [index, band] of beginnerBands.entries()) {
+    validateEvidenceOutcome(band, cohort.trainedSide, (path, message) =>
+      addIssue(['lichessBeginnerBands', index, ...path], message))
+  }
+  validateAggregateEquality(cohort.aggregate, cohort.canonicalBands, ['aggregate'], addIssue)
+  if (cohort.source === 'lichess-standard') {
+    const under1800 = cohort.canonicalBands.find(({ band }) => band === '<1800')
+    if (under1800) validateAggregateEquality(
+      under1800,
+      beginnerBands,
+      ['canonicalBands', cohort.canonicalBands.indexOf(under1800)],
+      addIssue,
+    )
+  }
+})
+
+const EngineEvaluationSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('centipawn'),
+    value: z.number().int().min(-100_000).max(100_000),
+    unit: z.literal('centipawn'),
+    perspective: z.literal('trained-side'),
+  }).strict(),
+  z.object({
+    kind: z.literal('mate'),
+    value: z.number().int().min(-1_000).max(1_000).refine((value) => value !== 0, 'Mate distance cannot be zero'),
+    unit: z.literal('signed-plies-to-mate'),
+    perspective: z.literal('trained-side'),
+  }).strict(),
+])
+
+function engineEvaluationRank(evaluation: z.infer<typeof EngineEvaluationSchema>): number {
+  if (evaluation.kind === 'centipawn') return evaluation.value
+  if (evaluation.value === 0) return 0
+  return evaluation.value > 0
+    ? 1_000_000 - evaluation.value
+    : -1_000_000 - evaluation.value
+}
+
+function derivedEngineComparison(
+  best: z.infer<typeof EngineEvaluationSchema>,
+  move: z.infer<typeof EngineEvaluationSchema>,
+): { centipawnLoss: number | null; forcedMateAgainstLearner: boolean } {
+  const forcedMateAgainstLearner = move.kind === 'mate' && move.value < 0
+  if (best.kind === 'centipawn' && move.kind === 'centipawn') {
+    return { centipawnLoss: Math.max(0, best.value - move.value), forcedMateAgainstLearner }
+  }
+  if (best.kind === 'mate' && move.kind === 'mate' && best.value > 0 && move.value > 0) {
+    return { centipawnLoss: 0, forcedMateAgainstLearner }
+  }
+  return { centipawnLoss: null, forcedMateAgainstLearner }
+}
+
+export const RepertoireEngineCheckSchema = z.object({
+  engineName: z.literal('Stockfish 18'),
+  engineSha256: Sha256Schema,
+  nnueSha256: z.array(Sha256Schema).min(1).max(8),
+  settings: z.object({
+    threads: z.literal(1),
+    hashMb: z.literal(128),
+    multiPv: z.literal(5),
+    nodes: z.literal(250_000),
+  }).strict(),
+  analyzedAt: z.string().datetime({ offset: true }),
+  analyzedMoveUci: UciMoveSchema,
+  bestMoveUci: UciMoveSchema,
+  bestEvaluation: EngineEvaluationSchema,
+  moveEvaluation: EngineEvaluationSchema,
+  centipawnLoss: z.number().int().nonnegative().nullable(),
+  forcedMateAgainstLearner: z.boolean(),
+  bestPrincipalVariationUci: z.array(UciMoveSchema).min(1).max(64),
+  movePrincipalVariationUci: z.array(UciMoveSchema).min(1).max(64),
+}).strict().superRefine((check, context) => {
+  if (check.bestPrincipalVariationUci[0] !== check.bestMoveUci) {
+    context.addIssue({ code: 'custom', path: ['bestPrincipalVariationUci'], message: 'Best PV must begin with the recorded best move' })
+  }
+  if (check.movePrincipalVariationUci[0] !== check.analyzedMoveUci) {
+    context.addIssue({ code: 'custom', path: ['movePrincipalVariationUci'], message: 'Move PV must begin with the analyzed move' })
+  }
+  if (!unique(check.nnueSha256)) {
+    context.addIssue({ code: 'custom', path: ['nnueSha256'], message: 'NNUE hashes must be unique' })
+  }
+  if (engineEvaluationRank(check.bestEvaluation) < engineEvaluationRank(check.moveEvaluation)) {
+    context.addIssue({ code: 'custom', path: ['bestEvaluation'], message: 'Recorded best evaluation cannot be worse than the analyzed move from the trained-side perspective' })
+  }
+  const derived = derivedEngineComparison(check.bestEvaluation, check.moveEvaluation)
+  if (check.centipawnLoss !== derived.centipawnLoss) {
+    context.addIssue({ code: 'custom', path: ['centipawnLoss'], message: 'Centipawn loss must be derived from the trained-side best and move evaluations' })
+  }
+  if (check.forcedMateAgainstLearner !== derived.forcedMateAgainstLearner) {
+    context.addIssue({ code: 'custom', path: ['forcedMateAgainstLearner'], message: 'Losing-mate status must be derived from the trained-side move evaluation' })
+  }
+})
 
 function unique(values: readonly string[]): boolean {
   return new Set(values).size === values.length
@@ -31,27 +311,49 @@ export const BookTerminalStatusSchema = z.enum([
 ])
 
 export const RepertoireBranchEvidenceSchema = z.object({
-  cohorts: z.array(z.object({
-    cohortId: CohortIdSchema,
-    n: z.number().int().nonnegative(),
-  }).strict()).min(1).max(64),
+  cohorts: z.array(EvidenceCohortResultSchema).min(1).max(64),
+  selectionCohortId: CohortIdSchema,
   conditionalUsage: z.number().min(0).max(1),
   engine: z.object({
     status: z.enum(['verified', 'unverified', 'quarantined']),
     centipawnLoss: z.number().int().nonnegative().nullable(),
     forcedMateAgainstLearner: z.boolean(),
     quarantineReasons: z.array(z.string().min(1).max(500)).max(32),
+    check: RepertoireEngineCheckSchema.nullable(),
   }).strict(),
 }).strict().superRefine((evidence, context) => {
   if (!unique(evidence.cohorts.map(({ cohortId }) => cohortId))) {
     context.addIssue({ code: 'custom', path: ['cohorts'], message: 'Cohort IDs must be unique' })
   }
-  const { status, centipawnLoss, forcedMateAgainstLearner, quarantineReasons } = evidence.engine
-  if (status === 'verified' && centipawnLoss === null) {
-    context.addIssue({ code: 'custom', path: ['engine', 'centipawnLoss'], message: 'Verified evidence requires an exact centipawn loss' })
+  const dimensions = evidence.cohorts.map(({ source, ratingSystem, timeControl, cutoff }) =>
+    `${source}\0${ratingSystem}\0${timeControl}\0${cutoff}`)
+  if (!unique(dimensions)) {
+    context.addIssue({ code: 'custom', path: ['cohorts'], message: 'A source/rating/time-control/cutoff cohort dimension may appear only once' })
   }
-  if (status === 'unverified' && centipawnLoss !== null) {
-    context.addIssue({ code: 'custom', path: ['engine', 'centipawnLoss'], message: 'Unverified evidence cannot claim a centipawn loss' })
+  const selectedCohort = evidence.cohorts.find(({ cohortId }) => cohortId === evidence.selectionCohortId)
+  if (!selectedCohort) {
+    context.addIssue({ code: 'custom', path: ['selectionCohortId'], message: 'Selection cohort must identify exactly one preserved cohort' })
+  } else if (!ratesEqual(evidence.conditionalUsage, selectedCohort.aggregate.conditionalUsage)) {
+    context.addIssue({ code: 'custom', path: ['conditionalUsage'], message: 'Edge conditional usage must come from the declared selection cohort, not pooled cohorts' })
+  }
+  const { status, centipawnLoss, forcedMateAgainstLearner, quarantineReasons, check } = evidence.engine
+  if (status === 'verified' && check === null) {
+    context.addIssue({ code: 'custom', path: ['engine', 'check'], message: 'Verified evidence requires the exact Stockfish check' })
+  }
+  if (status === 'unverified' && (centipawnLoss !== null || check !== null)) {
+    context.addIssue({ code: 'custom', path: ['engine', 'check'], message: 'Unverified evidence cannot claim an engine result' })
+  }
+  if (check !== null && centipawnLoss !== check.centipawnLoss) {
+    context.addIssue({ code: 'custom', path: ['engine', 'centipawnLoss'], message: 'Engine summary loss must match its immutable check' })
+  }
+  if (check === null && centipawnLoss !== null) {
+    context.addIssue({ code: 'custom', path: ['engine', 'centipawnLoss'], message: 'A centipawn-loss claim requires an exact engine check' })
+  }
+  if (check !== null && forcedMateAgainstLearner !== check.forcedMateAgainstLearner) {
+    context.addIssue({ code: 'custom', path: ['engine', 'forcedMateAgainstLearner'], message: 'Engine summary mate state must match its immutable check' })
+  }
+  if (check === null && forcedMateAgainstLearner) {
+    context.addIssue({ code: 'custom', path: ['engine', 'forcedMateAgainstLearner'], message: 'A forced-mate claim requires an exact engine check' })
   }
   if (status === 'quarantined' && quarantineReasons.length === 0) {
     context.addIssue({ code: 'custom', path: ['engine', 'quarantineReasons'], message: 'Quarantined evidence requires a reason' })
@@ -64,6 +366,95 @@ export const RepertoireBranchEvidenceSchema = z.object({
   }
 })
 
+export const FamilyGraphEvidenceReceiptV1Schema = z.object({
+  schemaVersion: z.literal(1),
+  id: ReceiptIdSchema,
+  kind: z.enum(['taxonomy', 'broadcast-corpus', 'lichess-standard-corpus', 'engine', 'scid']),
+  path: z.string().min(1).max(512).regex(SAFE_RECEIPT_PATH),
+  sha256: Sha256Schema,
+  bytes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  contentType: z.literal('application/json'),
+  sourceUrl: z.string().url().max(2_048).refine((value) => value.startsWith('https://'), 'Evidence receipt URLs must use HTTPS'),
+  retrievedAt: z.string().datetime({ offset: true }),
+  sourceRevision: z.string().min(1).max(160),
+  license: z.enum(['CC0-1.0', 'CC-BY-SA-4.0', 'GPL-3.0-only', 'GPL-2.0-only']),
+}).strict().superRefine((receipt, context) => {
+  if (receipt.id !== `receipt_${receipt.sha256.slice(0, 16)}`) {
+    context.addIssue({ code: 'custom', path: ['id'], message: 'Receipt ID must equal the first 16 hexadecimal characters of its SHA-256' })
+  }
+  const expectedLicense = {
+    taxonomy: 'CC0-1.0',
+    'broadcast-corpus': 'CC-BY-SA-4.0',
+    'lichess-standard-corpus': 'CC0-1.0',
+    engine: 'GPL-3.0-only',
+    scid: 'GPL-2.0-only',
+  } as const
+  if (receipt.license !== expectedLicense[receipt.kind]) {
+    context.addIssue({ code: 'custom', path: ['license'], message: 'Evidence receipt license must match the pinned source kind' })
+  }
+})
+
+export const FamilyGraphProvenanceBindingV1Schema = z.object({
+  provenanceRef: RepertoireProvenanceRefSchema,
+  taxonomyReceiptId: ReceiptIdSchema,
+  corpusReceiptIds: z.array(ReceiptIdSchema).min(1).max(2),
+  engineReceiptId: ReceiptIdSchema,
+  scidReceiptId: ReceiptIdSchema,
+}).strict().superRefine((binding, context) => {
+  if (!unique(binding.corpusReceiptIds)) {
+    context.addIssue({ code: 'custom', path: ['corpusReceiptIds'], message: 'Corpus receipt IDs must be unique' })
+  }
+})
+
+export const FamilyGraphProvenanceDocumentV1Schema = z.object({
+  schemaVersion: z.literal(1),
+  releaseId: ReleaseIdSchema,
+  familyId: FamilyIdSchema,
+  receipts: z.array(FamilyGraphEvidenceReceiptV1Schema).min(4).max(256),
+  bindings: z.array(FamilyGraphProvenanceBindingV1Schema).min(1).max(100_000),
+}).strict().superRefine((document, context) => {
+  if (!unique(document.receipts.map(({ id }) => id))) {
+    context.addIssue({ code: 'custom', path: ['receipts'], message: 'Evidence receipt IDs must be unique' })
+  }
+  if (!unique(document.receipts.map(({ path }) => path))) {
+    context.addIssue({ code: 'custom', path: ['receipts'], message: 'Evidence receipt paths must be unique' })
+  }
+  if (!unique(document.bindings.map(({ provenanceRef }) => provenanceRef))) {
+    context.addIssue({ code: 'custom', path: ['bindings'], message: 'Each graph provenance reference must have one immutable binding' })
+  }
+  const receipts = new Map(document.receipts.map((receipt) => [receipt.id, receipt]))
+  const usedReceiptIds = new Set<string>()
+  for (const [index, binding] of document.bindings.entries()) {
+    const taxonomy = receipts.get(binding.taxonomyReceiptId)
+    const engine = receipts.get(binding.engineReceiptId)
+    const scid = receipts.get(binding.scidReceiptId)
+    if (taxonomy?.kind !== 'taxonomy') {
+      context.addIssue({ code: 'custom', path: ['bindings', index, 'taxonomyReceiptId'], message: 'Binding taxonomy receipt must resolve to immutable taxonomy evidence' })
+    }
+    if (engine?.kind !== 'engine') {
+      context.addIssue({ code: 'custom', path: ['bindings', index, 'engineReceiptId'], message: 'Binding engine receipt must resolve to immutable engine evidence' })
+    }
+    if (scid?.kind !== 'scid') {
+      context.addIssue({ code: 'custom', path: ['bindings', index, 'scidReceiptId'], message: 'Binding Scid receipt must resolve to immutable Scid evidence' })
+    }
+    for (const [corpusIndex, receiptId] of binding.corpusReceiptIds.entries()) {
+      const corpus = receipts.get(receiptId)
+      if (corpus?.kind !== 'broadcast-corpus' && corpus?.kind !== 'lichess-standard-corpus') {
+        context.addIssue({ code: 'custom', path: ['bindings', index, 'corpusReceiptIds', corpusIndex], message: 'Corpus binding must resolve to an approved immutable corpus receipt' })
+      }
+    }
+    usedReceiptIds.add(binding.taxonomyReceiptId)
+    usedReceiptIds.add(binding.engineReceiptId)
+    usedReceiptIds.add(binding.scidReceiptId)
+    for (const receiptId of binding.corpusReceiptIds) usedReceiptIds.add(receiptId)
+  }
+  for (const [index, receipt] of document.receipts.entries()) {
+    if (!usedReceiptIds.has(receipt.id)) {
+      context.addIssue({ code: 'custom', path: ['receipts', index], message: 'Unbound evidence receipts are prohibited' })
+    }
+  }
+})
+
 export const RepertoireNodeSchema = z.object({
   schemaVersion: z.literal(REPERTOIRE_SCHEMA_VERSION),
   id: PositionIdSchema,
@@ -71,6 +462,7 @@ export const RepertoireNodeSchema = z.object({
   learnerTurn: z.boolean(),
   outgoingEdgeIds: z.array(EdgeIdSchema).max(REPERTOIRE_MAX_POSITION_EDGES),
   cardId: CardIdSchema.optional(),
+  provenanceRef: RepertoireProvenanceRefSchema,
 }).strict().superRefine((node, context) => {
   if (!unique(node.outgoingEdgeIds)) {
     context.addIssue({ code: 'custom', path: ['outgoingEdgeIds'], message: 'Outgoing edge IDs must be unique' })
@@ -88,20 +480,29 @@ export const RepertoireEdgeSchema = z.object({
   eligibleForDrill: z.boolean(),
   acceptedBookTransposition: z.boolean(),
   evidence: RepertoireBranchEvidenceSchema,
-  provenanceRef: z.string().min(1).max(160),
+  provenanceRef: RepertoireProvenanceRefSchema,
 }).strict().superRefine((edge, context) => {
-  const maximumCohortN = Math.max(...edge.evidence.cohorts.map(({ n }) => n))
+  const maximumCohortN = Math.max(...edge.evidence.cohorts.map(({ aggregate }) => aggregate.moveN))
   const engine = edge.evidence.engine
   const soundAndVerified = engine.status === 'verified'
     && engine.centipawnLoss !== null
     && engine.centipawnLoss <= 50
     && !engine.forcedMateAgainstLearner
 
-  if (edge.eligibleForDrill && (edge.role !== 'book' || maximumCohortN < 500 || !soundAndVerified)) {
+  // Whether exact engine evidence is mandatory depends on whose turn the
+  // source node represents. That relationship is deliberately enforced by
+  // validateRepertoireGraphDocument, where the source node is available.
+  // Edge-only parsing still forbids sampled/role corruption and any known
+  // unsound engine result from entering a drill.
+  if (edge.eligibleForDrill && (
+    edge.role !== 'book' || maximumCohortN < 500 ||
+    engine.status === 'quarantined' ||
+    (engine.status === 'verified' && !soundAndVerified)
+  )) {
     context.addIssue({
       code: 'custom',
       path: ['eligibleForDrill'],
-      message: 'Drill edges must be verified sound book moves with N>=500 in one cohort',
+      message: 'Drill edges must be sampled book moves and cannot carry a known unsound engine result',
     })
   }
   if (edge.role === 'book' && !edge.eligibleForDrill && engine.status !== 'quarantined') {
@@ -140,6 +541,9 @@ export const RepertoireEdgeSchema = z.object({
       message: 'Only an audited drill edge can be an accepted book transposition',
     })
   }
+  if (engine.check !== null && engine.check.analyzedMoveUci !== edge.uci) {
+    context.addIssue({ code: 'custom', path: ['evidence', 'engine', 'check', 'analyzedMoveUci'], message: 'Engine check must analyze this exact graph edge' })
+  }
 })
 
 export const RepertoirePathSchema = z.object({
@@ -153,6 +557,7 @@ export const RepertoirePathSchema = z.object({
   terminalStatus: BookTerminalStatusSchema,
   familyTags: z.array(z.string().min(1).max(80)).min(1).max(32),
   conditionalUsage: z.number().min(0).max(1),
+  provenanceRef: RepertoireProvenanceRefSchema,
 }).strict().superRefine((path, context) => {
   if (path.nodeIds.length !== path.edgeIds.length + 1) {
     context.addIssue({ code: 'custom', path: ['nodeIds'], message: 'A path must contain one more node than edge' })
@@ -185,7 +590,7 @@ export const RepertoirePackSchema = z.object({
   nodeIds: z.array(PositionIdSchema).min(2).max(100_000),
   edgeIds: z.array(EdgeIdSchema).min(1).max(200_000),
   pathIds: z.array(PathIdSchema).min(1).max(100_000),
-  provenanceRef: z.string().min(1).max(160),
+  provenanceRef: RepertoireProvenanceRefSchema,
 }).strict().superRefine((pack, context) => {
   for (const [key, values] of [
     ['ecoCodes', pack.ecoCodes],
@@ -199,7 +604,7 @@ export const RepertoirePackSchema = z.object({
 
 export const RepertoireGraphDocumentSchema = z.object({
   schemaVersion: z.literal(REPERTOIRE_SCHEMA_VERSION),
-  releaseId: z.string().min(1).max(160),
+  releaseId: ReleaseIdSchema,
   pack: RepertoirePackSchema,
   nodes: z.array(RepertoireNodeSchema).min(2).max(100_000),
   edges: z.array(RepertoireEdgeSchema).min(1).max(200_000),
@@ -268,7 +673,12 @@ export const TrainingValueSummarySchema = z.object({
 }).strict()
 
 export type BookTerminalStatus = z.infer<typeof BookTerminalStatusSchema>
+export type EvidenceCohortResult = z.infer<typeof EvidenceCohortResultSchema>
+export type RepertoireEngineCheck = z.infer<typeof RepertoireEngineCheckSchema>
 export type RepertoireBranchEvidence = z.infer<typeof RepertoireBranchEvidenceSchema>
+export type FamilyGraphEvidenceReceiptV1 = z.infer<typeof FamilyGraphEvidenceReceiptV1Schema>
+export type FamilyGraphProvenanceBindingV1 = z.infer<typeof FamilyGraphProvenanceBindingV1Schema>
+export type FamilyGraphProvenanceDocumentV1 = z.infer<typeof FamilyGraphProvenanceDocumentV1Schema>
 export type RepertoireNode = z.infer<typeof RepertoireNodeSchema>
 export type RepertoireEdge = z.infer<typeof RepertoireEdgeSchema>
 export type RepertoirePath = z.infer<typeof RepertoirePathSchema>
@@ -310,6 +720,16 @@ function moveParts(uci: string): { from: Square; to: Square; promotion?: PieceSy
   return promotion === undefined
     ? { from: uci.slice(0, 2) as Square, to: uci.slice(2, 4) as Square }
     : { from: uci.slice(0, 2) as Square, to: uci.slice(2, 4) as Square, promotion }
+}
+
+function legallyReplaysPrincipalVariation(epd: string, moves: readonly string[]): boolean {
+  try {
+    const chess = new Chess(`${epd} 0 1`)
+    for (const uci of moves) chess.move(moveParts(uci))
+    return true
+  } catch {
+    return false
+  }
 }
 
 export function classifyBookTerminalStatus(options: {
@@ -418,6 +838,20 @@ export async function validateRepertoireGraphDocument(input: unknown): Promise<R
       return
     }
     if (!from.outgoingEdgeIds.includes(edge.id)) issues.push(`Edge ${edge.id} is missing from its source node`)
+    for (const cohort of edge.evidence.cohorts) {
+      if (cohort.trainedSide !== graph.pack.side) {
+        issues.push(`Edge ${edge.id} cohort ${cohort.cohortId} is recorded for the wrong trained side`)
+      }
+    }
+    if (edge.eligibleForDrill && from.learnerTurn) {
+      const engine = edge.evidence.engine
+      if (
+        engine.status !== 'verified' || engine.check === null || engine.centipawnLoss === null ||
+        engine.centipawnLoss > 50 || engine.forcedMateAgainstLearner
+      ) {
+        issues.push(`Learner edge ${edge.id} lacks its exact sound Stockfish verification`)
+      }
+    }
     try {
       const expectedId = await stableRepertoireEdgeId(from.epd, edge.uci, to.epd)
       if (edge.id !== expectedId) issues.push(`Edge ${edge.id} does not match its stable move identity`)
@@ -425,6 +859,15 @@ export async function validateRepertoireGraphDocument(input: unknown): Promise<R
       const move = chess.move(moveParts(edge.uci))
       if (move.san !== edge.san) issues.push(`Edge ${edge.id} SAN does not match legal replay`)
       if (normalizedEpd(chess) !== to.epd) issues.push(`Edge ${edge.id} does not reach its declared exact EPD`)
+      const engineCheck = edge.evidence.engine.check
+      if (engineCheck !== null) {
+        if (!legallyReplaysPrincipalVariation(from.epd, engineCheck.bestPrincipalVariationUci)) {
+          issues.push(`Edge ${edge.id} best principal variation is illegal from its declared source EPD`)
+        }
+        if (!legallyReplaysPrincipalVariation(from.epd, engineCheck.movePrincipalVariationUci)) {
+          issues.push(`Edge ${edge.id} move principal variation is illegal from its declared source EPD`)
+        }
+      }
     } catch {
       issues.push(`Edge ${edge.id} is illegal from its declared source EPD`)
     }

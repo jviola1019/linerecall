@@ -76,6 +76,61 @@ export const FamilyCoverageCycleEventV1Schema = z.discriminatedUnion('kind', [
 
 export type FamilyCoverageCycleEventV1 = z.infer<typeof FamilyCoverageCycleEventV1Schema>
 
+/**
+ * Portable journal data contains immutable completion/cycle events and only
+ * the latest cursor for each release/family/side/pack scope. Earlier cursor
+ * snapshots are implementation history; the latest validated cursor contains
+ * every due, reviewed, completed, and pending path needed to resume exactly.
+ */
+export const FamilyTrainingJournalSnapshotV1Schema = z.object({
+  schemaVersion: z.literal(1),
+  coverageEvents: z.array(FamilyCoverageEventV1Schema).max(100_000),
+  cycleEvents: z.array(FamilyCoverageCycleEventV1Schema).max(100_000),
+  latestCursors: z.array(FamilyTrainingCursorV1Schema).max(10_000),
+}).strict().superRefine((snapshot, context) => {
+  const coverageIds = new Set<string>()
+  const completionKeys = new Set<string>()
+  snapshot.coverageEvents.forEach((event, index) => {
+    if (coverageIds.has(event.eventId)) {
+      context.addIssue({ code: 'custom', path: ['coverageEvents', index, 'eventId'], message: 'Coverage event IDs must be unique' })
+    }
+    coverageIds.add(event.eventId)
+    const completionKey = logicalCompletionKey(event)
+    if (completionKeys.has(completionKey)) {
+      context.addIssue({ code: 'custom', path: ['coverageEvents', index], message: 'Logical path completions must be unique' })
+    }
+    completionKeys.add(completionKey)
+  })
+
+  const cycleIds = new Set<string>()
+  const cycleLogicalKeys = new Set<string>()
+  snapshot.cycleEvents.forEach((event, index) => {
+    if (cycleIds.has(event.eventId)) {
+      context.addIssue({ code: 'custom', path: ['cycleEvents', index, 'eventId'], message: 'Coverage-cycle event IDs must be unique' })
+    }
+    cycleIds.add(event.eventId)
+    const scope = `${event.releaseId}\0${event.familyId}\0${event.side}`
+    const logicalKey = event.kind === 'cycle_started'
+      ? `${scope}\0generation:${event.generationOrdinal}`
+      : `${scope}\0${event.generationId}\0pack:${event.packId}`
+    if (cycleLogicalKeys.has(logicalKey)) {
+      context.addIssue({ code: 'custom', path: ['cycleEvents', index], message: 'Logical coverage-cycle records must be unique' })
+    }
+    cycleLogicalKeys.add(logicalKey)
+  })
+
+  const cursorScopes = new Set<string>()
+  snapshot.latestCursors.forEach((cursor, index) => {
+    const scope = `${cursor.releaseId}\0${cursor.familyId}\0${cursor.side}\0${cursorPackId(cursor)}`
+    if (cursorScopes.has(scope)) {
+      context.addIssue({ code: 'custom', path: ['latestCursors', index], message: 'A journal snapshot may contain only one latest cursor per pack scope' })
+    }
+    cursorScopes.add(scope)
+  })
+})
+
+export type FamilyTrainingJournalSnapshotV1 = z.infer<typeof FamilyTrainingJournalSnapshotV1Schema>
+
 export interface FamilyCoverageGenerationV1 {
   releaseId: string
   familyId: string
@@ -98,6 +153,26 @@ export interface FamilyTrainingJournalRepository {
   listCycleEvents(scope: FamilyCoverageCycleScope): Promise<FamilyCoverageCycleEventV1[]>
   loadLatestCursor(scope: FamilyTrainingCursorScope): Promise<FamilyTrainingCursorV1 | null>
   loadCursor(scope: FamilyTrainingCursorLookup): Promise<FamilyTrainingCursorV1 | null>
+}
+
+/**
+ * Optional transfer boundary. Adapters implement this only when they can
+ * faithfully snapshot and replace the complete journal represented above.
+ * Cloud and Artifact adapters are not assumed to support it.
+ */
+export interface FamilyTrainingJournalTransferCapability {
+  exportSnapshot(): Promise<FamilyTrainingJournalSnapshotV1>
+  replaceSnapshot(snapshot: FamilyTrainingJournalSnapshotV1): Promise<void>
+}
+
+export type TransferableFamilyTrainingJournalRepository =
+  FamilyTrainingJournalRepository & FamilyTrainingJournalTransferCapability
+
+export function supportsFamilyTrainingJournalTransfer(
+  repository: FamilyTrainingJournalRepository,
+): repository is TransferableFamilyTrainingJournalRepository {
+  const candidate = repository as Partial<FamilyTrainingJournalTransferCapability>
+  return typeof candidate.exportSnapshot === 'function' && typeof candidate.replaceSnapshot === 'function'
 }
 
 function coverageScopeKey(scope: FamilyTrainingJournalScope): string {
@@ -382,6 +457,56 @@ export class MemoryFamilyTrainingJournalRepository implements FamilyTrainingJour
     return this.#cycleEvents
       .filter((event) => cycleScopeKey(event) === key)
       .map((event) => structuredClone(event))
+  }
+
+  async exportSnapshot(): Promise<FamilyTrainingJournalSnapshotV1> {
+    return FamilyTrainingJournalSnapshotV1Schema.parse({
+      schemaVersion: 1,
+      coverageEvents: this.#coverageEvents.map((event) => structuredClone(event)),
+      cycleEvents: this.#cycleEvents.map((event) => structuredClone(event)),
+      latestCursors: [...this.#cursorHistory.values()]
+        .map((history) => history.at(-1))
+        .filter((cursor): cursor is FamilyTrainingCursorV1 => cursor !== undefined)
+        .map((cursor) => structuredClone(cursor)),
+    })
+  }
+
+  async replaceSnapshot(input: FamilyTrainingJournalSnapshotV1): Promise<void> {
+    const snapshot = FamilyTrainingJournalSnapshotV1Schema.parse(input)
+    const staged = new MemoryFamilyTrainingJournalRepository()
+    for (const event of snapshot.coverageEvents) {
+      if (await staged.appendCoverageEvent(event) !== 'appended') {
+        throw new Error('Portable family snapshot contains a duplicate path completion')
+      }
+    }
+    for (const event of snapshot.cycleEvents) {
+      if (await staged.appendCycleEvent(event) !== 'appended') {
+        throw new Error('Portable family snapshot contains a duplicate coverage-cycle record')
+      }
+    }
+    for (const cursor of snapshot.latestCursors) {
+      if (await staged.appendCursor(cursor) !== 'appended') {
+        throw new Error('Portable family snapshot contains a duplicate latest cursor')
+      }
+    }
+
+    // Commit only after the complete replacement validates in isolation.
+    this.#coverageEvents.splice(0, this.#coverageEvents.length, ...staged.#coverageEvents.map((event) => structuredClone(event)))
+    this.#coverageByEventId.clear()
+    for (const [key, value] of staged.#coverageByEventId) this.#coverageByEventId.set(key, structuredClone(value))
+    this.#completionKeys.clear()
+    for (const key of staged.#completionKeys) this.#completionKeys.add(key)
+    this.#cursorHistory.clear()
+    for (const [key, history] of staged.#cursorHistory) {
+      this.#cursorHistory.set(key, history.map((cursor) => structuredClone(cursor)))
+    }
+    this.#cycleEvents.splice(0, this.#cycleEvents.length, ...staged.#cycleEvents.map((event) => structuredClone(event)))
+    this.#cycleByEventId.clear()
+    for (const [key, value] of staged.#cycleByEventId) this.#cycleByEventId.set(key, structuredClone(value))
+    this.#cycleStarts.clear()
+    for (const [key, value] of staged.#cycleStarts) this.#cycleStarts.set(key, structuredClone(value))
+    this.#cycleBindings.clear()
+    for (const [key, value] of staged.#cycleBindings) this.#cycleBindings.set(key, structuredClone(value))
   }
 
 }

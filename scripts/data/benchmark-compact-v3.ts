@@ -9,6 +9,7 @@ import {
 import { basename, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
+  COMPACT_ADAPTER_STATE_SCHEMA_VERSION,
   CompactBenchmarkBootstrapReceiptSchema,
   CompactPreflightPlanSchema,
   type CompactBenchmarkBootstrapReceipt,
@@ -288,6 +289,7 @@ export async function runBenchmarkBootstrap(args: Arguments): Promise<{
     chessJs: '1.4.0',
     zstd: 'node:zlib:createZstdDecompress',
     sourceSnapshotSha256: args.sourceSnapshotSha256,
+    adapterStateSchemaVersion: COMPACT_ADAPTER_STATE_SCHEMA_VERSION,
   }
   const runPass = async (pass: 'candidate' | 'exact', plan: CompactPreflightPlan) => {
     const common = {
@@ -365,6 +367,7 @@ export async function runBenchmarkBootstrap(args: Arguments): Promise<{
       peakBytesPerAcceptedGame: peakAdditionalStorageBytes / accepted,
       retainedBytesPerAcceptedGame: retainedStateBytes / accepted,
     },
+    enforcedLimits: plans[0]!.limits,
     enforcedBounds: plans[0]!.bounds,
     pipelineReceiptSha256s,
     note: 'Provisional benchmark measurement only. It cannot enter release evidence until a reviewer approves this exact receipt SHA-256 in a separate plan update and the corpus replay is repeated in evidence-candidate mode.',

@@ -31,6 +31,7 @@ import {
 } from '../../src/domain/graph-training-session.ts'
 import { stableRepertoireCardId } from '../../src/domain/repertoire.ts'
 import { createSyntheticTranspositionGraph } from '../fixtures/synthetic-repertoire-graph.ts'
+import { createSyntheticRepertoireEvidence } from '../fixtures/synthetic-repertoire-evidence.ts'
 
 async function adapterFixture() {
   const graph = await createSyntheticTranspositionGraph()
@@ -813,7 +814,17 @@ test('move evidence classes fail closed while a proven playable continuation is 
     eligibleForDrill: false,
     evidence: {
       ...edge.evidence,
-      engine: { status: 'quarantined', centipawnLoss: 120, forcedMateAgainstLearner: false, quarantineReasons: ['fixture'] },
+      engine: {
+        ...edge.evidence.engine,
+        status: 'quarantined',
+        centipawnLoss: 120,
+        quarantineReasons: ['fixture'],
+        check: edge.evidence.engine.check === null ? null : {
+          ...edge.evidence.engine.check,
+          centipawnLoss: 120,
+          moveEvaluation: { kind: 'centipawn', value: -100, unit: 'centipawn', perspective: 'trained-side' },
+        },
+      },
     },
   }))
   const quarantined = submitGraphTrainingMove({ adapter: quarantineAdapter, state, moveUci: 'g2g3' })
@@ -983,6 +994,9 @@ test('a Black pack starts with its audited opponent edge before asking Black for
   graph.pack.side = 'black'
   graph.pack.coreDepth = 2
   graph.pack.opponentBranchCountAfterRoot = 1
+  for (const edge of graph.edges) {
+    edge.evidence = createSyntheticRepertoireEvidence({ uci: edge.uci, trainedSide: 'black' })
+  }
   for (const path of graph.paths) path.learnerDecisionCount = 2
   for (const node of graph.nodes) {
     node.learnerTurn = node.epd.split(' ')[1] === 'b'

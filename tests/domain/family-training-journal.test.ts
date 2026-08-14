@@ -4,10 +4,12 @@ import {
   FamilyCoverageEventV1Schema,
   FamilyCoverageCycleEventV1Schema,
   FamilyTrainingCursorWriteQueue,
+  FamilyTrainingJournalSnapshotV1Schema,
   FamilyTrainingCursorV1Schema,
   MemoryFamilyTrainingJournalRepository,
   countUniqueCompletedFamilyPaths,
   latestFamilyCoverageGeneration,
+  supportsFamilyTrainingJournalTransfer,
   type FamilyCoverageEventV1,
   type FamilyCoverageCycleEventV1,
   type FamilyTrainingCursorV1,
@@ -305,4 +307,71 @@ test('cursor writer retains failed snapshots in order and retries without losing
   assert.deepEqual(retried, { savedCount: 2, pendingCount: 0, error: null })
   assert.deepEqual(appended, [initial, advanced])
   assert.equal(queue.pendingCount, 0)
+})
+
+test('memory journal exports and atomically replaces a strict resumable snapshot', async () => {
+  const source = new MemoryFamilyTrainingJournalRepository()
+  const started = cycleEvent()
+  const binding = cycleEvent({
+    eventId: '20000000-0000-4000-8000-000000000020',
+    kind: 'pack_bound',
+    packId: 'caro_kann_black',
+    packCoverageCycleId: 'caro_kann_black::coverage:0',
+  })
+  await source.appendCycleEvent(started)
+  await source.appendCycleEvent(binding)
+  await source.appendCoverageEvent(coverageEvent())
+  await source.appendCursor(cursor())
+  const latest = cursor({
+    reviewedCardIds: [CARD_A, CARD_B],
+    completedPathIds: [PATH_A, PATH_B],
+    pendingPathIds: [],
+    batchIndex: 1,
+  })
+  await source.appendCursor(latest)
+
+  assert.equal(supportsFamilyTrainingJournalTransfer(source), true)
+  assert.equal(supportsFamilyTrainingJournalTransfer({
+    kind: 'cloud',
+    appendCoverageEvent: async () => 'appended',
+    appendCycleEvent: async () => 'appended',
+    appendCursor: async () => 'appended',
+    listCoverageEvents: async () => [],
+    listCycleEvents: async () => [],
+    loadLatestCursor: async () => null,
+    loadCursor: async () => null,
+  }), false)
+
+  const snapshot = await source.exportSnapshot()
+  assert.equal(FamilyTrainingJournalSnapshotV1Schema.safeParse(snapshot).success, true)
+  assert.deepEqual(snapshot.latestCursors, [latest])
+  snapshot.coverageEvents[0]!.pathId = PATH_B
+  assert.deepEqual((await source.exportSnapshot()).coverageEvents, [coverageEvent()])
+
+  const target = new MemoryFamilyTrainingJournalRepository()
+  await target.appendCoverageEvent(coverageEvent({
+    eventId: '00000000-0000-4000-8000-000000000030',
+    pathId: PATH_B,
+  }))
+  await target.replaceSnapshot(await source.exportSnapshot())
+  assert.deepEqual(await target.exportSnapshot(), await source.exportSnapshot())
+  assert.deepEqual(await target.loadLatestCursor({
+    releaseId: latest.releaseId,
+    familyId: latest.familyId,
+    packId: 'caro_kann_black',
+    side: latest.side,
+  }), latest)
+
+  const beforeInvalidReplacement = await target.exportSnapshot()
+  await assert.rejects(
+    () => target.replaceSnapshot({
+      ...beforeInvalidReplacement,
+      coverageEvents: [beforeInvalidReplacement.coverageEvents[0]!, {
+        ...beforeInvalidReplacement.coverageEvents[0]!,
+        eventId: '00000000-0000-4000-8000-000000000031',
+      }],
+    }),
+    /Logical path completions must be unique/u,
+  )
+  assert.deepEqual(await target.exportSnapshot(), beforeInvalidReplacement)
 })

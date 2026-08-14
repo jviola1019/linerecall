@@ -11,6 +11,7 @@ import {
   repertoireDepthTier,
   scoreConfidenceInterval,
   selectOpponentCoverage,
+  trinomialScoreProfileLikelihoodInterval,
   type EmpiricalMoveEvidence,
 } from '../../scripts/data/repertoire-selection.ts'
 
@@ -47,13 +48,72 @@ test('learner ranking follows soundness, depth, coverage, usage, score bound, th
   assert.ok((scoreConfidenceInterval(candidate())?.low ?? 0) < 0.575)
 })
 
-test('opponent selection covers usage deterministically without exceeding four branches', () => {
-  const moves = [800, 500, 450, 300, 200].map((n, index) => candidate({ uci: `a${index + 1}a${index + 2}`, n, parentN: 1_500 }))
-  const selection = selectOpponentCoverage(moves, 1_500)
-  assert.equal(selection.selected.length, 2)
-  assert.equal(selection.coveredN, 1_300)
+test('trinomial profile interval reduces to the binomial likelihood interval when no draws occur', () => {
+  const interval = trinomialScoreProfileLikelihoodInterval(60, 0, 40)
+  assert.ok(interval)
+  const mle = 0.6
+  const maximum = 60 * Math.log(mle) + 40 * Math.log(1 - mle)
+  const ratio = (probability: number): number => 2 * (
+    maximum - 60 * Math.log(probability) - 40 * Math.log(1 - probability)
+  )
+  const root = (lower: number, upper: number, lowerOutside: boolean): number => {
+    for (let iteration = 0; iteration < 120; iteration += 1) {
+      const midpoint = (lower + upper) / 2
+      const outside = ratio(midpoint) > 3.841458820694124
+      if (outside === lowerOutside) lower = midpoint
+      else upper = midpoint
+    }
+    return (lower + upper) / 2
+  }
+  const expectedLow = root(Number.EPSILON, mle, true)
+  const expectedHigh = root(mle, 1 - Number.EPSILON, false)
+  assert.ok(Math.abs(interval.low - expectedLow) < 1e-10)
+  assert.ok(Math.abs(interval.high - expectedHigh) < 1e-10)
+  const drawHeavy = trinomialScoreProfileLikelihoodInterval(25, 50, 25)
+  assert.ok(drawHeavy && drawHeavy.low < 0.5 && drawHeavy.high > 0.5)
+  assert.deepEqual(trinomialScoreProfileLikelihoodInterval(0, 0, 0), null)
+  assert.throws(
+    () => trinomialScoreProfileLikelihoodInterval(268_479_805, 0, 0),
+    /approved .* evidence bound/iu,
+  )
+  const upperBound = trinomialScoreProfileLikelihoodInterval(268_479_804, 0, 0)!
+  assert.ok(upperBound.low < upperBound.high && upperBound.high === 1)
+  const smaller = trinomialScoreProfileLikelihoodInterval(60, 20, 20)!
+  const larger = trinomialScoreProfileLikelihoodInterval(600, 200, 200)!
+  assert.ok(smaller.low < smaller.high)
+  assert.ok(larger.low < larger.high)
+  assert.ok(larger.low > smaller.low && larger.high < smaller.high)
+})
+
+test('ranking rejects impossible reach, depth, and duplicate-move evidence before sorting', () => {
+  assert.throws(() => rankLearnerMoves([candidate({ n: 2_001, parentN: 2_000 })]), /cannot exceed/iu)
+  assert.throws(() => rankLearnerMoves([candidate({ coverageAdjustedDepth: Number.NaN })]), /depth/iu)
+  assert.throws(() => rankLearnerMoves([candidate(), candidate()]), /Duplicate empirical move UCI/u)
+  assert.throws(() => selectOpponentCoverage([candidate({ n: 501, parentN: 500 })], 500), /cannot exceed/iu)
+})
+
+test('opponent selection prioritizes coverage while retaining every eligible branch', () => {
+  const counts = [1_500, 800, 500, 500, 500]
+  const moves = counts.map((n, index) => candidate({
+    uci: `a${index + 1}a${index + 2}`,
+    n,
+    parentN: 3_800,
+    whiteWins: Math.floor(n * 0.4),
+    draws: Math.floor(n * 0.35),
+    blackWins: n - Math.floor(n * 0.4) - Math.floor(n * 0.35),
+  }))
+  const selection = selectOpponentCoverage(moves, 3_800)
+  assert.equal(selection.selected.length, 4)
+  assert.equal(selection.extended.length, 1)
+  assert.equal(selection.allEligible.length, 5)
+  assert.equal(selection.coveredN, 3_300)
   assert.ok(selection.coverage >= 0.85)
-  assert.equal(selection.residualN, 200)
+  assert.equal(selection.residualN, 500)
+  assert.deepEqual(
+    [...selection.selected, ...selection.extended].map(({ uci }) => uci),
+    selection.allEligible.map(({ uci }) => uci),
+  )
+  assert.throws(() => selectOpponentCoverage(moves, 3_799), /cannot exceed/iu)
 })
 
 test('transpositions require a legal edge reaching the exact canonical successor EPD', () => {

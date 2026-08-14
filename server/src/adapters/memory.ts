@@ -13,6 +13,20 @@ import type {
   SyncResponseV1,
 } from '../contracts.js'
 import { ProgressSettingsV2Schema } from '../contracts.js'
+import {
+  familyCursorPackId,
+  type FamilyCoverageCycleEventV1,
+  type FamilyCoverageEventV1,
+  type FamilyCoveragePageV1,
+  type FamilyCursorQuery,
+  type FamilyCursorResponseV1,
+  type FamilyCyclePageV1,
+  type FamilyTrainingCursorV1,
+  type FamilyTrainingRejectionV1,
+  type FamilyTrainingSyncRequestV1,
+  type FamilyTrainingSyncResponseV1,
+  type VersionedFamilyTrainingCursorV1,
+} from '../family-training-contracts.js'
 import { replayCard, serializeCard, type StoredReviewEvent } from '../domain/sm2.js'
 import { ApiError } from '../errors.js'
 import { uuidV7 } from '../ids.js'
@@ -35,8 +49,32 @@ interface UserState {
   cards: Map<string, CardStateV2>
   puzzleAttempts: Map<string, PuzzleAttemptV1 & { normalizedOccurredAt: string; receivedAt: string; syncSequence: bigint }>
   puzzles: Map<string, PuzzleProgressState>
+  familyCoverageEvents: Map<string, StoredFamilyCoverageEvent>
+  familyCoverageLogicalKeys: Set<string>
+  familyCycleEvents: Map<string, StoredFamilyCycleEvent>
+  familyCycleLogicalKeys: Set<string>
+  familyCursorMutations: Map<string, StoredFamilyCursor>
+  familyCursorHistory: Map<string, StoredFamilyCursor[]>
   settings: { version: number; value: ProgressSettingsV2 }
   deletedAt: string | null
+}
+
+interface StoredFamilyCoverageEvent {
+  event: FamilyCoverageEventV1
+  normalizedCompletedAt: string
+  receivedAt: string
+  syncSequence: bigint
+}
+
+interface StoredFamilyCycleEvent {
+  event: FamilyCoverageCycleEventV1
+  normalizedOccurredAt: string
+  receivedAt: string
+  syncSequence: bigint
+}
+
+interface StoredFamilyCursor extends VersionedFamilyTrainingCursorV1 {
+  deviceId: string
 }
 
 function defaultSettings(): ProgressSettingsV2 {
@@ -74,6 +112,25 @@ function stablePuzzleAttempt(attempt: PuzzleAttemptV1): string {
   })
 }
 
+function canonicalFamilyRecord(value: unknown): string {
+  return JSON.stringify(value)
+}
+
+function familyCoverageLogicalKey(event: FamilyCoverageEventV1): string {
+  return [event.releaseId, event.familyId, event.packId, event.pathId, event.coverageCycleId].join('\0')
+}
+
+function familyCycleLogicalKey(event: FamilyCoverageCycleEventV1): string {
+  const scope = [event.releaseId, event.familyId, event.side].join('\0')
+  return event.kind === 'cycle_started'
+    ? `${scope}\0generation:${event.generationOrdinal}`
+    : `${scope}\0${event.generationId}\0pack:${event.packId}`
+}
+
+function familyCursorScope(cursor: FamilyTrainingCursorV1): string {
+  return [cursor.releaseId, cursor.familyId, cursor.side, familyCursorPackId(cursor)].join('\0')
+}
+
 function validTimeZone(value: string): boolean {
   try {
     new Intl.DateTimeFormat('en-US', { timeZone: value }).format(0)
@@ -96,17 +153,30 @@ export class InMemorySyncStore implements SyncStore {
   readonly #supportedSnapshots: ReadonlySet<string> | null
   readonly #snapshotMembership: ReadonlySet<string>
   readonly #puzzleMembership: ReadonlySet<string>
+  readonly #familyPackMembership: ReadonlySet<string>
+  readonly #familyPathMembership: ReadonlySet<string>
 
   constructor(options: {
     supportedSnapshots?: readonly string[]
     snapshotMembership?: Readonly<Record<string, readonly { packId: string; nodeId: string; cardId: string }[]>>
     puzzleMembership?: Readonly<Record<string, readonly string[]>>
+    familyMembership?: Readonly<Record<string, readonly {
+      familyId: string
+      packId: string
+      side: 'white' | 'black'
+      pathIds: readonly string[]
+    }[]>>
   } = {}) {
     this.#supportedSnapshots = options.supportedSnapshots ? new Set(options.supportedSnapshots) : null
     this.#snapshotMembership = new Set(Object.entries(options.snapshotMembership ?? {}).flatMap(([snapshot, memberships]) =>
       memberships.map((membership) => `${snapshot}\0${membership.packId}\0${membership.nodeId}\0${membership.cardId}`)))
     this.#puzzleMembership = new Set(Object.entries(options.puzzleMembership ?? {}).flatMap(([snapshot, puzzleIds]) =>
       puzzleIds.map((puzzleId) => `${snapshot}\0${puzzleId}`)))
+    this.#familyPackMembership = new Set(Object.entries(options.familyMembership ?? {}).flatMap(([releaseId, memberships]) =>
+      memberships.map(({ familyId, packId, side }) => `${releaseId}\0${familyId}\0${packId}\0${side}`)))
+    this.#familyPathMembership = new Set(Object.entries(options.familyMembership ?? {}).flatMap(([releaseId, memberships]) =>
+      memberships.flatMap(({ familyId, packId, pathIds }) =>
+        pathIds.map((pathId) => `${releaseId}\0${familyId}\0${packId}\0${pathId}`))))
   }
 
   #user(userId: string): UserState {
@@ -118,6 +188,12 @@ export class InMemorySyncStore implements SyncStore {
       cards: new Map(),
       puzzleAttempts: new Map(),
       puzzles: new Map(),
+      familyCoverageEvents: new Map(),
+      familyCoverageLogicalKeys: new Set(),
+      familyCycleEvents: new Map(),
+      familyCycleLogicalKeys: new Set(),
+      familyCursorMutations: new Map(),
+      familyCursorHistory: new Map(),
       settings: { version: 0, value: defaultSettings() },
       deletedAt: null,
     }
@@ -320,6 +396,314 @@ export class InMemorySyncStore implements SyncStore {
     }
   }
 
+  async syncFamilyTraining(
+    userId: string,
+    request: FamilyTrainingSyncRequestV1,
+    now: Date,
+  ): Promise<FamilyTrainingSyncResponseV1> {
+    const user = this.#user(userId)
+    const acceptedCoverageEventIds: string[] = []
+    const acceptedCycleEventIds: string[] = []
+    const rejectedRecords: FamilyTrainingRejectionV1[] = []
+    const futureLimit = now.getTime() + 5 * 60_000
+
+    for (const incoming of request.coverageEvents) {
+      if (this.#unsupportedFamilyRelease(incoming.releaseId)) {
+        rejectedRecords.push({
+          recordId: incoming.eventId, recordType: 'coverage', code: 'unsupported_release',
+          message: 'The family release is not active',
+        })
+        continue
+      }
+      if (!this.#hasFamilyPath(incoming.releaseId, incoming.familyId, incoming.packId, incoming.pathId)) {
+        rejectedRecords.push({
+          recordId: incoming.eventId, recordType: 'coverage', code: 'unknown_family_membership',
+          message: 'The path does not belong to the referenced signed family release',
+        })
+        continue
+      }
+      const duplicate = user.familyCoverageEvents.get(incoming.eventId)
+      if (duplicate) {
+        if (canonicalFamilyRecord(duplicate.event) === canonicalFamilyRecord(incoming)) {
+          acceptedCoverageEventIds.push(incoming.eventId)
+        } else {
+          rejectedRecords.push({
+            recordId: incoming.eventId, recordType: 'coverage', code: 'conflicting_event_id',
+            message: 'The immutable family coverage event ID has different content',
+          })
+        }
+        continue
+      }
+      const logicalKey = familyCoverageLogicalKey(incoming)
+      if (user.familyCoverageLogicalKeys.has(logicalKey)) {
+        rejectedRecords.push({
+          recordId: incoming.eventId, recordType: 'coverage', code: 'duplicate_logical_record',
+          message: 'This path is already complete in the referenced coverage cycle',
+        })
+        continue
+      }
+      const completed = new Date(incoming.completedAt)
+      const future = completed.getTime() > futureLimit
+      user.sequence += 1n
+      user.familyCoverageEvents.set(incoming.eventId, {
+        event: structuredClone(incoming),
+        normalizedCompletedAt: future ? now.toISOString() : completed.toISOString(),
+        receivedAt: now.toISOString(),
+        syncSequence: user.sequence,
+      })
+      user.familyCoverageLogicalKeys.add(logicalKey)
+      acceptedCoverageEventIds.push(incoming.eventId)
+      if (future) rejectedRecords.push({
+        recordId: incoming.eventId, recordType: 'coverage', code: 'future_timestamp_normalized',
+        message: 'The completion time was over five minutes in the future and was normalized',
+      })
+    }
+
+    for (const incoming of request.cycleEvents) {
+      if (this.#unsupportedFamilyRelease(incoming.releaseId)) {
+        rejectedRecords.push({
+          recordId: incoming.eventId, recordType: 'cycle', code: 'unsupported_release',
+          message: 'The family release is not active',
+        })
+        continue
+      }
+      const hasMembership = incoming.kind === 'pack_bound'
+        ? this.#hasFamilyPack(incoming.releaseId, incoming.familyId, incoming.packId, incoming.side)
+        : this.#hasFamilySide(incoming.releaseId, incoming.familyId, incoming.side)
+      if (!hasMembership) {
+        rejectedRecords.push({
+          recordId: incoming.eventId, recordType: 'cycle', code: 'unknown_family_membership',
+          message: 'The coverage cycle does not belong to the referenced signed family release',
+        })
+        continue
+      }
+      const duplicate = user.familyCycleEvents.get(incoming.eventId)
+      if (duplicate) {
+        if (canonicalFamilyRecord(duplicate.event) === canonicalFamilyRecord(incoming)) {
+          acceptedCycleEventIds.push(incoming.eventId)
+        } else {
+          rejectedRecords.push({
+            recordId: incoming.eventId, recordType: 'cycle', code: 'conflicting_event_id',
+            message: 'The immutable family cycle event ID has different content',
+          })
+        }
+        continue
+      }
+      if (incoming.kind === 'pack_bound') {
+        const hasGeneration = [...user.familyCycleEvents.values()].some(({ event }) =>
+          event.kind === 'cycle_started' && event.releaseId === incoming.releaseId &&
+          event.familyId === incoming.familyId && event.side === incoming.side &&
+          event.generationId === incoming.generationId && event.generationOrdinal === incoming.generationOrdinal)
+        if (!hasGeneration) {
+          rejectedRecords.push({
+            recordId: incoming.eventId, recordType: 'cycle', code: 'unknown_family_membership',
+            message: 'The pack binding has no matching coverage generation',
+          })
+          continue
+        }
+      }
+      const logicalKey = familyCycleLogicalKey(incoming)
+      if (user.familyCycleLogicalKeys.has(logicalKey)) {
+        rejectedRecords.push({
+          recordId: incoming.eventId, recordType: 'cycle', code: 'duplicate_logical_record',
+          message: 'This logical coverage-cycle record already exists',
+        })
+        continue
+      }
+      const occurred = new Date(incoming.occurredAt)
+      const future = occurred.getTime() > futureLimit
+      user.sequence += 1n
+      user.familyCycleEvents.set(incoming.eventId, {
+        event: structuredClone(incoming),
+        normalizedOccurredAt: future ? now.toISOString() : occurred.toISOString(),
+        receivedAt: now.toISOString(),
+        syncSequence: user.sequence,
+      })
+      user.familyCycleLogicalKeys.add(logicalKey)
+      acceptedCycleEventIds.push(incoming.eventId)
+      if (future) rejectedRecords.push({
+        recordId: incoming.eventId, recordType: 'cycle', code: 'future_timestamp_normalized',
+        message: 'The cycle event time was over five minutes in the future and was normalized',
+      })
+    }
+
+    let cursor: StoredFamilyCursor | null = null
+    let cursorStatus: 'appended' | 'duplicate' | null = null
+    if (request.cursorMutation) {
+      const mutation = request.cursorMutation
+      const value = mutation.value
+      const packId = familyCursorPackId(value)
+      this.#assertFamilyCursorMembership(value, packId)
+      const priorMutation = user.familyCursorMutations.get(mutation.mutationId)
+      if (priorMutation) {
+        if (canonicalFamilyRecord(priorMutation.value) !== canonicalFamilyRecord(value)) {
+          throw new ApiError(409, 'family_cursor_mutation_conflict', 'The immutable cursor mutation ID has different content')
+        }
+        cursor = priorMutation
+        cursorStatus = 'duplicate'
+      } else {
+        const scope = familyCursorScope(value)
+        const history = user.familyCursorHistory.get(scope) ?? []
+        const latest = history.at(-1)
+        if (latest && canonicalFamilyRecord(latest.value) === canonicalFamilyRecord(value)) {
+          const alias = { ...latest, mutationId: mutation.mutationId }
+          user.familyCursorMutations.set(mutation.mutationId, alias)
+          cursor = alias
+          cursorStatus = 'duplicate'
+        } else {
+          const currentVersion = latest?.version ?? 0
+          if (mutation.baseVersion !== currentVersion) {
+            throw new ApiError(409, 'family_cursor_version_conflict', 'Family training changed on another device; reload before saving')
+          }
+          if (latest) this.#assertCursorDoesNotLoseProgress(latest.value, value)
+          user.sequence += 1n
+          cursor = {
+            version: currentVersion + 1,
+            mutationId: mutation.mutationId,
+            value: structuredClone(value),
+            syncSequence: user.sequence.toString(),
+            deviceId: request.deviceId,
+          }
+          history.push(cursor)
+          user.familyCursorHistory.set(scope, history)
+          user.familyCursorMutations.set(mutation.mutationId, cursor)
+          cursorStatus = 'appended'
+        }
+      }
+    }
+
+    return {
+      acceptedCoverageEventIds,
+      acceptedCycleEventIds,
+      rejectedRecords,
+      cursor: cursor ? {
+        version: cursor.version,
+        mutationId: cursor.mutationId,
+        value: structuredClone(cursor.value),
+        syncSequence: cursor.syncSequence,
+      } : null,
+      cursorStatus,
+      serverTime: now.toISOString(),
+    }
+  }
+
+  async pageFamilyCoverage(
+    userId: string,
+    query: { releaseId: string; familyId: string; cursor: bigint; limit: number },
+    now: Date,
+  ): Promise<FamilyCoveragePageV1> {
+    this.#assertFamilyPage(query.cursor, query.limit)
+    const records = [...this.#user(userId).familyCoverageEvents.values()]
+      .filter(({ event, syncSequence }) => event.releaseId === query.releaseId && event.familyId === query.familyId && syncSequence > query.cursor)
+      .sort((left, right) => left.syncSequence < right.syncSequence ? -1 : left.syncSequence > right.syncSequence ? 1 : left.event.eventId.localeCompare(right.event.eventId))
+    const page = records.slice(0, query.limit)
+    return {
+      records: page.map(({ event, syncSequence }) => ({ event: structuredClone(event), syncSequence: syncSequence.toString() })),
+      nextCursor: page.at(-1)?.syncSequence.toString() ?? query.cursor.toString(),
+      hasMore: records.length > page.length,
+      serverTime: now.toISOString(),
+    }
+  }
+
+  async pageFamilyCycles(
+    userId: string,
+    query: { releaseId: string; familyId: string; side: 'white' | 'black'; cursor: bigint; limit: number },
+    now: Date,
+  ): Promise<FamilyCyclePageV1> {
+    this.#assertFamilyPage(query.cursor, query.limit)
+    const records = [...this.#user(userId).familyCycleEvents.values()]
+      .filter(({ event, syncSequence }) => event.releaseId === query.releaseId && event.familyId === query.familyId && event.side === query.side && syncSequence > query.cursor)
+      .sort((left, right) => left.syncSequence < right.syncSequence ? -1 : left.syncSequence > right.syncSequence ? 1 : left.event.eventId.localeCompare(right.event.eventId))
+    const page = records.slice(0, query.limit)
+    return {
+      records: page.map(({ event, syncSequence }) => ({ event: structuredClone(event), syncSequence: syncSequence.toString() })),
+      nextCursor: page.at(-1)?.syncSequence.toString() ?? query.cursor.toString(),
+      hasMore: records.length > page.length,
+      serverTime: now.toISOString(),
+    }
+  }
+
+  async loadFamilyCursor(userId: string, query: FamilyCursorQuery, now: Date): Promise<FamilyCursorResponseV1> {
+    const scope = [query.releaseId, query.familyId, query.side, query.packId].join('\0')
+    const history = this.#user(userId).familyCursorHistory.get(scope) ?? []
+    const match = query.coverageCycleId
+      ? [...history].reverse().find(({ value }) => value.coverageCycleId === query.coverageCycleId)
+      : history.at(-1)
+    return {
+      cursor: match ? {
+        version: match.version,
+        mutationId: match.mutationId,
+        value: structuredClone(match.value),
+        syncSequence: match.syncSequence,
+      } : null,
+      serverTime: now.toISOString(),
+    }
+  }
+
+  #unsupportedFamilyRelease(releaseId: string): boolean {
+    return this.#supportedSnapshots !== null && !this.#supportedSnapshots.has(releaseId)
+  }
+
+  #hasFamilyPack(releaseId: string, familyId: string, packId: string, side: 'white' | 'black'): boolean {
+    return this.#supportedSnapshots === null || this.#familyPackMembership.has(`${releaseId}\0${familyId}\0${packId}\0${side}`)
+  }
+
+  #hasFamilySide(releaseId: string, familyId: string, side: 'white' | 'black'): boolean {
+    if (this.#supportedSnapshots === null) return true
+    const prefix = `${releaseId}\0${familyId}\0`
+    const suffix = `\0${side}`
+    return [...this.#familyPackMembership].some((membership) => membership.startsWith(prefix) && membership.endsWith(suffix))
+  }
+
+  #hasFamilyPath(releaseId: string, familyId: string, packId: string, pathId: string): boolean {
+    return this.#supportedSnapshots === null || this.#familyPathMembership.has(`${releaseId}\0${familyId}\0${packId}\0${pathId}`)
+  }
+
+  #assertFamilyCursorMembership(cursor: FamilyTrainingCursorV1, packId: string): void {
+    if (this.#unsupportedFamilyRelease(cursor.releaseId) || !this.#hasFamilyPack(cursor.releaseId, cursor.familyId, packId, cursor.side)) {
+      throw new ApiError(422, 'unknown_family_membership', 'The cursor pack does not belong to the signed family release')
+    }
+    for (const pathId of [...cursor.completedPathIds, ...cursor.pendingPathIds]) {
+      if (!this.#hasFamilyPath(cursor.releaseId, cursor.familyId, packId, pathId)) {
+        throw new ApiError(422, 'unknown_family_membership', 'The cursor contains a path outside the signed family release')
+      }
+    }
+    if (this.#supportedSnapshots !== null) {
+      for (const cardId of cursor.authoritativeDueCardIds) {
+        const prefix = `${cursor.releaseId}\0${packId}\0`
+        if (![...this.#snapshotMembership].some((membership) => membership.startsWith(prefix) && membership.endsWith(`\0${cardId}`))) {
+          throw new ApiError(422, 'unknown_family_membership', 'The cursor contains a card outside the signed family release')
+        }
+      }
+    }
+  }
+
+  #assertCursorDoesNotLoseProgress(previous: FamilyTrainingCursorV1, next: FamilyTrainingCursorV1): void {
+    const previousOrdinal = Number(previous.coverageCycleId.split('::coverage:')[1])
+    const nextOrdinal = Number(next.coverageCycleId.split('::coverage:')[1])
+    if (nextOrdinal < previousOrdinal) {
+      throw new ApiError(409, 'family_cursor_regression', 'A family cursor cannot move to an earlier coverage cycle')
+    }
+    if (nextOrdinal > previousOrdinal) return
+    const sameSet = (left: readonly string[], right: readonly string[]): boolean =>
+      left.length === right.length && left.every((value) => right.includes(value))
+    if (!sameSet(previous.authoritativeDueCardIds, next.authoritativeDueCardIds)) {
+      throw new ApiError(409, 'family_cursor_regression', 'The authoritative due-card set cannot change within a coverage cycle')
+    }
+    if (previous.reviewedCardIds.some((id) => !next.reviewedCardIds.includes(id)) ||
+      previous.completedPathIds.some((id) => !next.completedPathIds.includes(id)) ||
+      previous.pendingPathIds.some((id) => !next.pendingPathIds.includes(id) && !next.completedPathIds.includes(id)) ||
+      next.batchIndex < previous.batchIndex) {
+      throw new ApiError(409, 'family_cursor_regression', 'The family cursor would discard reviewed cards or unfinished paths')
+    }
+  }
+
+  #assertFamilyPage(cursor: bigint, limit: number): void {
+    if (cursor < 0n || !Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
+      throw new ApiError(422, 'invalid_cursor', 'Family training pagination is invalid')
+    }
+  }
+
   #page(
     user: UserState,
     cursor: bigint,
@@ -351,7 +735,7 @@ export class InMemorySyncStore implements SyncStore {
   async exportAccount(userId: string, now: Date): Promise<unknown> {
     const user = this.#user(userId)
     return {
-      schema: 'linerecall-account-export-v4',
+      schema: 'linerecall-account-export-v5',
       exportedAt: now.toISOString(),
       settings: user.settings,
       reviewEvents: [...user.events.values()].map(({ receivedAt, normalizedOccurredAt, syncSequence, ...event }) => ({
@@ -365,6 +749,13 @@ export class InMemorySyncStore implements SyncStore {
         ...attempt, syncSequence: syncSequence.toString(),
       })),
       puzzleProgress: [...user.puzzles.values()],
+      familyCoverageEvents: [...user.familyCoverageEvents.values()].map(({ event, normalizedCompletedAt, receivedAt, syncSequence }) => ({
+        ...event, normalizedCompletedAt, receivedAt, syncSequence: syncSequence.toString(),
+      })),
+      familyCycleEvents: [...user.familyCycleEvents.values()].map(({ event, normalizedOccurredAt, receivedAt, syncSequence }) => ({
+        ...event, normalizedOccurredAt, receivedAt, syncSequence: syncSequence.toString(),
+      })),
+      familyTrainingCursors: [...user.familyCursorHistory.values()].flat().map(({ deviceId: _deviceId, ...cursor }) => cursor),
     }
   }
 
@@ -375,6 +766,12 @@ export class InMemorySyncStore implements SyncStore {
     state.cards.clear()
     state.puzzleAttempts.clear()
     state.puzzles.clear()
+    state.familyCoverageEvents.clear()
+    state.familyCoverageLogicalKeys.clear()
+    state.familyCycleEvents.clear()
+    state.familyCycleLogicalKeys.clear()
+    state.familyCursorMutations.clear()
+    state.familyCursorHistory.clear()
     state.deletedAt = now.toISOString()
     this.#users.delete(userId)
   }

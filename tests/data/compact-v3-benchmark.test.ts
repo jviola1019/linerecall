@@ -5,6 +5,17 @@ import {
   type CompactBenchmarkBootstrapReceipt,
 } from '../../scripts/data/compact-v3-contracts.ts'
 
+const limits = {
+  completeBaselineMaxPly: 30,
+  adaptiveEvidenceMaxPly: 100,
+  adaptiveCandidateMinimumSample: 100,
+  archiveConcurrency: 1,
+  minimumFreeReserveBytes: 10 * 1024 * 1024 * 1024,
+  countMinWidth: 8,
+  countMinDepth: 2,
+  maximumCandidates: 1_000,
+}
+
 const bounds = {
   candidateSketchMaxBytes: 1_000,
   candidateIndexMaxBytes: 2_000,
@@ -55,6 +66,7 @@ function receipt(): CompactBenchmarkBootstrapReceipt {
       peakBytesPerAcceptedGame: 11_247.526,
       retainedBytesPerAcceptedGame: 9_997.8,
     },
+    enforcedLimits: limits,
     enforcedBounds: bounds,
     pipelineReceiptSha256s: Array.from({ length: 156 }, (_, index) =>
       index.toString(16).padStart(64, '0')),

@@ -20,12 +20,14 @@ import {
   type FamilyCoverageGenerationV1,
   type FamilyTrainingJournalRepository,
 } from '../../domain/family-training-journal.ts'
+import { restoreFamilyCoverageScope } from '../../domain/family-coverage-scope.ts'
 import {
   GraphTrainingBoundary,
   type GraphTrainingPathGroup,
   type GraphTrainingResource,
 } from './GraphTrainingBoundary.tsx'
 import { EmptyState } from './ResourceState.tsx'
+import './training-puzzle.css'
 
 export interface FamilyGraphResourceSet {
   /**
@@ -320,7 +322,8 @@ function selectedSideStatus(
 function packLabel(pack: ResolvedFamilyPack, index: number): string {
   const level = pack.graph?.pack.tier === 'core' ? 'Core' : pack.graph ? 'Primer' : 'Pending'
   const eco = pack.graph?.pack.ecoCodes.join(', ')
-  return `${level} pack ${index + 1}${eco ? ` · ${eco}` : ''}`
+  const paths = pack.graph?.paths.length
+  return `${level} pack ${index + 1}${eco ? ` · ${eco}` : ''}${paths !== undefined ? ` · ${paths} paths` : ''}`
 }
 
 export function OpeningFamilyView({
@@ -423,67 +426,129 @@ export function OpeningFamilyView({
     if (!family || !resources?.manifest || resources.issues.length > 0) {
       return () => { active = false }
     }
-    const promotedSides = [...new Set(resources.manifest.packRefs.map(({ side }) => side))]
+    const manifest = resources.manifest
+    const promotedSides = [...new Set(manifest.packRefs.map(({ side }) => side))]
     const side = availableSide(
       promotedSides.length > 0 ? promotedSides : family.availableSides,
       selectedSide,
     )
     const packs = resources.packs.filter(({ ref }) => ref.side === side)
-    const hydrationKey = `${resources.manifest.releaseId}\0${family.id}\0${side}`
-    const pathIdsByPack = new Map(packs.map(({ ref, graph }) => [
-      ref.packId,
-      new Set((graph?.paths ?? []).map(({ id }) => id)),
-    ]))
+    const hydrationKey = `${manifest.releaseId}\0${family.id}\0${side}`
     void Promise.all([
       familyTrainingJournal.listCoverageEvents({
-        releaseId: resources.manifest.releaseId,
+        releaseId: manifest.releaseId,
         familyId: family.id,
       }),
       familyTrainingJournal.listCycleEvents({
-        releaseId: resources.manifest.releaseId,
+        releaseId: manifest.releaseId,
         familyId: family.id,
         side,
       }),
-    ]).then(([events, cycleEvents]) => {
+    ]).then(async ([events, cycleEvents]) => {
       if (!active) return
       const generation = latestFamilyCoverageGeneration(cycleEvents)
       if (
         generation
         && (
-          generation.releaseId !== resources.manifest!.releaseId
+          generation.releaseId !== manifest.releaseId
           || generation.familyId !== family.id
           || generation.side !== side
         )
       ) throw new Error('Saved family coverage generation belongs to another family scope')
+      const boundCursors = generation
+        ? await Promise.all(Object.entries(generation.packCycleIds).map(async ([packId, coverageCycleId]) => {
+            const pack = packs.find(({ ref }) => ref.packId === packId)
+            if (!pack) throw new Error(`Saved family coverage binds unavailable pack ${packId}.`)
+            const cursor = await familyTrainingJournal.loadCursor({
+              releaseId: generation.releaseId,
+              familyId: generation.familyId,
+              side: generation.side,
+              packId,
+              coverageCycleId,
+            })
+            if (!cursor) throw new Error(`Saved family coverage is missing the bound cursor for pack ${packId}.`)
+            return cursor
+          }))
+        : []
+      if (!active) return
+      const restoredScope = generation
+        ? restoreFamilyCoverageScope({
+            manifest,
+            side,
+            generation,
+            packs: packs.map(({ ref, graph }) => ({
+              packId: ref.packId,
+              pathIds: (graph?.paths ?? []).map(({ id }) => id),
+            })),
+            cursors: boundCursors,
+            coverageEvents: events,
+          })
+        : null
       activeFamilyGenerationRef.current = generation
-      const completed = new Set(events
-        .filter((event) =>
-          generation !== null
-          && event.coverageCycleId === generation.packCycleIds[event.packId]
-          && pathIdsByPack.get(event.packId)?.has(event.pathId))
-        .map(({ pathId }) => pathId))
+      const completed = new Set(restoredScope?.completedPathKeys ?? [])
       completedTrainingPathsRef.current = completed
-      fullFamilyCoverageActiveRef.current = generation !== null
+      fullFamilyCoverageActiveRef.current = restoredScope?.kind === 'full'
       setCompletedTrainingPathCount(completed.size)
+      if (restoredScope?.kind === 'branch') {
+        const branch = manifestFamilyBranchPracticeScopes(manifest, side)
+          .find(({ id }) => id === restoredScope.branchId)
+        if (!branch || !sameStrings(branch.pathKeys, restoredScope.pathKeys)) {
+          throw new Error('Saved named-branch coverage no longer matches the promoted manifest.')
+        }
+        const restoredBranch: ActiveFamilyBranchCycle = {
+          branchId: branch.id,
+          label: branch.label,
+          pathKeys: [...branch.pathKeys],
+          completedPathKeys: [...restoredScope.completedPathKeys],
+        }
+        activeBranchCycleRef.current = restoredBranch
+        setActiveBranchCycle(restoredBranch)
+      } else {
+        activeBranchCycleRef.current = null
+        setActiveBranchCycle(null)
+      }
       setCompletionHistoryError(null)
       setCompletionHistoryHydrationKey(hydrationKey)
-      const firstUnfinishedPack = packs.find(({ graph }) =>
-        graph?.paths.some(({ id }) => !completed.has(id)))
+      const restoredBranch = restoredScope?.kind === 'branch'
+        ? manifestFamilyBranchPracticeScopes(manifest, side)
+          .find(({ id }) => id === restoredScope.branchId)
+        : null
+      const firstUnfinishedPack = packs.find(({ ref, graph }) => {
+        const pathIds = restoredBranch
+          ? restoredBranch.pathIdsByPack[ref.packId] ?? []
+          : (graph?.paths ?? []).map(({ id }) => id)
+        return pathIds.some((pathId) => !completed.has(`${ref.packId}\0${pathId}`))
+      })
       if (!firstUnfinishedPack) return
       const completedBoundPackExists = packs.some(({ ref, graph }) =>
         generation?.packCycleIds[ref.packId] !== undefined
-        && graph?.paths.every(({ id }) => completed.has(id)))
+        && (restoredBranch?.pathIdsByPack[ref.packId]
+          ?? (graph?.paths ?? []).map(({ id }) => id))
+          .every((pathId) => completed.has(`${ref.packId}\0${pathId}`)))
       const unboundStartedGeneration = generation !== null
         && Object.keys(generation.packCycleIds).length === 0
       const packScope = `${family.id}:${side}`
       setSelectedPackByScope((current) => {
         const currentPack = packs.find(({ ref }) => ref.packId === current[packScope])
-        const currentHasUnfinishedPath = currentPack?.graph?.paths.some(({ id }) => !completed.has(id))
+        const currentPathIds = currentPack
+          ? restoredBranch?.pathIdsByPack[currentPack.ref.packId]
+            ?? (currentPack.graph?.paths ?? []).map(({ id }) => id)
+          : []
+        const currentHasUnfinishedPath = currentPack
+          ? currentPathIds.some((pathId) => !completed.has(`${currentPack.ref.packId}\0${pathId}`))
+          : false
         return currentHasUnfinishedPath
           ? current
           : { ...current, [packScope]: firstUnfinishedPack.ref.packId }
       })
-      if (completedBoundPackExists || unboundStartedGeneration) {
+      if (restoredBranch) {
+        if (generation?.packCycleIds[firstUnfinishedPack.ref.packId] === undefined) {
+          setAutoStartBranch({
+            packId: firstUnfinishedPack.ref.packId,
+            branchId: restoredBranch.id,
+          })
+        }
+      } else if (completedBoundPackExists || unboundStartedGeneration) {
         fullFamilyCoverageActiveRef.current = true
         setAutoStartPackId(firstUnfinishedPack.ref.packId)
       }
@@ -612,9 +677,7 @@ export function OpeningFamilyView({
     ? dueCardIds.filter((cardId) => cardId.startsWith(`${selectedPack.ref.packId}::`))
     : []
   const expectedPackCoverageCycleId = familyTrainingJournal && selectedPack
-    ? activeBranchCycle
-      ? null
-      : activeFamilyGenerationRef.current?.packCycleIds[selectedPack.ref.packId] ?? null
+    ? activeFamilyGenerationRef.current?.packCycleIds[selectedPack.ref.packId] ?? null
     : undefined
   const expectedHistoryHydrationKey = familyResources.manifest
     ? `${familyResources.manifest.releaseId}\0${family.id}\0${side}`
@@ -674,6 +737,20 @@ export function OpeningFamilyView({
   const packLevels = sideReady
     ? [...new Set(sidePacks.flatMap(({ graph }) => graph ? [graph.pack.tier === 'core' ? 'Core' : 'Primer'] : []))]
     : []
+  const averageBranchCoverage = sideReady && sidePacks.length > 0
+    ? Math.round(
+        sidePacks.reduce((total, { graph }) => total + (graph?.pack.coverage ?? 0), 0)
+        / sidePacks.length
+        * 100,
+      )
+    : null
+  const linkedPuzzleShardCount = familyResources.manifest?.puzzleShardRefs.length ?? null
+  const evidenceTerminalCount = sideReady
+    ? sidePaths.filter(({ terminalStatus }) => terminalStatus === 'evidence_terminal').length
+    : null
+  const depthCappedCount = sideReady
+    ? sidePaths.filter(({ terminalStatus }) => terminalStatus === 'depth_capped').length
+    : null
 
   const selectPack = (packId: string): void => {
     fullFamilyCoverageActiveRef.current = false
@@ -773,6 +850,80 @@ export function OpeningFamilyView({
     bumpFamilyGenerationRevision((revision) => revision + 1)
   }
 
+  const startNamedVariationCycle = async (cycle: {
+    packId: string
+    coverageCycleId: string
+    pathGroupId: string
+    continuation: boolean
+  }): Promise<void> => {
+    if (!familyTrainingJournal || !familyResources.manifest) {
+      throw new Error('A family progress repository is required to save named-variation coverage')
+    }
+    const branch = familyBranchPracticeScopes.find(({ id }) => id === cycle.pathGroupId)
+    if (!branch || !(branch.pathIdsByPack[cycle.packId]?.length)) {
+      throw new Error('The named variation does not own a path in this promoted pack')
+    }
+    if (cycle.continuation) {
+      if (activeBranchCycleRef.current?.branchId !== branch.id) {
+        throw new Error('Named-variation continuation does not match the active family branch')
+      }
+      await bindPackToActiveGeneration(cycle.packId, cycle.coverageCycleId)
+      return
+    }
+
+    const previousGeneration = activeFamilyGenerationRef.current
+    const generationId = randomEventId()
+    const generationOrdinal = (previousGeneration?.generationOrdinal ?? -1) + 1
+    const occurredAt = new Date().toISOString()
+    // The binding is staged first. If the second append fails, it is an orphan
+    // and latestFamilyCoverageGeneration ignores it; the prior generation stays
+    // authoritative instead of exposing a half-started branch cycle.
+    await familyTrainingJournal.appendCycleEvent({
+      schemaVersion: 1,
+      eventId: randomEventId(),
+      releaseId: familyResources.manifest.releaseId,
+      familyId: family.id,
+      side,
+      generationId,
+      generationOrdinal,
+      kind: 'pack_bound',
+      packId: cycle.packId,
+      packCoverageCycleId: cycle.coverageCycleId,
+      occurredAt,
+    })
+    await familyTrainingJournal.appendCycleEvent({
+      schemaVersion: 1,
+      eventId: randomEventId(),
+      releaseId: familyResources.manifest.releaseId,
+      familyId: family.id,
+      side,
+      generationId,
+      generationOrdinal,
+      kind: 'cycle_started',
+      occurredAt,
+    })
+    activeFamilyGenerationRef.current = {
+      releaseId: familyResources.manifest.releaseId,
+      familyId: family.id,
+      side,
+      generationId,
+      generationOrdinal,
+      packCycleIds: { [cycle.packId]: cycle.coverageCycleId },
+    }
+    const nextBranchCycle: ActiveFamilyBranchCycle = {
+      branchId: branch.id,
+      label: branch.label,
+      pathKeys: [...branch.pathKeys],
+      completedPathKeys: [],
+    }
+    activeBranchCycleRef.current = nextBranchCycle
+    setActiveBranchCycle(nextBranchCycle)
+    completedTrainingPathsRef.current = new Set<string>()
+    setCompletedTrainingPathCount(0)
+    fullFamilyCoverageActiveRef.current = false
+    bumpFamilyGenerationRevision((revision) => revision + 1)
+  }
+
   const restartFullFamilyCoverage = async (
     options?: { autoStart?: boolean },
   ): Promise<void> => {
@@ -853,11 +1004,11 @@ export function OpeningFamilyView({
         )
       )
     if (!countsTowardActiveFullCycle) return
-    completedTrainingPathsRef.current.add(completion.pathId)
+    completedTrainingPathsRef.current.add(`${completion.packId}\0${completion.pathId}`)
     setCompletedTrainingPathCount(completedTrainingPathsRef.current.size)
     const currentGraph = sidePacks.find(({ ref }) => ref.packId === completion.packId)?.graph
     const currentPackFinished = currentGraph?.paths.every(({ id }) =>
-      completedTrainingPathsRef.current.has(id)) ?? false
+      completedTrainingPathsRef.current.has(`${completion.packId}\0${id}`)) ?? false
     if (!currentPackFinished || !fullFamilyCoverageActiveRef.current) return
     const currentPackIndex = sidePacks.findIndex(({ ref }) => ref.packId === completion.packId)
     const orderedCandidates = [
@@ -865,7 +1016,7 @@ export function OpeningFamilyView({
       ...sidePacks.slice(0, Math.max(0, currentPackIndex)),
     ]
     const nextPack = orderedCandidates.find(({ graph }) =>
-      graph?.paths.some(({ id }) => !completedTrainingPathsRef.current.has(id)))
+      graph?.paths.some(({ id }) => !completedTrainingPathsRef.current.has(`${graph.pack.id}\0${id}`)))
     if (nextPack) {
       setAutoStartPackId(nextPack.ref.packId)
       setSelectedPackByScope((current) => ({ ...current, [packScope]: nextPack.ref.packId }))
@@ -910,6 +1061,14 @@ export function OpeningFamilyView({
                 ? `${activeBranchCycle.completedPathKeys.length.toLocaleString('en-US')} of ${activeBranchCycle.pathKeys.length.toLocaleString('en-US')} ${activeBranchCycle.label} paths completed.`
                 : `${Math.min(completedTrainingPathCount, sidePaths.length).toLocaleString('en-US')} of ${sidePaths.length.toLocaleString('en-US')} variations completed in this coverage run.`}
             </p>
+            <progress
+              className="family-training-progress-track"
+              max={Math.max(1, activeBranchCycle?.pathKeys.length ?? sidePaths.length)}
+              value={activeBranchCycle?.completedPathKeys.length ?? Math.min(completedTrainingPathCount, sidePaths.length)}
+              aria-label={activeBranchCycle
+                ? `${activeBranchCycle.completedPathKeys.length} of ${activeBranchCycle.pathKeys.length} ${activeBranchCycle.label} paths completed`
+                : `${Math.min(completedTrainingPathCount, sidePaths.length)} of ${sidePaths.length} family variations completed`}
+            />
           </div>
         </header>
         {sidePacks.length > 1 ? (
@@ -974,6 +1133,9 @@ export function OpeningFamilyView({
           onCoverageScopeChange={handleCoverageScopeChange}
           onCoverageCycleStarted={({ packId, coverageCycleId }) =>
             bindPackToActiveGeneration(packId, coverageCycleId)}
+          {...(familyTrainingJournal ? {
+            onNamedVariationCycleStarted: startNamedVariationCycle,
+          } : {})}
           onRestartFullCoverage={restartFullFamilyCoverage}
           {...(onAnnouncement ? { onAnnouncement } : {})}
           {...(familyTrainingJournal ? {
@@ -1008,6 +1170,8 @@ export function OpeningFamilyView({
         <div><dt>Audited {side} paths</dt><dd>{sideReady ? sidePaths.length : 'Pending'}</dd></div>
         <div><dt>Decision depth</dt><dd>{depthRange ? `${depthRange.minimum}–${depthRange.maximum}` : 'Pending'}</dd></div>
         <div><dt>Pack level</dt><dd>{packLevels.length > 0 ? packLevels.join(' and ') : 'Pending'}</dd></div>
+        <div><dt>Branch coverage</dt><dd>{averageBranchCoverage === null ? 'Pending' : `${averageBranchCoverage}%`}</dd></div>
+        <div><dt>Linked puzzle shards</dt><dd>{linkedPuzzleShardCount ?? 'Pending'}</dd></div>
         <div><dt>Family paths completed</dt><dd>{completionCountByFamily[family.id] ?? 0}</dd></div>
       </dl>
       <section className="family-side-panel" aria-labelledby="family-side-title">
@@ -1059,6 +1223,29 @@ export function OpeningFamilyView({
         {familyResources.issues.length > 0 ? (
           <p className="resource-notice" role="alert">{familyResources.issues[0]}</p>
         ) : null}
+      </section>
+      <section className="family-practice-guide" aria-labelledby="family-practice-guide-title">
+        <div>
+          <p className="eyebrow">Practice flow</p>
+          <h2 id="family-practice-guide-title">One run, every audited path</h2>
+          <p>
+            LineRecall completes one variation, records it, and begins the next unfinished variation without a grade screen between moves.
+          </p>
+        </div>
+        <ol>
+          <li><span>01</span><strong>Recall</strong><small>Play each learner move on the board.</small></li>
+          <li><span>02</span><strong>Continue</strong><small>Opponent replies and branch changes follow the real graph.</small></li>
+          <li><span>03</span><strong>Cover</strong><small>Finish every eligible route and keep a completed / total count.</small></li>
+        </ol>
+        <dl className="family-practice-evidence">
+          <div><dt>Evidence terminals</dt><dd>{evidenceTerminalCount ?? 'Pending'}</dd></div>
+          <div><dt>Depth-capped paths</dt><dd>{depthCappedCount ?? 'Pending'}</dd></div>
+          <div><dt>Required learner sample</dt><dd>N ≥ 500</dd></div>
+          <div><dt>Safety ceiling</dt><dd>Ply 100</dd></div>
+        </dl>
+        <p className="field-help">
+          Playable and exploratory alternatives remain visible in analysis. They are not counted as required book recall unless the released graph marks them eligible.
+        </p>
       </section>
       <section className="family-syllabus" aria-labelledby="family-syllabus-title">
         <div>

@@ -18,6 +18,7 @@ import {
   loadVerifiedReleaseBindings,
 } from '../../scripts/release/lib/release-bindings.ts'
 import { createSourceSnapshot } from '../../scripts/release/lib/source-snapshot.ts'
+import { productionAppManifestFixture } from '../fixtures/production-app-manifest.ts'
 
 const releaseId = 'release-2026-07-16'
 const sourceRoots = ['src'] as const
@@ -39,9 +40,9 @@ function readiness(appSnapshotManifestSha256: string) {
       broadcasts: { manifestSha256: hash, archiveCount: 78, archivesComplete: true, digestsVerified: true, recordsSeen: 1_146_297, accepted: 800_176, rejected: 346_121, deduplicated: 0, accountingReconciles: true },
       standardQ2_2026: { manifestSha256: hash, archiveCount: 3, archivesComplete: true, digestsVerified: true, recordsSeen: 267_333_507, publishedRecords: 267_333_507, publishedCompressedBytes: 87_256_474_116, accepted: 200_000_000, rejected: 67_333_507, deduplicated: 0, accountingReconciles: true },
     },
-    graph: { schemaVersion: 3, baselineMaximumPly: 30, adaptiveMaximumPly: 100, exactSecondPassComplete: true, reconciliationComplete: true, allEligiblePracticeBranchesRetained: true, maximumPracticeBranches: null, hiddenEligiblePracticeBranches: 0, terminalPolicy: 'evidence-defined-through-ply-100', coreMinimumLearnerDecisions: 10, provenanceMissing: 0, illegalEdges: 0, quarantinedEdgesInDrills: 0, unresolvedDataDiscrepancies: 0 },
-    engine: { name: 'Stockfish 18', threads: 1, hashMb: 128, multiPv: 5, nodes: 250_000, learnerNodesChecked: 1, engineSha256: hash, nnueSha256: [hash] },
-    scid: { sampledLines: 250, conflictingBaseEcoInDrills: 0, oracleContentShipped: false },
+    graph: { schemaVersion: 3, baselineMaximumPly: 30, adaptiveMaximumPly: 100, exactSecondPassComplete: true, reconciliationComplete: true, allEligiblePracticeBranchesRetained: true, maximumPracticeBranches: null, hiddenEligiblePracticeBranches: 0, terminalPolicy: 'evidence-defined-through-ply-100', coreMinimumLearnerDecisions: 10, provenanceMissing: 0, illegalEdges: 0, quarantinedEdgesInDrills: 0, unresolvedDataDiscrepancies: 0, familyGraphBuildSha256: hash },
+    engine: { name: 'Stockfish 18', threads: 1, hashMb: 128, multiPv: 5, nodes: 250_000, learnerNodesChecked: 1, proofInventorySha256: hash, engineSha256: hash, nnueSha256: [hash] },
+    scid: { sampledLines: 250, conflictingBaseEcoInDrills: 0, oracleContentShipped: false, crosscheckReportSha256: hash },
     puzzles: { sourceDigestApproved: true, sourceSha256: hash, accepted: 1, learnerNodesEngineChecked: true, masterySeparatedFromRecall: true },
     caroKann: { ecoRange: 'B10-B19', familyGraphCount: 1, drillablePaths: 8, namedFamilies: ['Advance', 'Exchange', 'Panov', 'Classical', 'Two Knights'], mislabeledCorePaths: 0 },
   }
@@ -77,12 +78,7 @@ async function passingFixture(): Promise<Fixture> {
   const candidate = { bytes: Buffer.byteLength(html), sha256: artifactSha256 }
 
   const appManifestPath = join(root, 'data/generated/app-snapshot/manifest.json')
-  await writeJson(appManifestPath, {
-    v: 3,
-    schema: 'linerecall-app-wire-v3',
-    releaseId,
-    selectionPolicy: { practiceBranches: 'all-eligible-audited', maximumPracticeBranches: null, terminal: 'evidence-defined-through-ply-100' },
-  })
+  await writeJson(appManifestPath, productionAppManifestFixture(releaseId))
   const appManifestSha256 = await sha256File(appManifestPath)
   await writeJson(join(root, 'data/generated/v3/production-data-readiness.json'), readiness(appManifestSha256))
 

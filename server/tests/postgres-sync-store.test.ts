@@ -3,6 +3,7 @@ import { describe, it } from 'node:test'
 import type { Pool, PoolClient } from 'pg'
 import { PostgresSyncStore } from '../src/adapters/postgres-sync-store.js'
 import type { ProgressSettingsV2, PuzzleAttemptV1, ReviewEventV1 } from '../src/contracts.js'
+import { FamilyTrainingSyncRequestV1Schema } from '../src/family-training-contracts.js'
 import { ApiError } from '../src/errors.js'
 import type { ObjectStore } from '../src/infrastructure/ports.js'
 import { DEVICE_ID, NOW, reviewEvent } from './helpers.js'
@@ -81,6 +82,332 @@ function puzzleAttempt(overrides: Partial<PuzzleAttemptV1> = {}): PuzzleAttemptV
 }
 
 describe('PostgreSQL sync repository', () => {
+  it('stores family coverage and a large immutable cursor in one tenant transaction', async () => {
+    const event = {
+      schemaVersion: 1 as const,
+      eventId: '0198a5c0-1000-7000-8000-000000000401',
+      releaseId: 'release-2026q2',
+      familyId: 'caro-kann',
+      packId: 'caro_kann_black',
+      pathId: 'path_00000000000000000000',
+      coverageCycleId: 'caro_kann_black::coverage:0',
+      completedAt: '2026-07-14T11:59:00.000Z',
+    }
+    const paths = Array.from({ length: 1_005 }, (_, index) => `path_${index.toString(16).padStart(20, '0')}`)
+    const cards = Array.from({ length: 1_005 }, (_, index) => `caro_kann_black::pos_${index.toString(16).padStart(16, '0')}`)
+    const request = FamilyTrainingSyncRequestV1Schema.parse({
+      deviceId: DEVICE_ID,
+      coverageEvents: [event],
+      cycleEvents: [],
+      cursorMutation: {
+        mutationId: '0198a5c0-1000-7000-8000-000000000402',
+        baseVersion: 0,
+        value: {
+          schemaVersion: 1,
+          releaseId: event.releaseId,
+          familyId: event.familyId,
+          side: 'black',
+          coverageCycleId: event.coverageCycleId,
+          authoritativeDueCardIds: cards,
+          reviewedCardIds: [],
+          completedPathIds: [],
+          pendingPathIds: paths,
+          batchIndex: 0,
+        },
+      },
+    })
+    const database = new ScriptedPool((sql, values) => {
+      if (sql.includes('supported_snapshot_versions')) return { rowCount: 1 }
+      if (sql.includes('snapshot_family_pack_membership')) return { rowCount: 1 }
+      if (sql.includes('snapshot_family_path_membership') && sql.includes('path_id=ANY')) {
+        return { rows: paths.map((path_id) => ({ path_id })) }
+      }
+      if (sql.includes('snapshot_family_path_membership')) return { rowCount: 1 }
+      if (sql.includes('snapshot_card_membership')) return { rows: cards.map((card_id) => ({ card_id })) }
+      if (sql.includes('family_coverage_events WHERE user_id=$1 AND event_id=$2')) return { rows: [] }
+      if (sql.includes('FROM family_coverage_events') && sql.includes('path_id=$5')) return { rows: [] }
+      if (sql.includes('family_training_cursor_events WHERE user_id=$1 AND mutation_id=$2')) return { rows: [] }
+      if (sql.includes('FROM family_training_cursor_events') && sql.includes('ORDER BY version DESC')) return { rows: [] }
+      if (sql.includes('INSERT INTO family_training_cursor_events')) return { rows: [{
+        mutation_id: request.cursorMutation!.mutationId,
+        device_id: DEVICE_ID,
+        snapshot_version: event.releaseId,
+        family_id: event.familyId,
+        pack_id: event.packId,
+        side: 'black',
+        coverage_cycle_id: event.coverageCycleId,
+        version: 1,
+        cursor_sha256: 'a'.repeat(64),
+        cursor_document: values?.[10],
+        sync_sequence: '11',
+      }] }
+      return {}
+    })
+    const response = await new PostgresSyncStore(database.pool).syncFamilyTraining('tenant-a', request, NOW)
+    assert.deepEqual(response.acceptedCoverageEventIds, [event.eventId])
+    assert.equal(response.cursor?.value.pendingPathIds.length, 1_005)
+    assert.equal(response.cursor?.value.pendingPathIds.at(-1), paths.at(-1))
+    assert.ok(database.statements.some(({ sql, values }) =>
+      sql.includes("set_config('app.user_id'") && values?.[0] === 'tenant-a'))
+    assert.ok(database.statements.some(({ sql }) => sql === 'COMMIT'))
+  })
+
+  it('pages family event streams and restores exact or latest cursor snapshots', async () => {
+    let failCoverage = false
+    const cursorDocument = {
+      schemaVersion: 1 as const, releaseId: 'release-2026q2', familyId: 'king-pawn', side: 'white' as const,
+      coverageCycleId: 'pack-e4::coverage:0', authoritativeDueCardIds: [], reviewedCardIds: [],
+      completedPathIds: [], pendingPathIds: ['path_0123456789abcdef0123'], batchIndex: 0,
+    }
+    const database = new ScriptedPool((sql) => {
+      if (sql.includes('FROM family_coverage_events')) {
+        if (failCoverage) throw new Error('family page unavailable')
+        return { rows: [
+          {
+            event_id: '0198a5c0-1000-7000-8000-000000000411', snapshot_version: 'release-2026q2',
+            family_id: 'king-pawn', pack_id: 'pack-e4', path_id: 'path_0123456789abcdef0123',
+            coverage_cycle_id: 'pack-e4::coverage:0', completed_at: NOW, normalized_completed_at: NOW,
+            received_at: NOW, sync_sequence: '4',
+          },
+          {
+            event_id: '0198a5c0-1000-7000-8000-000000000412', snapshot_version: 'release-2026q2',
+            family_id: 'king-pawn', pack_id: 'pack-e4', path_id: 'path_fedcba9876543210fedc',
+            coverage_cycle_id: 'pack-e4::coverage:0', completed_at: NOW, normalized_completed_at: NOW,
+            received_at: NOW, sync_sequence: '5',
+          },
+        ] }
+      }
+      if (sql.includes('FROM family_cycle_events')) return { rows: [
+        {
+          event_id: '0198a5c0-1000-7000-8000-000000000413', snapshot_version: 'release-2026q2',
+          family_id: 'king-pawn', side: 'white', kind: 'cycle_started',
+          generation_id: '0198a5c0-1000-7000-8000-000000000414', generation_ordinal: 0,
+          pack_id: null, pack_coverage_cycle_id: null, occurred_at: NOW, normalized_occurred_at: NOW,
+          received_at: NOW, sync_sequence: '6',
+        },
+      ] }
+      if (sql.includes('FROM family_training_cursor_events')) return { rows: [{
+        mutation_id: '0198a5c0-1000-7000-8000-000000000415', snapshot_version: 'release-2026q2',
+        family_id: 'king-pawn', pack_id: 'pack-e4', side: 'white', coverage_cycle_id: 'pack-e4::coverage:0',
+        version: 1, cursor_sha256: 'f'.repeat(64), cursor_document: cursorDocument, sync_sequence: '7',
+      }] }
+      return {}
+    })
+    const store = new PostgresSyncStore(database.pool)
+    const coverage = await store.pageFamilyCoverage('user-a', {
+      releaseId: 'release-2026q2', familyId: 'king-pawn', cursor: 3n, limit: 1,
+    }, NOW)
+    assert.equal(coverage.records[0]?.event.pathId, 'path_0123456789abcdef0123')
+    assert.equal(coverage.nextCursor, '4')
+    assert.equal(coverage.hasMore, true)
+
+    const cycles = await store.pageFamilyCycles('user-a', {
+      releaseId: 'release-2026q2', familyId: 'king-pawn', side: 'white', cursor: 0n, limit: 10,
+    }, NOW)
+    assert.equal(cycles.records[0]?.event.kind, 'cycle_started')
+    assert.equal(cycles.hasMore, false)
+
+    const cursor = await store.loadFamilyCursor('user-a', {
+      releaseId: 'release-2026q2', familyId: 'king-pawn', side: 'white', packId: 'pack-e4',
+      coverageCycleId: 'pack-e4::coverage:0',
+    }, NOW)
+    assert.deepEqual(cursor.cursor?.value, cursorDocument)
+    assert.ok(database.statements.filter(({ sql }) => sql === 'BEGIN READ ONLY').length >= 3)
+
+    await assert.rejects(
+      () => store.pageFamilyCoverage('user-a', {
+        releaseId: 'release-2026q2', familyId: 'king-pawn', cursor: -1n, limit: 1,
+      }, NOW),
+      (error: unknown) => error instanceof ApiError && error.code === 'invalid_cursor',
+    )
+    failCoverage = true
+    await assert.rejects(() => store.pageFamilyCoverage('user-a', {
+      releaseId: 'release-2026q2', familyId: 'king-pawn', cursor: 0n, limit: 1,
+    }, NOW), /family page unavailable/u)
+    assert.equal(database.statements.at(-1)?.sql, 'ROLLBACK')
+  })
+
+  it('rejects a PostgreSQL family cursor that discards unfinished same-cycle paths', async () => {
+    const prior = {
+      schemaVersion: 1 as const, releaseId: 'release-2026q2', familyId: 'king-pawn', side: 'white' as const,
+      coverageCycleId: 'pack-e4::coverage:0', authoritativeDueCardIds: [], reviewedCardIds: [],
+      completedPathIds: [], pendingPathIds: ['path_0123456789abcdef0123', 'path_fedcba9876543210fedc'], batchIndex: 0,
+    }
+    const next = { ...prior, pendingPathIds: ['path_fedcba9876543210fedc'], batchIndex: 1 }
+    const database = new ScriptedPool((sql) => {
+      if (sql.includes('supported_snapshot_versions')) return { rowCount: 1 }
+      if (sql.includes('snapshot_family_pack_membership')) return { rowCount: 1 }
+      if (sql.includes('snapshot_family_path_membership')) return {
+        rows: next.pendingPathIds.map((path_id) => ({ path_id })),
+      }
+      if (sql.includes('family_training_cursor_events WHERE user_id=$1 AND mutation_id=$2')) return { rows: [] }
+      if (sql.includes('FROM family_training_cursor_events') && sql.includes('ORDER BY version DESC')) return { rows: [{
+        mutation_id: '0198a5c0-1000-7000-8000-000000000420', snapshot_version: prior.releaseId,
+        family_id: prior.familyId, pack_id: 'pack-e4', side: prior.side, coverage_cycle_id: prior.coverageCycleId,
+        version: 1, cursor_sha256: 'a'.repeat(64), cursor_document: prior, sync_sequence: '8',
+      }] }
+      return {}
+    })
+    const request = FamilyTrainingSyncRequestV1Schema.parse({
+      deviceId: DEVICE_ID,
+      cursorMutation: {
+        mutationId: '0198a5c0-1000-7000-8000-000000000421', baseVersion: 1, value: next,
+      },
+    })
+    await assert.rejects(
+      () => new PostgresSyncStore(database.pool).syncFamilyTraining('user-a', request, NOW),
+      (error: unknown) => error instanceof ApiError && error.code === 'family_cursor_regression',
+    )
+    assert.equal(database.statements.at(-2)?.sql === 'ROLLBACK' || database.statements.at(-1)?.sql === 'ROLLBACK', true)
+  })
+
+  it('handles PostgreSQL family idempotency, membership failures, logical duplicates, and future clocks', async () => {
+    const releaseId = 'release-2026q2'
+    const familyId = 'caro-kann'
+    const packId = 'caro_kann_black'
+    const cycleId = `${packId}::coverage:0`
+    const id = (suffix: number) => `0198a5c0-1000-7000-8000-${suffix.toString().padStart(12, '0')}`
+    const coverage = (suffix: number, pathSuffix: number, overrides: Record<string, unknown> = {}) => ({
+      schemaVersion: 1 as const,
+      eventId: id(suffix),
+      releaseId,
+      familyId,
+      packId,
+      pathId: `path_${pathSuffix.toString(16).padStart(20, '0')}`,
+      coverageCycleId: cycleId,
+      completedAt: '2026-07-14T11:55:00.000Z',
+      ...overrides,
+    })
+    const exactCoverage = coverage(430, 3)
+    const conflictingCoverage = coverage(431, 4)
+    const coverageEvents = [
+      coverage(428, 1, { releaseId: 'retired-release' }),
+      coverage(429, 99),
+      exactCoverage,
+      conflictingCoverage,
+      coverage(432, 5),
+      coverage(433, 6, { completedAt: '2026-07-14T12:06:00.000Z' }),
+    ]
+
+    const generationId = id(440)
+    const cycleStarted = (suffix: number, ordinal: number, overrides: Record<string, unknown> = {}) => ({
+      schemaVersion: 1 as const,
+      eventId: id(suffix),
+      releaseId,
+      familyId,
+      side: 'black' as const,
+      kind: 'cycle_started' as const,
+      generationId,
+      generationOrdinal: ordinal,
+      occurredAt: '2026-07-14T11:56:00.000Z',
+      ...overrides,
+    })
+    const packBound = (suffix: number, generationSuffix = 440, overrides: Record<string, unknown> = {}) => ({
+      schemaVersion: 1 as const,
+      eventId: id(suffix),
+      releaseId,
+      familyId,
+      side: 'black' as const,
+      kind: 'pack_bound' as const,
+      generationId: id(generationSuffix),
+      generationOrdinal: 0,
+      packId,
+      packCoverageCycleId: cycleId,
+      occurredAt: '2026-07-14T11:56:00.000Z',
+      ...overrides,
+    })
+    const exactCycle = cycleStarted(443, 1)
+    const conflictingCycle = packBound(444)
+    const cycleEvents = [
+      cycleStarted(441, 0, { releaseId: 'retired-release' }),
+      cycleStarted(442, 0, { familyId: 'unknown-family' }),
+      exactCycle,
+      conflictingCycle,
+      packBound(445, 999),
+      cycleStarted(446, 2),
+      packBound(447, 441),
+      cycleStarted(448, 3, { occurredAt: '2026-07-14T12:06:00.000Z' }),
+      packBound(449, 442, { occurredAt: '2026-07-14T12:06:00.000Z' }),
+    ]
+
+    const coverageRow = (event: ReturnType<typeof coverage>, completedAt = event.completedAt) => ({
+      event_id: event.eventId,
+      snapshot_version: event.releaseId,
+      family_id: event.familyId,
+      pack_id: event.packId,
+      path_id: event.pathId,
+      coverage_cycle_id: event.coverageCycleId,
+      completed_at: new Date(completedAt),
+      normalized_completed_at: new Date(completedAt),
+      received_at: NOW,
+      sync_sequence: '20',
+    })
+    const cycleRow = (event: ReturnType<typeof cycleStarted> | ReturnType<typeof packBound>) => ({
+      event_id: event.eventId,
+      snapshot_version: event.releaseId,
+      family_id: event.familyId,
+      side: event.side,
+      kind: event.kind,
+      generation_id: event.generationId,
+      generation_ordinal: event.generationOrdinal,
+      pack_id: event.kind === 'pack_bound' ? event.packId : null,
+      pack_coverage_cycle_id: event.kind === 'pack_bound' ? event.packCoverageCycleId : null,
+      occurred_at: new Date(event.occurredAt),
+      normalized_occurred_at: new Date(event.occurredAt),
+      received_at: NOW,
+      sync_sequence: '21',
+    })
+
+    const database = new ScriptedPool((sql, values) => {
+      if (sql.includes('supported_snapshot_versions')) return { rowCount: values?.[0] === 'retired-release' ? 0 : 1 }
+      if (sql.includes('snapshot_family_path_membership') && !sql.includes('ANY')) {
+        return { rowCount: values?.[3] === coverageEvents[1]!.pathId ? 0 : 1 }
+      }
+      if (sql.includes('family_coverage_events WHERE user_id=$1 AND event_id=$2')) {
+        if (values?.[1] === exactCoverage.eventId) return { rows: [coverageRow(exactCoverage)] }
+        if (values?.[1] === conflictingCoverage.eventId) {
+          return { rows: [coverageRow(conflictingCoverage, '2026-07-14T11:54:00.000Z')] }
+        }
+        return { rows: [] }
+      }
+      if (sql.includes('FROM family_coverage_events') && sql.includes('path_id=$5')) {
+        return { rowCount: values?.[4] === coverageEvents[4]!.pathId ? 1 : 0 }
+      }
+      if (sql.includes('snapshot_family_pack_membership')) {
+        return { rowCount: values?.[1] === 'unknown-family' ? 0 : 1 }
+      }
+      if (sql.includes('family_cycle_events WHERE user_id=$1 AND event_id=$2')) {
+        if (values?.[1] === exactCycle.eventId) return { rows: [cycleRow(exactCycle)] }
+        if (values?.[1] === conflictingCycle.eventId) {
+          return { rows: [cycleRow({ ...conflictingCycle, occurredAt: '2026-07-14T11:54:00.000Z' })] }
+        }
+        return { rows: [] }
+      }
+      if (sql.includes("kind='cycle_started' AND generation_id")) {
+        return { rowCount: values?.[4] === id(999) ? 0 : 1 }
+      }
+      if (sql.includes("kind='cycle_started' AND generation_ordinal")) {
+        return { rowCount: values?.[4] === 2 ? 1 : 0 }
+      }
+      if (sql.includes("kind='pack_bound' AND generation_id")) {
+        return { rowCount: values?.[4] === id(441) ? 1 : 0 }
+      }
+      return {}
+    })
+
+    const request = FamilyTrainingSyncRequestV1Schema.parse({ deviceId: DEVICE_ID, coverageEvents, cycleEvents })
+    const response = await new PostgresSyncStore(database.pool).syncFamilyTraining('tenant-family-branches', request, NOW)
+    assert.deepEqual(response.acceptedCoverageEventIds, [exactCoverage.eventId, coverageEvents[5]!.eventId])
+    assert.deepEqual(response.acceptedCycleEventIds, [exactCycle.eventId, cycleEvents[7]!.eventId, cycleEvents[8]!.eventId])
+    assert.equal(response.rejectedRecords.filter(({ code }) => code === 'unsupported_release').length, 2)
+    assert.equal(response.rejectedRecords.filter(({ code }) => code === 'unknown_family_membership').length, 3)
+    assert.equal(response.rejectedRecords.filter(({ code }) => code === 'conflicting_event_id').length, 2)
+    assert.equal(response.rejectedRecords.filter(({ code }) => code === 'duplicate_logical_record').length, 3)
+    assert.equal(response.rejectedRecords.filter(({ code }) => code === 'future_timestamp_normalized').length, 3)
+    assert.equal(database.statements.at(-1)?.sql, 'COMMIT')
+    assert.equal(database.released, 1)
+  })
+
   it('accepts legal member events, normalizes future clocks, rebuilds cards, and updates settings', async () => {
     const first = reviewEvent()
     const future = reviewEvent({
@@ -313,6 +640,15 @@ describe('PostgreSQL sync repository', () => {
       puzzleId: 'puzzle-future',
       occurredAt: '2026-07-14T12:06:00.000Z',
     })
+    const abandoned = puzzleAttempt({
+      attemptId: '0198a5c0-1000-7000-8000-000000000036',
+      puzzleId: 'puzzle-abandoned',
+      outcome: 'abandoned',
+      incorrectAttempts: 2,
+      usedHint: true,
+      elapsedMs: undefined,
+      occurredAt: '2026-07-14T11:54:00.000Z',
+    })
     let sequence = 10
     const database = new ScriptedPool((sql, values) => {
       if (sql.includes('supported_snapshot_versions')) return { rowCount: values?.[0] === 'retired' ? 0 : 1 }
@@ -347,19 +683,25 @@ describe('PostgreSQL sync repository', () => {
           hints_used: 0, incorrect_moves: '0', total_elapsed_ms: '9000', last_elapsed_ms: 9_000,
           last_attempt_at: NOW, sync_sequence: '10',
         },
+        {
+          puzzle_id: abandoned.puzzleId, attempts: 1, solved: 0, abandoned: 1, clean_solves: 0,
+          hints_used: 1, incorrect_moves: '2', total_elapsed_ms: '0', last_elapsed_ms: null,
+          last_attempt_at: null, sync_sequence: '11',
+        },
       ] }
       return {}
     })
     const response = await new PostgresSyncStore(database.pool).syncPuzzleAttempts('user-a', {
-      deviceId: DEVICE_ID, attempts: [unsupported, unknown, duplicate, conflict, future],
+      deviceId: DEVICE_ID, attempts: [unsupported, unknown, duplicate, conflict, future, abandoned],
     }, NOW)
 
-    assert.deepEqual(response.acceptedAttemptIds, [duplicate.attemptId, future.attemptId])
+    assert.deepEqual(response.acceptedAttemptIds, [duplicate.attemptId, future.attemptId, abandoned.attemptId])
     assert.deepEqual(response.rejectedAttempts.map(({ code }) => code), [
       'unsupported_snapshot', 'unknown_puzzle_membership', 'conflicting_attempt_id', 'future_timestamp_normalized',
     ])
-    assert.equal(response.progress.length, 2)
+    assert.equal(response.progress.length, 3)
     assert.equal(response.progress[0]?.lastAttemptAt, NOW.toISOString())
+    assert.equal(response.progress.find(({ puzzleId }) => puzzleId === abandoned.puzzleId)?.lastAttemptAt, null)
     const futureInsert = database.statements.find(({ sql, values }) =>
       sql.includes('INSERT INTO puzzle_attempt_events') && values?.[1] === future.attemptId)
     assert.equal((futureInsert?.values?.[10] as Date).toISOString(), NOW.toISOString())
@@ -427,10 +769,34 @@ describe('PostgreSQL sync repository', () => {
         opening_eco: 'C20', opening_name: 'King Pawn Game', opening_ply: 1, ply: 1,
         games: '3', wins: '2', draws: '0', losses: '1', first_seen_at: NOW, last_seen_at: NOW,
       }] }
+      if (sql.includes('FROM family_coverage_events')) return { rows: [{
+        event_id: '0198a5c0-1000-7000-8000-000000000501', device_id: DEVICE_ID,
+        snapshot_version: 'release-2026q2', family_id: 'king-pawn', pack_id: 'pack-e4',
+        path_id: 'path_0123456789abcdef0123', coverage_cycle_id: 'pack-e4::coverage:0',
+        completed_at: NOW, normalized_completed_at: NOW, received_at: NOW, sync_sequence: '13',
+      }] }
+      if (sql.includes('FROM family_cycle_events')) return { rows: [{
+        event_id: '0198a5c0-1000-7000-8000-000000000502', device_id: DEVICE_ID,
+        snapshot_version: 'release-2026q2', family_id: 'king-pawn', side: 'white',
+        kind: 'cycle_started', generation_id: '0198a5c0-1000-7000-8000-000000000503',
+        generation_ordinal: 0, pack_id: null, pack_coverage_cycle_id: null,
+        occurred_at: NOW, normalized_occurred_at: NOW, received_at: NOW, sync_sequence: '14',
+      }] }
+      if (sql.includes('FROM family_training_cursor_events')) return { rows: [{
+        mutation_id: '0198a5c0-1000-7000-8000-000000000504', device_id: DEVICE_ID,
+        snapshot_version: 'release-2026q2', family_id: 'king-pawn', pack_id: 'pack-e4', side: 'white',
+        coverage_cycle_id: 'pack-e4::coverage:0', version: 1, cursor_sha256: 'e'.repeat(64),
+        cursor_document: {
+          schemaVersion: 1, releaseId: 'release-2026q2', familyId: 'king-pawn', side: 'white',
+          coverageCycleId: 'pack-e4::coverage:0', authoritativeDueCardIds: [], reviewedCardIds: [],
+          completedPathIds: [], pendingPathIds: ['path_0123456789abcdef0123'], batchIndex: 0,
+        },
+        sync_sequence: '15',
+      }] }
       return {}
     })
     const exported = await new PostgresSyncStore(database.pool).exportAccount('user-a', NOW) as Record<string, unknown>
-    assert.equal(exported.schema, 'linerecall-account-export-v4')
+    assert.equal(exported.schema, 'linerecall-account-export-v5')
     assert.equal((exported.reviewEvents as unknown[]).length, 1)
     assert.equal((exported.cards as unknown[]).length, 1)
     assert.equal((exported.imports as unknown[]).length, 1)
@@ -453,6 +819,9 @@ describe('PostgreSQL sync repository', () => {
     assert.equal((exported.lichessSyncJobs as unknown[]).length, 1)
     assert.equal((exported.lichessImportedGames as unknown[]).length, 1)
     assert.equal((exported.personalOpeningEdges as unknown[]).length, 1)
+    assert.equal((exported.familyCoverageEvents as unknown[]).length, 1)
+    assert.equal((exported.familyCycleEvents as unknown[]).length, 1)
+    assert.equal((exported.familyTrainingCursors as unknown[]).length, 1)
     assert.deepEqual(exported.excludedSecrets, [
       'provider access tokens', 'provider account identifiers', 'share token hashes', 'object-store keys',
     ])
@@ -534,7 +903,7 @@ describe('PostgreSQL sync repository', () => {
       ? { rows: [{ source_object_key: 'private/imports/one' }, { source_object_key: 'private/imports/two' }] } : {})
     await new PostgresSyncStore(successful.pool, objects).deleteAccount('user-a')
     assert.deepEqual(deletedObjects.sort(), ['private/imports/one', 'private/imports/two'])
-    assert.equal(successful.statements.filter(({ sql }) => sql.startsWith('DELETE FROM ')).length, 13)
+    assert.equal(successful.statements.filter(({ sql }) => sql.startsWith('DELETE FROM ')).length, 16)
     assert.ok(successful.statements.some(({ sql }) => sql === 'COMMIT'))
 
     const blocked = new ScriptedPool((sql) => sql.includes('SELECT source_object_key')

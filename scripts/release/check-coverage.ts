@@ -100,6 +100,7 @@ const criticalPaths = [
   'src/domain/board-transition.ts',
   'src/domain/board.ts',
   'src/domain/deviation.ts',
+  'src/domain/family-coverage-scope.ts',
   'src/domain/graph-training-session.ts',
   'src/domain/input-validation.ts',
   'src/domain/progress.ts',

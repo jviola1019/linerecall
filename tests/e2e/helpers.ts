@@ -41,39 +41,22 @@ export async function openDataLicenses(page: Page): Promise<void> {
 
 export async function startAnyDrill(page: Page): Promise<void> {
   const board = page.getByRole('grid', { name: /Chessboard/u })
-  // The review snapshot contains several shallow lines. Browser interaction
-  // tests use one pinned, deeper fixture so move sequencing, full-line mode,
-  // castling-era positions, and progress assertions do not depend on catalog
-  // ordering or the Today recommendation.
-  await openRepertoire(page)
-  const volumeC = page.getByRole('tablist', { name: 'ECO volumes' }).getByRole('tab', { name: /Volume C:/u })
-  await volumeC.click()
-  const c97 = page.locator('.eco-list [role="option"]').filter({ hasText: /^C97/u }).first()
-  await expect(c97).toContainText(/drillable/u)
-  await c97.click()
-  await expect(page.getByRole('heading', { name: 'C97 lines' })).toBeVisible({ timeout: 15_000 })
-  await expect(page.locator('.line-list')).toBeVisible({ timeout: 15_000 })
-
-  const chigorin = page.locator('.line-list [role="option"]').filter({
-    hasText: /Ruy Lopez: Closed, Chigorin Defense.*N=569/isu,
-  })
-  await expect(chigorin).toHaveCount(1)
-  await chigorin.click()
-  await expect(page.getByRole('heading', {
-    name: 'Ruy Lopez: Closed, Chigorin Defense',
-    level: 2,
-  })).toBeVisible()
-
-  const trainBlack = page.getByRole('tablist', { name: 'Training side' }).getByRole('tab', { name: 'Train Black' })
-  await trainBlack.click()
-  const start = page.getByRole('button', { name: 'Start spaced-repetition drill' })
+  // Browser interaction tests must enter the same canonical family graph used
+  // by production. The review harness supplies one checksum-validated,
+  // synthetic Caro-Kann graph; the ordinary v2 review candidate correctly
+  // leaves this action disabled until a promoted family graph exists.
+  await openRepertoirePacks(page)
+  const caroKann = page.getByRole('list', { name: 'Opening families' }).getByRole('button', { name: /^Caro.*Kann/iu })
+  await expect(caroKann).toHaveCount(1)
+  await caroKann.click()
+  await expect(page.getByRole('heading', { name: /^Caro.*Kann$/iu, level: 1 })).toBeVisible({ timeout: 15_000 })
+  const openTraining = page.getByRole('button', { name: 'Start full family' })
+  await expect(openTraining).toBeEnabled({ timeout: 15_000 })
+  await openTraining.click()
+  await expect(page.getByRole('heading', { name: 'Practice every audited branch' })).toBeVisible({ timeout: 15_000 })
+  const start = page.getByRole('button', { name: 'Start full repertoire' })
   await expect(start).toBeEnabled()
   await start.click()
-  await expect(board).toBeVisible({ timeout: 10_000 })
-  const fullLine = page.getByRole('button', { name: 'Practice full line' })
-  await expect(fullLine).toBeEnabled()
-  await fullLine.click()
-  await expect(page.getByRole('button', { name: 'Full line active' })).toBeVisible()
   await expect(board).toBeVisible({ timeout: 10_000 })
 }
 

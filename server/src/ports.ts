@@ -5,6 +5,14 @@ import type {
   SyncRequestV1,
   SyncResponseV1,
 } from './contracts.js'
+import type {
+  FamilyCoveragePageV1,
+  FamilyCursorQuery,
+  FamilyCursorResponseV1,
+  FamilyCyclePageV1,
+  FamilyTrainingSyncRequestV1,
+  FamilyTrainingSyncResponseV1,
+} from './family-training-contracts.js'
 
 export interface AuthenticatedActor {
   userId: string
@@ -28,6 +36,22 @@ export interface SyncStore {
     now: Date,
   ): Promise<PuzzleProgressBootstrapResponse>
   syncPuzzleAttempts(userId: string, request: PuzzleAttemptSyncRequest, now: Date): Promise<PuzzleAttemptSyncResponse>
+  syncFamilyTraining(
+    userId: string,
+    request: FamilyTrainingSyncRequestV1,
+    now: Date,
+  ): Promise<FamilyTrainingSyncResponseV1>
+  pageFamilyCoverage(
+    userId: string,
+    query: { releaseId: string; familyId: string; cursor: bigint; limit: number },
+    now: Date,
+  ): Promise<FamilyCoveragePageV1>
+  pageFamilyCycles(
+    userId: string,
+    query: { releaseId: string; familyId: string; side: 'white' | 'black'; cursor: bigint; limit: number },
+    now: Date,
+  ): Promise<FamilyCyclePageV1>
+  loadFamilyCursor(userId: string, query: FamilyCursorQuery, now: Date): Promise<FamilyCursorResponseV1>
   exportAccount(userId: string, now: Date): Promise<unknown>
   deleteAccount(userId: string, now: Date): Promise<void>
 }

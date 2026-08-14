@@ -49,7 +49,7 @@
   color: var(--accent-ink);
   content: "";
   font-size: 0.8rem;
-  font-weight: 800;
+  font-weight: 700;
   line-height: 1;
 }
 .puzzle-flow-toggle input:checked::before { background: var(--accent); content: "✓"; }
@@ -145,7 +145,7 @@
   border: 2px solid currentColor;
   border-radius: 50%;
   font-size: 1.45rem;
-  font-weight: 900;
+  font-weight: 700;
 }
 
 .puzzle-feedback { border-left-width: 5px; }
@@ -183,7 +183,7 @@
   background: var(--surface-raised);
 }
 
-.puzzle-evidence-facts dt { color: var(--muted); font-size: 0.7rem; font-weight: 800; text-transform: uppercase; }
+.puzzle-evidence-facts dt { color: var(--muted); font-size: 0.75rem; font-weight: 700; text-transform: uppercase; }
 .puzzle-evidence-facts dd { margin: 0.2rem 0 0; overflow-wrap: anywhere; font-weight: 700; }
 
 .puzzle-analysis { margin-top: 0.7rem; border-top: 1px solid var(--border); }

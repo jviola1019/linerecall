@@ -11,6 +11,7 @@ import snapshotJson from '../../src/generated/embedded-snapshot.json' with { typ
 import { AccountControl } from './AccountControl.tsx'
 import { AuthService } from './auth-service.ts'
 import type { AuthSession } from './contracts.ts'
+import { CloudFamilyTrainingJournalRepository } from './family-training-client.ts'
 import {
   CloudProgressRepository,
   CloudPuzzleProgressRepository,
@@ -54,6 +55,7 @@ function HostedRoot(): React.JSX.Element {
   const [sessionError, setSessionError] = useState<string | null>(null)
   const [syncState, setSyncState] = useState<SyncState | null>(null)
   const [clientError, setClientError] = useState<string | null>(null)
+  const [familyPendingCount, setFamilyPendingCount] = useState(0)
 
   useEffect(() => {
     let active = true
@@ -88,17 +90,30 @@ function HostedRoot(): React.JSX.Element {
     () => session ? new ConnectedSyncClient({ snapshotVersion }) : null,
     [session?.user.id],
   )
+  const familyTrainingJournal = useMemo(
+    () => sync ? new CloudFamilyTrainingJournalRepository({
+      deviceId: sync.deviceId,
+      onError: (error) => setClientError(error.message),
+      onPendingChange: setFamilyPendingCount,
+    }) : undefined,
+    [sync],
+  )
 
   useEffect(() => {
-    if (!sync) { setSyncState(null); return }
+    if (!sync) { setSyncState(null); setFamilyPendingCount(0); return }
     const unsubscribe = sync.subscribeStatus(setSyncState)
-    const online = (): void => { void sync.flush() }
+    const online = (): void => {
+      void sync.flush()
+      void familyTrainingJournal?.flush().catch((error: unknown) => {
+        setClientError(error instanceof Error ? error.message : 'Family progress could not be synchronized')
+      })
+    }
     window.addEventListener('online', online)
     return () => {
       unsubscribe()
       window.removeEventListener('online', online)
     }
-  }, [sync])
+  }, [familyTrainingJournal, sync])
 
   const repositorySelector = useCallback(async () => {
     if (sync) return { repository: new CloudProgressRepository(sync), warning: null }
@@ -163,6 +178,12 @@ function HostedRoot(): React.JSX.Element {
       session={session}
       sync={sync}
       syncState={syncState}
+      queuedFamilyCount={familyPendingCount}
+      {...(familyTrainingJournal ? { onRetryFamily: async () => {
+        await familyTrainingJournal.flush()
+        setClientError(null)
+      } } : {})}
+      {...(sync ? { onExportQueued: () => sync.exportUnsynced(familyTrainingJournal?.exportPendingRecords()) } : {})}
       onSession={(next) => { setSession(next); setSessionStatus('ready'); setSessionError(null) }}
     />
   )
@@ -178,6 +199,7 @@ function HostedRoot(): React.JSX.Element {
         dataSource={dataSource}
         repositorySelector={repositorySelector}
         accountControl={account}
+        {...(familyTrainingJournal ? { familyTrainingJournal } : {})}
         {...(puzzleProgressRepository ? { puzzleProgressRepository } : {})}
         {...(sync ? {
           onReviewCommit: commitReview,

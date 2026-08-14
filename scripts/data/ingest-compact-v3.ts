@@ -1,6 +1,10 @@
 #!/usr/bin/env node
-import { basename, isAbsolute, relative, resolve } from 'node:path'
-import { CompactPreflightPlanSchema } from './compact-v3-contracts.ts'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import {
+  COMPACT_ADAPTER_STATE_SCHEMA_VERSION,
+  CompactPreflightPlanSchema,
+} from './compact-v3-contracts.ts'
+import { compactBenchmarkApprovalRelativePath } from './compact-v3-benchmark-approval.ts'
 import {
   runCompactV3ArchiveAdapter,
   runCompactV3RemoteArchiveAdapter,
@@ -82,6 +86,18 @@ async function main(): Promise<void> {
   const plan = CompactPreflightPlanSchema.parse(
     JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(planBytes)) as unknown,
   )
+  if (plan.benchmark.status !== 'approved' || plan.benchmark.receiptSha256 === null) {
+    throw new Error('Evidence ingestion requires an approved immutable benchmark receipt')
+  }
+  const benchmarkApprovalBytes = await readBoundedRegularFile(
+    join(
+      dirname(args.planPath),
+      ...compactBenchmarkApprovalRelativePath(plan.benchmark.receiptSha256).split('/'),
+    ),
+    4 * 1024 * 1024,
+    'Compact benchmark approval receipt',
+    1,
+  )
   if (args.input === 'local-file' && basename(args.archivePath!) !== plan.archive.filename) {
     throw new Error(`--archive must name the approved local file ${plan.archive.filename}`)
   }
@@ -103,7 +119,9 @@ async function main(): Promise<void> {
       chessJs: '1.4.0',
       zstd: 'node:zlib:createZstdDecompress',
       sourceSnapshotSha256: args.sourceSnapshotSha256,
+      adapterStateSchemaVersion: COMPACT_ADAPTER_STATE_SCHEMA_VERSION,
     },
+    benchmarkApprovalBytes,
     executionPurpose: 'evidence-candidate' as const,
   }
   const result = args.input === 'local-file'

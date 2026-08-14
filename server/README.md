@@ -6,6 +6,7 @@ This directory is an independently pinned Node 24/Fastify 5 service. It implemen
 
 - Strict Zod request contracts, 256 KiB sync limit, 250-event batches, request IDs, CSP/security headers, same-origin mutation enforcement, safe error responses, and redacted operational logging.
 - Append-only review events, signed-snapshot card membership enforcement, idempotency/conflict detection, deterministic late-event replay, five-minute future-clock normalization, explicit corrections of only the latest review, server-derived SM-2/mastery, pagination, per-user PostgreSQL serialization, and atomic optimistic settings concurrency.
+- Append-only unified-family completion and cycle events, membership-bound/versioned cursor snapshots, logical completion deduplication, monotonic same-cycle resume validation, bounded pagination, and exact preservation of later paths in families larger than 1,000 paths. The hosted adapter retries the same immutable IDs from memory and never uses localStorage or IndexedDB.
 - Local in-memory adapters and PostgreSQL implementations. Application transactions set `app.user_id`; all user tables enable and force RLS.
 - Better Auth configuration for five-minute, hashed, single-use magic links and session-gated passkeys. Every non-magic auth route has an early in-process 120/IP/five-minute backstop with IPv6 `/64` normalization and an authoritative distributed 120/IP/five-minute limit. Magic-link submission uses the distributed limit directly so exhausted/unavailable states retain the same generic success shape; it is further limited to 20/IP/hour and 5/normalized-email/hour, while passkey routes are limited to 30/IP/five minutes. Upstream identity responses cannot overwrite the service-owned rate-limit headers. The production database and auth database use separate credentials.
 - Redis atomic distributed limits, fail-closed behavior, immutable/versioned repertoires, asynchronous private PGN staging, 128-bit-plus unlisted tokens stored as SHA-256 only, export, and account deletion orchestration.
@@ -43,8 +44,8 @@ The `x-linerecall-user` development header is accepted only under that explicit 
 ## Production runbook boundaries
 
 1. Generate and review Better Auth migrations using the exact lockfile version. Apply them with the auth migration role, not `linerecall_app`.
-2. Apply `migrations/001_application.sql`, then the reviewed role grants and public-share function as an administrator. Verify the function owner is a NOLOGIN `BYPASSRLS` policy-owner role; the runtime role receives only `EXECUTE`.
-3. Insert a snapshot version and its complete `snapshot_card_membership` rows in one release transaction only after the signed manifest and data gates pass.
+2. Apply `migrations/001_application.sql` through `migrations/006_family_training_journal.sql`, then the reviewed role grants and public-share function as an administrator. Verify the function owner is a NOLOGIN `BYPASSRLS` policy-owner role; the runtime role receives only `EXECUTE`.
+3. Insert a snapshot version and its complete card, puzzle, family-pack, and family-path membership rows in one release transaction only after the signed manifest and data gates pass.
 4. Supply all production environment values from Secrets Manager/task configuration. Startup intentionally fails when identity, verified database TLS, Redis, KMS, S3, Batch, Lichess, or contact settings are absent.
 5. Use immutable, digest-pinned container images. Run migrations as a separate one-shot task before a blue/green deployment.
 6. Validate SES sending identity, frozen WebAuthn RP ID, exact origins/redirects, RLS cross-tenant tests, backup restoration, KMS permissions, and provider revocation in staging.

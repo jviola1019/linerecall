@@ -1,4 +1,5 @@
 import type { Pool, PoolClient, QueryResultRow } from 'pg'
+import { createHash } from 'node:crypto'
 import type {
   CardStateV2,
   ProgressSettingsV2,
@@ -11,6 +12,21 @@ import type {
   SyncResponseV1,
 } from '../contracts.js'
 import { ProgressSettingsV2Schema } from '../contracts.js'
+import {
+  FamilyTrainingCursorV1Schema,
+  familyCursorPackId,
+  type FamilyCoverageCycleEventV1,
+  type FamilyCoverageEventV1,
+  type FamilyCoveragePageV1,
+  type FamilyCursorQuery,
+  type FamilyCursorResponseV1,
+  type FamilyCyclePageV1,
+  type FamilyTrainingCursorV1,
+  type FamilyTrainingRejectionV1,
+  type FamilyTrainingSyncRequestV1,
+  type FamilyTrainingSyncResponseV1,
+  type VersionedFamilyTrainingCursorV1,
+} from '../family-training-contracts.js'
 import { replayCard, serializeCard, type StoredReviewEvent } from '../domain/sm2.js'
 import { ApiError } from '../errors.js'
 import type { SyncStore } from '../ports.js'
@@ -90,6 +106,25 @@ interface PersonalOpeningEdgeExportRow extends QueryResultRow {
   wins: string; draws: string; losses: string; first_seen_at: Date; last_seen_at: Date
 }
 
+interface FamilyCoverageRow extends QueryResultRow {
+  event_id: string; device_id: string; snapshot_version: string; family_id: string; pack_id: string; path_id: string
+  coverage_cycle_id: string; completed_at: Date; normalized_completed_at: Date
+  received_at: Date; sync_sequence: string
+}
+
+interface FamilyCycleRow extends QueryResultRow {
+  event_id: string; device_id: string; snapshot_version: string; family_id: string; side: 'white' | 'black'
+  kind: 'cycle_started' | 'pack_bound'; generation_id: string; generation_ordinal: number
+  pack_id: string | null; pack_coverage_cycle_id: string | null; occurred_at: Date
+  normalized_occurred_at: Date; received_at: Date; sync_sequence: string
+}
+
+interface FamilyCursorRow extends QueryResultRow {
+  mutation_id: string; device_id: string; snapshot_version: string; family_id: string; pack_id: string
+  side: 'white' | 'black'; coverage_cycle_id: string; version: number
+  cursor_sha256: string; cursor_document: unknown; sync_sequence: string
+}
+
 const DEFAULT_SETTINGS = ProgressSettingsV2Schema.parse({})
 
 function eventFromRow(row: EventRow): StoredReviewEvent {
@@ -131,6 +166,57 @@ function cardFromRow(row: CardRow): CardStateV2 {
     lastEventId: row.last_event_id,
     syncSequence: row.sync_sequence,
   }
+}
+
+function familyCoverageFromRow(row: FamilyCoverageRow): FamilyCoverageEventV1 {
+  return {
+    schemaVersion: 1,
+    eventId: row.event_id,
+    releaseId: row.snapshot_version,
+    familyId: row.family_id,
+    packId: row.pack_id,
+    pathId: row.path_id,
+    coverageCycleId: row.coverage_cycle_id,
+    completedAt: row.completed_at.toISOString(),
+  }
+}
+
+function familyCycleFromRow(row: FamilyCycleRow): FamilyCoverageCycleEventV1 {
+  const base = {
+    schemaVersion: 1 as const,
+    eventId: row.event_id,
+    releaseId: row.snapshot_version,
+    familyId: row.family_id,
+    side: row.side,
+    generationId: row.generation_id,
+    generationOrdinal: row.generation_ordinal,
+    occurredAt: row.occurred_at.toISOString(),
+  }
+  return row.kind === 'cycle_started'
+    ? { ...base, kind: 'cycle_started' }
+    : {
+      ...base,
+      kind: 'pack_bound',
+      packId: row.pack_id!,
+      packCoverageCycleId: row.pack_coverage_cycle_id!,
+    }
+}
+
+function versionedFamilyCursorFromRow(row: FamilyCursorRow): VersionedFamilyTrainingCursorV1 {
+  return {
+    version: row.version,
+    mutationId: row.mutation_id,
+    value: FamilyTrainingCursorV1Schema.parse(row.cursor_document),
+    syncSequence: row.sync_sequence,
+  }
+}
+
+function canonicalCursor(value: unknown): string {
+  return JSON.stringify(value)
+}
+
+function cursorDigest(cursor: FamilyTrainingCursorV1): string {
+  return createHash('sha256').update(canonicalCursor(cursor), 'utf8').digest('hex')
 }
 
 export class PostgresSyncStore implements SyncStore {
@@ -448,6 +534,344 @@ export class PostgresSyncStore implements SyncStore {
     }
   }
 
+  async syncFamilyTraining(
+    userId: string,
+    request: FamilyTrainingSyncRequestV1,
+    now: Date,
+  ): Promise<FamilyTrainingSyncResponseV1> {
+    const client = await this.pool.connect()
+    try {
+      await client.query('BEGIN')
+      await this.#setUser(client, userId)
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [userId])
+      const acceptedCoverageEventIds: string[] = []
+      const acceptedCycleEventIds: string[] = []
+      const rejectedRecords: FamilyTrainingRejectionV1[] = []
+      const futureLimit = now.getTime() + 5 * 60_000
+
+      for (const incoming of request.coverageEvents) {
+        if (!await this.#activeRelease(client, incoming.releaseId)) {
+          rejectedRecords.push({
+            recordId: incoming.eventId, recordType: 'coverage', code: 'unsupported_release',
+            message: 'The family release is not active',
+          })
+          continue
+        }
+        const membership = await client.query(
+          `SELECT 1 FROM snapshot_family_path_membership
+           WHERE snapshot_version=$1 AND family_id=$2 AND pack_id=$3 AND path_id=$4`,
+          [incoming.releaseId, incoming.familyId, incoming.packId, incoming.pathId],
+        )
+        if (membership.rowCount !== 1) {
+          rejectedRecords.push({
+            recordId: incoming.eventId, recordType: 'coverage', code: 'unknown_family_membership',
+            message: 'The path does not belong to the referenced signed family release',
+          })
+          continue
+        }
+        const duplicate = await client.query<FamilyCoverageRow>(
+          'SELECT * FROM family_coverage_events WHERE user_id=$1 AND event_id=$2',
+          [userId, incoming.eventId],
+        )
+        if (duplicate.rows[0]) {
+          if (canonicalCursor(familyCoverageFromRow(duplicate.rows[0])) === canonicalCursor(incoming)) {
+            acceptedCoverageEventIds.push(incoming.eventId)
+          } else {
+            rejectedRecords.push({
+              recordId: incoming.eventId, recordType: 'coverage', code: 'conflicting_event_id',
+              message: 'The immutable family coverage event ID has different content',
+            })
+          }
+          continue
+        }
+        const logical = await client.query(
+          `SELECT 1 FROM family_coverage_events
+           WHERE user_id=$1 AND snapshot_version=$2 AND family_id=$3 AND pack_id=$4
+             AND path_id=$5 AND coverage_cycle_id=$6`,
+          [userId, incoming.releaseId, incoming.familyId, incoming.packId, incoming.pathId, incoming.coverageCycleId],
+        )
+        if (logical.rowCount === 1) {
+          rejectedRecords.push({
+            recordId: incoming.eventId, recordType: 'coverage', code: 'duplicate_logical_record',
+            message: 'This path is already complete in the referenced coverage cycle',
+          })
+          continue
+        }
+        const completedAt = new Date(incoming.completedAt)
+        const future = completedAt.getTime() > futureLimit
+        await client.query(
+          `INSERT INTO family_coverage_events
+             (user_id,event_id,device_id,snapshot_version,family_id,pack_id,path_id,coverage_cycle_id,
+              completed_at,normalized_completed_at,received_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+          [userId, incoming.eventId, request.deviceId, incoming.releaseId, incoming.familyId,
+            incoming.packId, incoming.pathId, incoming.coverageCycleId, completedAt, future ? now : completedAt, now],
+        )
+        acceptedCoverageEventIds.push(incoming.eventId)
+        if (future) rejectedRecords.push({
+          recordId: incoming.eventId, recordType: 'coverage', code: 'future_timestamp_normalized',
+          message: 'The completion time was over five minutes in the future and was normalized',
+        })
+      }
+
+      for (const incoming of request.cycleEvents) {
+        if (!await this.#activeRelease(client, incoming.releaseId)) {
+          rejectedRecords.push({
+            recordId: incoming.eventId, recordType: 'cycle', code: 'unsupported_release',
+            message: 'The family release is not active',
+          })
+          continue
+        }
+        const membership = incoming.kind === 'pack_bound'
+          ? await client.query(
+            `SELECT 1 FROM snapshot_family_pack_membership
+             WHERE snapshot_version=$1 AND family_id=$2 AND pack_id=$3 AND side=$4`,
+            [incoming.releaseId, incoming.familyId, incoming.packId, incoming.side],
+          )
+          : await client.query(
+            `SELECT 1 FROM snapshot_family_pack_membership
+             WHERE snapshot_version=$1 AND family_id=$2 AND side=$3 LIMIT 1`,
+            [incoming.releaseId, incoming.familyId, incoming.side],
+          )
+        if (membership.rowCount !== 1) {
+          rejectedRecords.push({
+            recordId: incoming.eventId, recordType: 'cycle', code: 'unknown_family_membership',
+            message: 'The coverage cycle does not belong to the referenced signed family release',
+          })
+          continue
+        }
+        const duplicate = await client.query<FamilyCycleRow>(
+          'SELECT * FROM family_cycle_events WHERE user_id=$1 AND event_id=$2',
+          [userId, incoming.eventId],
+        )
+        if (duplicate.rows[0]) {
+          if (canonicalCursor(familyCycleFromRow(duplicate.rows[0])) === canonicalCursor(incoming)) {
+            acceptedCycleEventIds.push(incoming.eventId)
+          } else {
+            rejectedRecords.push({
+              recordId: incoming.eventId, recordType: 'cycle', code: 'conflicting_event_id',
+              message: 'The immutable family cycle event ID has different content',
+            })
+          }
+          continue
+        }
+        if (incoming.kind === 'pack_bound') {
+          const generation = await client.query(
+            `SELECT 1 FROM family_cycle_events
+             WHERE user_id=$1 AND snapshot_version=$2 AND family_id=$3 AND side=$4
+               AND kind='cycle_started' AND generation_id=$5 AND generation_ordinal=$6`,
+            [userId, incoming.releaseId, incoming.familyId, incoming.side,
+              incoming.generationId, incoming.generationOrdinal],
+          )
+          if (generation.rowCount !== 1) {
+            rejectedRecords.push({
+              recordId: incoming.eventId, recordType: 'cycle', code: 'unknown_family_membership',
+              message: 'The pack binding has no matching coverage generation',
+            })
+            continue
+          }
+        }
+        const logical = incoming.kind === 'cycle_started'
+          ? await client.query(
+            `SELECT 1 FROM family_cycle_events
+             WHERE user_id=$1 AND snapshot_version=$2 AND family_id=$3 AND side=$4
+               AND kind='cycle_started' AND generation_ordinal=$5`,
+            [userId, incoming.releaseId, incoming.familyId, incoming.side, incoming.generationOrdinal],
+          )
+          : await client.query(
+            `SELECT 1 FROM family_cycle_events
+             WHERE user_id=$1 AND snapshot_version=$2 AND family_id=$3 AND side=$4
+               AND kind='pack_bound' AND generation_id=$5 AND pack_id=$6`,
+            [userId, incoming.releaseId, incoming.familyId, incoming.side, incoming.generationId, incoming.packId],
+          )
+        if (logical.rowCount === 1) {
+          rejectedRecords.push({
+            recordId: incoming.eventId, recordType: 'cycle', code: 'duplicate_logical_record',
+            message: 'This logical coverage-cycle record already exists',
+          })
+          continue
+        }
+        const occurredAt = new Date(incoming.occurredAt)
+        const future = occurredAt.getTime() > futureLimit
+        await client.query(
+          `INSERT INTO family_cycle_events
+             (user_id,event_id,device_id,snapshot_version,family_id,side,kind,generation_id,generation_ordinal,
+              pack_id,pack_coverage_cycle_id,occurred_at,normalized_occurred_at,received_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+          [userId, incoming.eventId, request.deviceId, incoming.releaseId, incoming.familyId, incoming.side,
+            incoming.kind, incoming.generationId, incoming.generationOrdinal,
+            incoming.kind === 'pack_bound' ? incoming.packId : null,
+            incoming.kind === 'pack_bound' ? incoming.packCoverageCycleId : null,
+            occurredAt, future ? now : occurredAt, now],
+        )
+        acceptedCycleEventIds.push(incoming.eventId)
+        if (future) rejectedRecords.push({
+          recordId: incoming.eventId, recordType: 'cycle', code: 'future_timestamp_normalized',
+          message: 'The cycle event time was over five minutes in the future and was normalized',
+        })
+      }
+
+      let cursor: VersionedFamilyTrainingCursorV1 | null = null
+      let cursorStatus: 'appended' | 'duplicate' | null = null
+      if (request.cursorMutation) {
+        const { mutationId, baseVersion, value } = request.cursorMutation
+        const packId = familyCursorPackId(value)
+        await this.#assertFamilyCursorMembership(client, value, packId)
+        const digest = cursorDigest(value)
+        const priorMutation = await client.query<FamilyCursorRow>(
+          'SELECT * FROM family_training_cursor_events WHERE user_id=$1 AND mutation_id=$2',
+          [userId, mutationId],
+        )
+        if (priorMutation.rows[0]) {
+          if (priorMutation.rows[0].cursor_sha256 !== digest) {
+            throw new ApiError(409, 'family_cursor_mutation_conflict', 'The immutable cursor mutation ID has different content')
+          }
+          cursor = versionedFamilyCursorFromRow(priorMutation.rows[0])
+          cursorStatus = 'duplicate'
+        } else {
+          const latestResult = await client.query<FamilyCursorRow>(
+            `SELECT * FROM family_training_cursor_events
+             WHERE user_id=$1 AND snapshot_version=$2 AND family_id=$3 AND side=$4 AND pack_id=$5
+             ORDER BY version DESC LIMIT 1`,
+            [userId, value.releaseId, value.familyId, value.side, packId],
+          )
+          const latestRow = latestResult.rows[0]
+          if (latestRow?.cursor_sha256 === digest) {
+            cursor = versionedFamilyCursorFromRow(latestRow)
+            cursorStatus = 'duplicate'
+          } else {
+            const currentVersion = latestRow?.version ?? 0
+            if (baseVersion !== currentVersion) {
+              throw new ApiError(409, 'family_cursor_version_conflict', 'Family training changed on another device; reload before saving')
+            }
+            if (latestRow) this.#assertCursorDoesNotLoseProgress(versionedFamilyCursorFromRow(latestRow).value, value)
+            const inserted = await client.query<FamilyCursorRow>(
+              `INSERT INTO family_training_cursor_events
+                 (user_id,mutation_id,device_id,snapshot_version,family_id,pack_id,side,coverage_cycle_id,
+                  version,cursor_sha256,cursor_document,received_at)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+               RETURNING mutation_id,device_id,snapshot_version,family_id,pack_id,side,coverage_cycle_id,
+                         version,cursor_sha256,cursor_document,sync_sequence::text`,
+              [userId, mutationId, request.deviceId, value.releaseId, value.familyId, packId, value.side,
+                value.coverageCycleId, currentVersion + 1, digest, value, now],
+            )
+            cursor = versionedFamilyCursorFromRow(inserted.rows[0]!)
+            cursorStatus = 'appended'
+          }
+        }
+      }
+
+      await client.query('COMMIT')
+      return {
+        acceptedCoverageEventIds,
+        acceptedCycleEventIds,
+        rejectedRecords,
+        cursor,
+        cursorStatus,
+        serverTime: now.toISOString(),
+      }
+    } catch (error) {
+      await client.query('ROLLBACK')
+      throw error
+    } finally {
+      client.release()
+    }
+  }
+
+  async pageFamilyCoverage(
+    userId: string,
+    query: { releaseId: string; familyId: string; cursor: bigint; limit: number },
+    now: Date,
+  ): Promise<FamilyCoveragePageV1> {
+    this.#assertFamilyPage(query.cursor, query.limit)
+    const client = await this.pool.connect()
+    try {
+      await client.query('BEGIN READ ONLY')
+      await this.#setUser(client, userId)
+      const result = await client.query<FamilyCoverageRow>(
+        `SELECT event_id,snapshot_version,family_id,pack_id,path_id,coverage_cycle_id,
+                completed_at,normalized_completed_at,received_at,sync_sequence::text
+         FROM family_coverage_events
+         WHERE user_id=$1 AND snapshot_version=$2 AND family_id=$3 AND sync_sequence>$4
+         ORDER BY sync_sequence,event_id LIMIT $5`,
+        [userId, query.releaseId, query.familyId, query.cursor.toString(), query.limit + 1],
+      )
+      const hasMore = result.rows.length > query.limit
+      const rows = result.rows.slice(0, query.limit)
+      await client.query('COMMIT')
+      return {
+        records: rows.map((row) => ({ event: familyCoverageFromRow(row), syncSequence: row.sync_sequence })),
+        nextCursor: rows.at(-1)?.sync_sequence ?? query.cursor.toString(),
+        hasMore,
+        serverTime: now.toISOString(),
+      }
+    } catch (error) {
+      await client.query('ROLLBACK')
+      throw error
+    } finally {
+      client.release()
+    }
+  }
+
+  async pageFamilyCycles(
+    userId: string,
+    query: { releaseId: string; familyId: string; side: 'white' | 'black'; cursor: bigint; limit: number },
+    now: Date,
+  ): Promise<FamilyCyclePageV1> {
+    this.#assertFamilyPage(query.cursor, query.limit)
+    const client = await this.pool.connect()
+    try {
+      await client.query('BEGIN READ ONLY')
+      await this.#setUser(client, userId)
+      const result = await client.query<FamilyCycleRow>(
+        `SELECT event_id,snapshot_version,family_id,side,kind,generation_id,generation_ordinal,
+                pack_id,pack_coverage_cycle_id,occurred_at,normalized_occurred_at,received_at,sync_sequence::text
+         FROM family_cycle_events
+         WHERE user_id=$1 AND snapshot_version=$2 AND family_id=$3 AND side=$4 AND sync_sequence>$5
+         ORDER BY sync_sequence,event_id LIMIT $6`,
+        [userId, query.releaseId, query.familyId, query.side, query.cursor.toString(), query.limit + 1],
+      )
+      const hasMore = result.rows.length > query.limit
+      const rows = result.rows.slice(0, query.limit)
+      await client.query('COMMIT')
+      return {
+        records: rows.map((row) => ({ event: familyCycleFromRow(row), syncSequence: row.sync_sequence })),
+        nextCursor: rows.at(-1)?.sync_sequence ?? query.cursor.toString(),
+        hasMore,
+        serverTime: now.toISOString(),
+      }
+    } catch (error) {
+      await client.query('ROLLBACK')
+      throw error
+    } finally {
+      client.release()
+    }
+  }
+
+  async loadFamilyCursor(userId: string, query: FamilyCursorQuery, now: Date): Promise<FamilyCursorResponseV1> {
+    const client = await this.pool.connect()
+    try {
+      await client.query('BEGIN READ ONLY')
+      await this.#setUser(client, userId)
+      const result = await client.query<FamilyCursorRow>(
+        `SELECT mutation_id,device_id,snapshot_version,family_id,pack_id,side,coverage_cycle_id,
+                version,cursor_sha256,cursor_document,sync_sequence::text
+         FROM family_training_cursor_events
+         WHERE user_id=$1 AND snapshot_version=$2 AND family_id=$3 AND side=$4 AND pack_id=$5
+           AND ($6::text IS NULL OR coverage_cycle_id=$6)
+         ORDER BY version DESC LIMIT 1`,
+        [userId, query.releaseId, query.familyId, query.side, query.packId, query.coverageCycleId ?? null],
+      )
+      await client.query('COMMIT')
+      return { cursor: result.rows[0] ? versionedFamilyCursorFromRow(result.rows[0]) : null, serverTime: now.toISOString() }
+    } catch (error) {
+      await client.query('ROLLBACK')
+      throw error
+    } finally {
+      client.release()
+    }
+  }
+
   async exportAccount(userId: string, now: Date): Promise<unknown> {
     const client = await this.pool.connect()
     try {
@@ -456,6 +880,7 @@ export class PostgresSyncStore implements SyncStore {
       const [
         events, cards, settings, imports, repertoires, revisions, shares, puzzles,
         puzzleAttempts, connections, lichessSyncJobs, lichessImportedGames, personalOpeningEdges,
+        familyCoverageEvents, familyCycleEvents, familyTrainingCursors,
       ] = await Promise.all([
         client.query<EventRow>('SELECT * FROM review_events WHERE user_id = $1 ORDER BY sync_sequence', [userId]),
         client.query<CardRow>('SELECT * FROM card_states WHERE user_id = $1 ORDER BY card_id', [userId]),
@@ -506,10 +931,25 @@ export class PostgresSyncStore implements SyncStore {
                   first_seen_at,last_seen_at
            FROM personal_opening_edge_aggregates WHERE user_id=$1 ORDER BY opening_eco,trained_side,edge_key`, [userId],
         ),
+        client.query<FamilyCoverageRow>(
+          `SELECT event_id,device_id,snapshot_version,family_id,pack_id,path_id,coverage_cycle_id,
+                  completed_at,normalized_completed_at,received_at,sync_sequence::text
+           FROM family_coverage_events WHERE user_id=$1 ORDER BY sync_sequence`, [userId],
+        ),
+        client.query<FamilyCycleRow>(
+          `SELECT event_id,device_id,snapshot_version,family_id,side,kind,generation_id,generation_ordinal,
+                  pack_id,pack_coverage_cycle_id,occurred_at,normalized_occurred_at,received_at,sync_sequence::text
+           FROM family_cycle_events WHERE user_id=$1 ORDER BY sync_sequence`, [userId],
+        ),
+        client.query<FamilyCursorRow>(
+          `SELECT mutation_id,device_id,snapshot_version,family_id,pack_id,side,coverage_cycle_id,
+                  version,cursor_sha256,cursor_document,sync_sequence::text
+           FROM family_training_cursor_events WHERE user_id=$1 ORDER BY sync_sequence`, [userId],
+        ),
       ])
       await client.query('COMMIT')
       return {
-        schema: 'linerecall-account-export-v4',
+        schema: 'linerecall-account-export-v5',
         exportedAt: now.toISOString(),
         settings,
         reviewEvents: events.rows.map(eventFromRow).map(({ syncSequence, ...event }) => ({ ...event, syncSequence: syncSequence.toString() })),
@@ -577,6 +1017,19 @@ export class PostgresSyncStore implements SyncStore {
           wins: row.wins, draws: row.draws, losses: row.losses,
           firstSeenAt: row.first_seen_at.toISOString(), lastSeenAt: row.last_seen_at.toISOString(),
         })),
+        familyCoverageEvents: familyCoverageEvents.rows.map((row) => ({
+          ...familyCoverageFromRow(row), deviceId: row.device_id,
+          normalizedCompletedAt: row.normalized_completed_at.toISOString(),
+          receivedAt: row.received_at.toISOString(), syncSequence: row.sync_sequence,
+        })),
+        familyCycleEvents: familyCycleEvents.rows.map((row) => ({
+          ...familyCycleFromRow(row), deviceId: row.device_id,
+          normalizedOccurredAt: row.normalized_occurred_at.toISOString(),
+          receivedAt: row.received_at.toISOString(), syncSequence: row.sync_sequence,
+        })),
+        familyTrainingCursors: familyTrainingCursors.rows.map((row) => ({
+          ...versionedFamilyCursorFromRow(row), deviceId: row.device_id,
+        })),
         excludedSecrets: ['provider access tokens', 'provider account identifiers', 'share token hashes', 'object-store keys'],
       }
     } catch (error) {
@@ -603,6 +1056,7 @@ export class PostgresSyncStore implements SyncStore {
       for (const table of [
         'share_links', 'repertoire_revisions', 'repertoires', 'repertoire_import_jobs',
         'lichess_sync_jobs', 'lichess_imported_game_ids', 'personal_opening_edge_aggregates', 'external_connections',
+        'family_training_cursor_events', 'family_cycle_events', 'family_coverage_events',
         'puzzle_attempt_events', 'puzzle_progress', 'card_states', 'review_events', 'user_settings',
       ]) await client.query(`DELETE FROM ${table} WHERE user_id = $1`, [userId])
       await client.query('COMMIT')
@@ -611,6 +1065,79 @@ export class PostgresSyncStore implements SyncStore {
       throw error
     } finally {
       client.release()
+    }
+  }
+
+  async #activeRelease(client: PoolClient, releaseId: string): Promise<boolean> {
+    const result = await client.query(
+      'SELECT 1 FROM supported_snapshot_versions WHERE version=$1 AND retired_at IS NULL',
+      [releaseId],
+    )
+    return result.rowCount === 1
+  }
+
+  async #assertFamilyCursorMembership(
+    client: PoolClient,
+    cursor: FamilyTrainingCursorV1,
+    packId: string,
+  ): Promise<void> {
+    if (!await this.#activeRelease(client, cursor.releaseId)) {
+      throw new ApiError(422, 'unknown_family_membership', 'The family cursor references an inactive release')
+    }
+    const pack = await client.query(
+      `SELECT 1 FROM snapshot_family_pack_membership
+       WHERE snapshot_version=$1 AND family_id=$2 AND pack_id=$3 AND side=$4`,
+      [cursor.releaseId, cursor.familyId, packId, cursor.side],
+    )
+    if (pack.rowCount !== 1) {
+      throw new ApiError(422, 'unknown_family_membership', 'The cursor pack does not belong to the signed family release')
+    }
+    const paths = [...cursor.completedPathIds, ...cursor.pendingPathIds]
+    if (paths.length > 0) {
+      const memberships = await client.query<{ path_id: string }>(
+        `SELECT path_id FROM snapshot_family_path_membership
+         WHERE snapshot_version=$1 AND family_id=$2 AND pack_id=$3 AND path_id=ANY($4::text[])`,
+        [cursor.releaseId, cursor.familyId, packId, paths],
+      )
+      if (new Set(memberships.rows.map(({ path_id }) => path_id)).size !== paths.length) {
+        throw new ApiError(422, 'unknown_family_membership', 'The cursor contains a path outside the signed family release')
+      }
+    }
+    if (cursor.authoritativeDueCardIds.length > 0) {
+      const memberships = await client.query<{ card_id: string }>(
+        `SELECT DISTINCT card_id FROM snapshot_card_membership
+         WHERE snapshot_version=$1 AND pack_id=$2 AND card_id=ANY($3::text[])`,
+        [cursor.releaseId, packId, cursor.authoritativeDueCardIds],
+      )
+      if (new Set(memberships.rows.map(({ card_id }) => card_id)).size !== cursor.authoritativeDueCardIds.length) {
+        throw new ApiError(422, 'unknown_family_membership', 'The cursor contains a card outside the signed family release')
+      }
+    }
+  }
+
+  #assertCursorDoesNotLoseProgress(previous: FamilyTrainingCursorV1, next: FamilyTrainingCursorV1): void {
+    const previousOrdinal = Number(previous.coverageCycleId.split('::coverage:')[1])
+    const nextOrdinal = Number(next.coverageCycleId.split('::coverage:')[1])
+    if (nextOrdinal < previousOrdinal) {
+      throw new ApiError(409, 'family_cursor_regression', 'A family cursor cannot move to an earlier coverage cycle')
+    }
+    if (nextOrdinal > previousOrdinal) return
+    const sameSet = (left: readonly string[], right: readonly string[]): boolean =>
+      left.length === right.length && left.every((value) => right.includes(value))
+    if (!sameSet(previous.authoritativeDueCardIds, next.authoritativeDueCardIds)) {
+      throw new ApiError(409, 'family_cursor_regression', 'The authoritative due-card set cannot change within a coverage cycle')
+    }
+    if (previous.reviewedCardIds.some((id) => !next.reviewedCardIds.includes(id)) ||
+      previous.completedPathIds.some((id) => !next.completedPathIds.includes(id)) ||
+      previous.pendingPathIds.some((id) => !next.pendingPathIds.includes(id) && !next.completedPathIds.includes(id)) ||
+      next.batchIndex < previous.batchIndex) {
+      throw new ApiError(409, 'family_cursor_regression', 'The family cursor would discard reviewed cards or unfinished paths')
+    }
+  }
+
+  #assertFamilyPage(cursor: bigint, limit: number): void {
+    if (cursor < 0n || !Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
+      throw new ApiError(422, 'invalid_cursor', 'Family training pagination is invalid')
     }
   }
 

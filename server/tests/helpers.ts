@@ -12,6 +12,14 @@ export const AUDITED_MEMORY_OPTIONS = {
     ],
   },
   puzzleMembership: { 'release-2026q2': ['puzzle-001'] },
+  familyMembership: {
+    'release-2026q2': [{
+      familyId: 'king-pawn',
+      packId: 'pack-e4',
+      side: 'white' as const,
+      pathIds: ['path_0123456789abcdef0123', 'path_fedcba9876543210fedc'],
+    }],
+  },
 } as const
 
 export function reviewEvent(overrides: Partial<ReviewEventV1> = {}): ReviewEventV1 {

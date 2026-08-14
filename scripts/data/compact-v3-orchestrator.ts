@@ -15,6 +15,7 @@ import {
 import { hostname } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import {
+  COMPACT_ADAPTER_STATE_SCHEMA_VERSION,
   COMPACT_EVIDENCE_SCHEMA_VERSION,
   COMPACT_STORAGE_MODEL,
   CompactArchiveCheckpointSchema,
@@ -26,6 +27,7 @@ import {
   type CompactPreflightPlan,
   type CompactRemoteInputAcquisition,
 } from './compact-v3-contracts.ts'
+import { validateCompactBenchmarkApproval } from './compact-v3-benchmark-approval.ts'
 import {
   assessCompactV3Storage,
   receiptDigest,
@@ -198,6 +200,7 @@ export async function syncCompactParentDirectory(path: string): Promise<boolean>
 export interface ValidatedRegularFile {
   handle: FileHandle
   size: number
+  identity: string
   changed(): Promise<boolean>
   close(): Promise<void>
 }
@@ -265,6 +268,7 @@ export async function openValidatedRegularFile(
     return {
       handle,
       size,
+      identity: `${opened.dev.toString()}:${opened.ino.toString()}`,
       async changed() {
         const current = await handle.stat({ bigint: true })
         return current.size !== opened.size ||
@@ -330,7 +334,7 @@ export async function readBoundedRegularFile(
   )
 }
 
-async function digestRegularFile(
+export async function digestRegularFile(
   path: string,
   options: {
     label: string
@@ -338,8 +342,8 @@ async function digestRegularFile(
     minimumBytes?: number
     exactBytes?: number
   },
-): Promise<{ size: number; sha256: string }> {
-  return withValidatedRegularFile(path, options, async ({ handle, size, changed }) => {
+): Promise<{ size: number; sha256: string; identity: string }> {
+  return withValidatedRegularFile(path, options, async ({ handle, size, identity, changed }) => {
     const hash = createHash('sha256')
     let bytes = 0
     const stream = handle.createReadStream({ autoClose: false, start: 0 })
@@ -352,7 +356,7 @@ async function digestRegularFile(
       hash.update(chunk)
     }
     if (bytes !== size || await changed()) throw new Error(`${options.label} changed while being hashed`)
-    return { size, sha256: hash.digest('hex') }
+    return { size, sha256: hash.digest('hex'), identity }
   })
 }
 
@@ -421,6 +425,7 @@ export interface CompactCandidatePassSummary extends CompactPassAccounting {
 
 export interface CompactExactPassSummary extends CompactPassAccounting {
   pass: 'exact'
+  priorExactStateSha256: string | null
   finalCandidateSetReceiptSha256: string
   completeBaselineObservationsRetained: number
   adaptiveCandidateObservationsRetained: number
@@ -436,6 +441,7 @@ export interface CompactToolchainReceipt {
   chessJs: string
   zstd: string
   sourceSnapshotSha256: string
+  adapterStateSchemaVersion: typeof COMPACT_ADAPTER_STATE_SCHEMA_VERSION
 }
 
 export interface CompactArtifactSink {
@@ -472,6 +478,8 @@ export interface CompactArchivePassOptions {
   remoteInputAcquisition?: () => CompactRemoteInputAcquisition
   process: CompactPassProcessor
   toolchain: CompactToolchainReceipt
+  /** Exact content-addressed approval bytes; mandatory before evidence input opens. */
+  benchmarkApprovalBytes?: Uint8Array
   /** Benchmark mode is isolated and always emits provisional, release-ineligible receipts. */
   executionPurpose?: CompactExecutionPurpose
   outputExtension?: string
@@ -985,6 +993,7 @@ function receiptFor(
   return CompactPassReceiptSchema.parse({
     ...common,
     pass: summary.pass,
+    priorExactStateSha256: summary.priorExactStateSha256,
     finalCandidateSetReceiptSha256: summary.finalCandidateSetReceiptSha256,
     completeBaselineObservationsRetained: summary.completeBaselineObservationsRetained,
     adaptiveCandidateObservationsRetained: summary.adaptiveCandidateObservationsRetained,
@@ -1017,16 +1026,32 @@ export async function runCompactArchivePass(
   if (!SHA256.test(options.toolchain.sourceSnapshotSha256)) {
     throw new Error('Toolchain source snapshot must be a SHA-256 digest')
   }
-  const availableBytes = await (options.availableBytes ?? (() => availableBytesAt(options.workDirectory)))()
-  ensureSafeInteger(availableBytes, 'Available storage')
-  const retainedBytesAlreadyPresent = await compactRetainedStateBytes(options.workDirectory)
-  const preflight = assessCompactV3Storage(plan, availableBytes, {
-    executionPurpose,
-    retainedBytesAlreadyPresent,
-  })
-  if (!preflight.safeToStart) throw new Error(`Compact v3 preflight blocked: ${preflight.reasonCode}`)
-
+  if (options.toolchain.adapterStateSchemaVersion !== COMPACT_ADAPTER_STATE_SCHEMA_VERSION) {
+    throw new Error('Toolchain adapter-state schema version is stale')
+  }
+  if (executionPurpose === 'evidence-candidate') {
+    validateCompactBenchmarkApproval(
+      plan,
+      options.benchmarkApprovalBytes,
+      options.toolchain.sourceSnapshotSha256,
+    )
+  }
   const now = options.now ?? (() => new Date())
+  const releaseCorpusLock = await acquireLock(
+    join(options.workDirectory, 'v3', 'orchestration-corpus.lock'),
+    'compact-v3-corpus',
+    isoTime(now),
+  )
+  try {
+    const availableBytes = await (options.availableBytes ?? (() => availableBytesAt(options.workDirectory)))()
+    ensureSafeInteger(availableBytes, 'Available storage')
+    const retainedBytesAlreadyPresent = await compactRetainedStateBytes(options.workDirectory)
+    const preflight = assessCompactV3Storage(plan, availableBytes, {
+      executionPurpose,
+      retainedBytesAlreadyPresent,
+    })
+    if (!preflight.safeToStart) throw new Error(`Compact v3 preflight blocked: ${preflight.reasonCode}`)
+
   const basePaths = pathsFor(options.workDirectory, plan.archive.archiveId, options.pass)
   const stagingNonce = randomBytes(16).toString('hex')
   const paths: ManagedPaths = {
@@ -1035,7 +1060,7 @@ export async function runCompactArchivePass(
     receiptPartial: `${basePaths.receiptPartial}.${stagingNonce}`,
   }
   await mkdir(paths.archiveDirectory, { recursive: true })
-  const releaseLock = await acquireLock(paths.lock, plan.archive.archiveId, isoTime(now))
+  const releaseArchiveLock = await acquireLock(paths.lock, plan.archive.archiveId, isoTime(now))
   let sink: BoundedArtifactFileSink | null = null
   try {
     const loaded = await readVerifiedCompactCheckpoint(options.workDirectory, plan)
@@ -1132,7 +1157,8 @@ export async function runCompactArchivePass(
     ].reduce((sum, bytes) => sum + bytes, 0)
     if (
       !Number.isSafeInteger(permanentDelta) ||
-      retainedBytesAlreadyPresent + permanentDelta > plan.bounds.retainedCorpusMaxBytes
+      Math.max(0, (await compactRetainedStateBytes(options.workDirectory)) - stagedOutput.bytes) + permanentDelta >
+        plan.bounds.retainedCorpusMaxBytes
     ) {
       throw new Error('Compact promotion would exceed the corpus-wide retained-state hard cap')
     }
@@ -1153,6 +1179,9 @@ export async function runCompactArchivePass(
     await rm(paths.receiptPartial, { force: true })
     throw error
   } finally {
-    await releaseLock()
+    await releaseArchiveLock()
+  }
+  } finally {
+    await releaseCorpusLock()
   }
 }

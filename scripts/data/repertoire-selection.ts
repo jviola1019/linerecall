@@ -6,6 +6,9 @@ import {
   MINIMUM_EXPLORATORY_SAMPLE,
   stableCardId,
 } from './evidence-contracts.ts'
+import { trinomialScoreProfileLikelihoodInterval } from '../../src/domain/statistics.ts'
+
+export { trinomialScoreProfileLikelihoodInterval } from '../../src/domain/statistics.ts'
 
 export type EvidenceMoveClassification =
   | 'book'
@@ -51,7 +54,12 @@ export interface RankedLearnerMove {
 }
 
 export interface OpponentSelection {
+  /** Coverage-priority branches shown first in a session. */
   selected: EmpiricalMoveEvidence[]
+  /** Audited branches outside the initial coverage target; never discarded. */
+  extended: EmpiricalMoveEvidence[]
+  /** Every sampled branch eligible for audited practice. */
+  allEligible: EmpiricalMoveEvidence[]
   coveredN: number
   coverage: number
   residualN: number
@@ -89,23 +97,14 @@ function moveInput(uci: string): { from: Square; to: Square; promotion?: PieceSy
     : { from: uci.slice(0, 2) as Square, to: uci.slice(2, 4) as Square }
 }
 
-function scoreFor(move: EmpiricalMoveEvidence): number {
-  const wins = move.trainedSide === 'white' ? move.whiteWins : move.blackWins
-  return move.n === 0 ? 0 : (wins + move.draws * 0.5) / move.n
-}
-
-/** Approximate 95% Wilson interval for descriptive score, with draws as half-points. */
 export function scoreConfidenceInterval(move: EmpiricalMoveEvidence): { low: number; high: number } | null {
-  if (!Number.isSafeInteger(move.n) || move.n <= 0) return null
-  const p = scoreFor(move)
-  const z = 1.959963984540054
-  const denominator = 1 + (z * z) / move.n
-  const center = (p + (z * z) / (2 * move.n)) / denominator
-  const margin = z * Math.sqrt((p * (1 - p) + (z * z) / (4 * move.n)) / move.n) / denominator
-  return {
-    low: Math.max(0, center - margin),
-    high: Math.min(1, center + margin),
+  if (!Number.isSafeInteger(move.n) || move.n < 0) throw new Error('Move sample size must be a nonnegative safe integer')
+  if (move.whiteWins + move.draws + move.blackWins !== move.n) {
+    throw new Error('Move White/Draw/Black counts must sum to N')
   }
+  const wins = move.trainedSide === 'white' ? move.whiteWins : move.blackWins
+  const losses = move.trainedSide === 'white' ? move.blackWins : move.whiteWins
+  return trinomialScoreProfileLikelihoodInterval(wins, move.draws, losses)
 }
 
 export function classifyEvidenceMove(move: EmpiricalMoveEvidence): EvidenceMoveClassification {
@@ -133,11 +132,30 @@ function trainingValue(move: EmpiricalMoveEvidence): TrainingValueSummary {
   }
 }
 
+function validateRankableMoveInputs(moves: readonly EmpiricalMoveEvidence[]): void {
+  const seenUci = new Set<string>()
+  for (const move of moves) {
+    moveInput(move.uci)
+    if (seenUci.has(move.uci)) throw new Error(`Duplicate empirical move UCI ${move.uci}`)
+    seenUci.add(move.uci)
+    if (!Number.isSafeInteger(move.n) || move.n < 0) throw new Error(`Move ${move.uci} N must be a nonnegative safe integer`)
+    if (!Number.isSafeInteger(move.parentN) || move.parentN < 0) throw new Error(`Move ${move.uci} parent N must be a nonnegative safe integer`)
+    if (move.n > move.parentN) throw new Error(`Move ${move.uci} N cannot exceed its parent reach N`)
+    if (!Number.isFinite(move.coverageAdjustedDepth)
+      || !Number.isSafeInteger(move.coverageAdjustedDepth)
+      || move.coverageAdjustedDepth < 0
+      || move.coverageAdjustedDepth > 100) {
+      throw new Error(`Move ${move.uci} coverage-adjusted depth must be an integer from 0 through 100`)
+    }
+  }
+}
+
 /**
  * Deterministic, transparent learner-edge rank. Historical score is the last
  * substantive tie-break and remains descriptive rather than causal.
  */
 export function rankLearnerMoves(moves: readonly EmpiricalMoveEvidence[]): RankedLearnerMove[] {
+  validateRankableMoveInputs(moves)
   return moves
     .filter((move) =>
       move.n >= MINIMUM_DRILL_SAMPLE &&
@@ -162,27 +180,32 @@ export function selectOpponentCoverage(
   moves: readonly EmpiricalMoveEvidence[],
   parentN: number,
   targetCoverage = 0.85,
-  maximumBranches = 4,
 ): OpponentSelection {
   if (!Number.isSafeInteger(parentN) || parentN < 0) throw new Error('parentN must be a nonnegative integer')
   if (!(targetCoverage > 0 && targetCoverage <= 1)) throw new Error('targetCoverage must be in (0, 1]')
-  if (!Number.isSafeInteger(maximumBranches) || maximumBranches < 1 || maximumBranches > 4) {
-    throw new Error('maximumBranches must be an integer from 1 through 4')
-  }
+  validateRankableMoveInputs(moves)
   const eligible = moves
     .filter((move) => move.n >= MINIMUM_DRILL_SAMPLE)
     .sort((left, right) => right.n - left.n || left.uci.localeCompare(right.uci, 'en'))
+  const eligibleN = eligible.reduce((sum, move) => sum + move.n, 0)
+  if (!Number.isSafeInteger(eligibleN) || eligibleN > parentN) {
+    throw new Error('Eligible opponent move counts cannot exceed the parent reach count')
+  }
   const selected: EmpiricalMoveEvidence[] = []
   let coveredN = 0
   for (const move of eligible) {
-    if (selected.length >= maximumBranches || (parentN > 0 && coveredN / parentN >= targetCoverage)) break
+    if (parentN > 0 && coveredN / parentN >= targetCoverage) break
     selected.push(move)
     coveredN += move.n
   }
+  const selectedIds = new Set(selected.map(({ uci }) => uci))
+  const extended = eligible.filter(({ uci }) => !selectedIds.has(uci))
   const boundedCovered = Math.min(parentN, coveredN)
   const coverage = parentN === 0 ? 0 : boundedCovered / parentN
   return {
     selected,
+    extended,
+    allEligible: eligible,
     coveredN: boundedCovered,
     coverage,
     residualN: Math.max(0, parentN - boundedCovered),

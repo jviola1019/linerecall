@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
+  type MouseEvent,
   type PointerEvent,
 } from 'react'
 import type { Square } from 'chess.js'
@@ -153,7 +154,7 @@ export function BoardAnnotationOverlay({
   const [cursorSquare, setCursorSquare] = useState<Square>('e4')
   const [startSquare, setStartSquare] = useState<Square | null>(null)
   const [localAnnouncement, setLocalAnnouncement] = useState('')
-  const pointerStartRef = useRef<Square | null>(null)
+  const pointerStartRef = useRef<{ square: Square; button: number } | null>(null)
 
   const announce = (message: string): void => {
     if (onAnnouncement) onAnnouncement(message)
@@ -186,27 +187,32 @@ export function BoardAnnotationOverlay({
     )
 
   const handlePointerDown = (event: PointerEvent<HTMLDivElement>): void => {
-    if (!editing || event.button !== 0) return
+    if (!editing || (event.button !== 0 && event.button !== 2)) return
     const square = squareAtEvent(event)
     if (!square) return
-    pointerStartRef.current = square
+    pointerStartRef.current = { square, button: event.button }
     setCursorSquare(square)
     event.currentTarget.setPointerCapture(event.pointerId)
   }
 
   const handlePointerUp = (event: PointerEvent<HTMLDivElement>): void => {
-    const from = pointerStartRef.current
+    const start = pointerStartRef.current
     pointerStartRef.current = null
-    if (!editing || !from) return
+    if (!editing || !start) return
     const to = squareAtEvent(event)
     if (!to) {
       announce('Annotation cancelled outside the board.')
       return
     }
     setCursorSquare(to)
-    apply(from === to
-      ? { kind: 'circle', square: from, tone }
-      : { kind: 'arrow', from, to, tone })
+    apply(start.square === to
+      ? { kind: 'circle', square: start.square, tone }
+      : { kind: 'arrow', from: start.square, to, tone })
+  }
+
+  const handleContextMenu = (event: MouseEvent<HTMLDivElement>): void => {
+    if (!editing) return
+    event.preventDefault()
   }
 
   const completeKeyboardAnnotation = (): void => {
@@ -285,10 +291,12 @@ export function BoardAnnotationOverlay({
       onPointerDown={editing ? handlePointerDown : undefined}
       onPointerUp={editing ? handlePointerUp : undefined}
       onPointerCancel={() => { pointerStartRef.current = null }}
+      onContextMenu={editing ? handleContextMenu : undefined}
     >
       <span id={instructionsId} className="sr-only">
-        Annotation mode. Use arrow keys to choose a square. Press Enter or Space on a start and destination square to draw an arrow.
-        Press the same square twice, or press C, to toggle a circle. Delete removes the most recent annotation. Escape cancels or exits.
+        Annotation mode. Use arrow keys to choose a square. Press Enter or Space for the start and destination.
+        Choose the same square twice, or press C, for a circle. Delete removes the latest mark; Escape cancels or exits.
+        Pointer users may drag with either button for an arrow or click once for a circle.
       </span>
       <AnnotationSvg
         annotations={[...systemAnnotations, ...annotations]}

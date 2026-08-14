@@ -51,4 +51,26 @@ describe('PostgreSQL isolation migrations', () => {
     assert.match(sql, /solved \+ abandoned = attempts/)
     assert.match(sql, /elapsed_ms BETWEEN 0 AND 86400000/)
   })
+
+  it('forces tenant isolation and immutable membership on the family journal', async () => {
+    const sql = await readFile(new URL('../migrations/006_family_training_journal.sql', import.meta.url), 'utf8')
+    for (const table of [
+      'snapshot_family_pack_membership', 'snapshot_family_path_membership',
+      'family_coverage_events', 'family_cycle_events', 'family_training_cursor_events',
+    ]) assert.match(sql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`))
+    for (const table of ['family_coverage_events', 'family_cycle_events', 'family_training_cursor_events']) {
+      assert.match(sql, new RegExp(`'${table}'`))
+    }
+    assert.match(sql, /ENABLE ROW LEVEL SECURITY/)
+    assert.match(sql, /FORCE ROW LEVEL SECURITY/)
+    assert.match(sql, /current_setting\(''app\.user_id'', true\)/)
+    assert.match(sql, /UNIQUE \(user_id, snapshot_version, family_id, pack_id, path_id, coverage_cycle_id\)/)
+    assert.match(sql, /UNIQUE \(user_id, snapshot_version, family_id, side, pack_id, version\)/)
+    assert.match(sql, /REFERENCES snapshot_family_path_membership/)
+    const roles = await readFile(new URL('../migrations/002_roles.example.sql', import.meta.url), 'utf8')
+    for (const table of [
+      'family_coverage_events', 'family_cycle_events', 'family_training_cursor_events',
+      'snapshot_family_pack_membership', 'snapshot_family_path_membership',
+    ]) assert.match(roles, new RegExp(table))
+  })
 })

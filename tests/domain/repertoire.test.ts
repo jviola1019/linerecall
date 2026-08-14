@@ -5,6 +5,8 @@ import {
   CORE_MINIMUM_LEARNER_DECISIONS,
   CoverageCycleStateSchema,
   EligibleSourceEdgeInventoryV1Schema,
+  EvidenceCohortResultSchema,
+  FamilyGraphProvenanceDocumentV1Schema,
   REPERTOIRE_SCHEMA_VERSION,
   RepertoireBranchEvidenceSchema,
   RepertoireEdgeSchema,
@@ -31,6 +33,11 @@ import {
   type RepertoirePath,
 } from '../../src/domain/repertoire.ts'
 import { normalizedEpd } from '../../src/domain/input-validation.ts'
+import {
+  SYNTHETIC_GRAPH_PROVENANCE_REF,
+  createSyntheticFamilyGraphProvenanceDocument,
+  createSyntheticRepertoireEvidence,
+} from '../fixtures/synthetic-repertoire-evidence.ts'
 
 interface SyntheticLine {
   moves: string[]
@@ -111,17 +118,8 @@ async function syntheticGraph(options: {
       role: 'book',
       eligibleForDrill: true,
       acceptedBookTransposition: false,
-      evidence: {
-        cohorts: [{ cohortId: 'cohort_regression-fixture-only', n: 500 }],
-        conditionalUsage: 0.5,
-        engine: {
-          status: 'verified',
-          centipawnLoss: 0,
-          forcedMateAgainstLearner: false,
-          quarantineReasons: [],
-        },
-      },
-      provenanceRef: 'synthetic-regression-fixture-only',
+      evidence: createSyntheticRepertoireEvidence({ uci: edge.uci, trainedSide: options.side }),
+      provenanceRef: SYNTHETIC_GRAPH_PROVENANCE_REF,
     }
   })
   const nodes: RepertoireNode[] = [...epds].map((epd) => {
@@ -135,6 +133,7 @@ async function syntheticGraph(options: {
       learnerTurn,
       outgoingEdgeIds: [...(outgoing.get(id) ?? [])].sort(),
       ...(learnerTurn ? { cardId: stableRepertoireCardId(options.id, id) } : {}),
+      provenanceRef: SYNTHETIC_GRAPH_PROVENANCE_REF,
     }
   })
   const paths: RepertoirePath[] = []
@@ -154,6 +153,7 @@ async function syntheticGraph(options: {
       terminalStatus: raw.terminalStatus ?? 'evidence_terminal',
       familyTags: [raw.family],
       conditionalUsage: raw.usage,
+      provenanceRef: SYNTHETIC_GRAPH_PROVENANCE_REF,
     })
   }
 
@@ -189,7 +189,7 @@ async function syntheticGraph(options: {
       nodeIds: nodes.map(({ id }) => id),
       edgeIds: edges.map(({ id }) => id),
       pathIds: paths.map(({ id }) => id),
-      provenanceRef: 'synthetic-regression-fixture-only',
+      provenanceRef: SYNTHETIC_GRAPH_PROVENANCE_REF,
     },
     nodes,
     edges,
@@ -316,9 +316,9 @@ test('public schemas fail closed at evidence, identity, path, and cycle-state bo
   for (const candidate of invalidEvidence) assert.equal(RepertoireBranchEvidenceSchema.safeParse(candidate).success, false)
 
   const baseEdge = graph.edges[0]!
-  const lowSample = { ...evidence, cohorts: [{ ...evidence.cohorts[0]!, n: 99 }] }
-  const exploratorySample = { ...evidence, cohorts: [{ ...evidence.cohorts[0]!, n: 499 }] }
-  const unsound = { ...evidence, engine: { ...evidence.engine, centipawnLoss: 51 } }
+  const lowSample = createSyntheticRepertoireEvidence({ uci: baseEdge.uci, trainedSide: 'white', moveN: 99, reachN: 396 })
+  const exploratorySample = createSyntheticRepertoireEvidence({ uci: baseEdge.uci, trainedSide: 'white', moveN: 499, reachN: 1_996 })
+  const unsound = createSyntheticRepertoireEvidence({ uci: baseEdge.uci, trainedSide: 'white', centipawnLoss: 51 })
   const edgeCases: Array<[unknown, boolean]> = [
     [{ ...baseEdge, role: 'playable' }, false],
     [{ ...baseEdge, evidence: lowSample }, false],
@@ -335,10 +335,13 @@ test('public schemas fail closed at evidence, identity, path, and cycle-state bo
     [{
       ...baseEdge,
       eligibleForDrill: false,
-      evidence: {
-        ...evidence,
-        engine: { ...evidence.engine, status: 'quarantined', centipawnLoss: 100, quarantineReasons: ['fixture'] },
-      },
+      evidence: createSyntheticRepertoireEvidence({
+        uci: baseEdge.uci,
+        trainedSide: 'white',
+        status: 'quarantined',
+        centipawnLoss: 100,
+        quarantineReasons: ['fixture'],
+      }),
     }, true],
   ]
   for (const [candidate, success] of edgeCases) assert.equal(RepertoireEdgeSchema.safeParse(candidate).success, success)
@@ -374,6 +377,133 @@ test('public schemas fail closed at evidence, identity, path, and cycle-state bo
     schemaVersion: 1, soundnessTier: 1, empiricalDepth: 100,
     coverage: 0.85, usage: 500, scoreLowerBound: 0.5,
   }).success, true)
+})
+
+test('cohort evidence preserves source dimensions and rejects inconsistent arithmetic without pooling', async () => {
+  const evidence = createSyntheticRepertoireEvidence({
+    uci: 'e2e4',
+    trainedSide: 'white',
+    moveN: 500,
+    reachN: 1_000,
+  })
+  assert.deepEqual(evidence.cohorts.map(({ source }) => source), ['broadcast', 'lichess-standard'])
+  assert.equal(evidence.cohorts[0]!.canonicalBands.length, 5)
+  assert.equal(evidence.cohorts[1]!.lichessBeginnerBands.length, 3)
+
+  const broadcast = evidence.cohorts[0]!
+  const invalidCohorts = [
+    { ...broadcast, ratingSystem: 'lichess-glicko2' },
+    { ...broadcast, aggregate: { ...broadcast.aggregate, whiteWins: broadcast.aggregate.whiteWins + 1 } },
+    { ...broadcast, aggregate: { ...broadcast.aggregate, wins: broadcast.aggregate.wins + 1 } },
+    { ...broadcast, aggregate: { ...broadcast.aggregate, score: 0.123 } },
+    { ...broadcast, aggregate: { ...broadcast.aggregate, conditionalUsage: 0.75 } },
+    { ...broadcast, aggregate: { ...broadcast.aggregate, scoreInterval: { ...broadcast.aggregate.scoreInterval!, low: 0 } } },
+    { ...broadcast, canonicalBands: broadcast.canonicalBands.map((band, index) => index === 1 ? { ...band, band: '<1800' as const } : band) },
+    { ...broadcast, lichessBeginnerBands: evidence.cohorts[1]!.lichessBeginnerBands },
+  ]
+  for (const candidate of invalidCohorts) {
+    assert.equal(EvidenceCohortResultSchema.safeParse(candidate).success, false)
+  }
+  assert.equal(RepertoireBranchEvidenceSchema.safeParse({
+    ...evidence,
+    selectionCohortId: evidence.cohorts[1]!.cohortId,
+    conditionalUsage: evidence.cohorts[1]!.aggregate.conditionalUsage + 0.1,
+  }).success, false)
+})
+
+test('engine checks derive trained-side loss and mate state and graph validation legally replays PVs', async () => {
+  const evidence = createSyntheticRepertoireEvidence({ uci: 'e2e4', trainedSide: 'white' })
+  const inconsistent = structuredClone(evidence)
+  inconsistent.engine.check!.moveEvaluation.value -= 20
+  assert.equal(RepertoireBranchEvidenceSchema.safeParse(inconsistent).success, false)
+
+  const losingMate = structuredClone(evidence)
+  losingMate.engine.status = 'quarantined'
+  losingMate.engine.centipawnLoss = null
+  losingMate.engine.forcedMateAgainstLearner = true
+  losingMate.engine.quarantineReasons = ['forced losing mate in synthetic fixture']
+  losingMate.engine.check!.moveEvaluation = {
+    kind: 'mate', value: -3, unit: 'signed-plies-to-mate', perspective: 'trained-side',
+  }
+  losingMate.engine.check!.centipawnLoss = null
+  losingMate.engine.check!.forcedMateAgainstLearner = true
+  assert.equal(RepertoireBranchEvidenceSchema.safeParse(losingMate).success, true)
+
+  const graph = await syntheticGraph({
+    id: 'illegal_pv_guard', side: 'white', root: new Chess(), rootPly: 0,
+    lines: [{ moves: ['e2e4'], family: 'PV guard', usage: 1 }],
+  })
+  graph.edges[0]!.evidence.engine.check!.bestPrincipalVariationUci.push('a1a8')
+  await assert.rejects(() => validateRepertoireGraphDocument(graph), /principal variation is illegal/u)
+})
+
+test('engine evidence rejects every inconsistent summary and handles mate evaluations without centipawn claims', () => {
+  const verified = createSyntheticRepertoireEvidence({ uci: 'e2e4', trainedSide: 'white' })
+  const invalid = [
+    { ...verified, engine: { ...verified.engine, check: null } },
+    { ...verified, engine: { ...verified.engine, check: null, centipawnLoss: 1 } },
+    { ...verified, engine: { ...verified.engine, check: null, forcedMateAgainstLearner: true } },
+    { ...verified, engine: { ...verified.engine, check: { ...verified.engine.check!, centipawnLoss: 1 } } },
+    { ...verified, engine: { ...verified.engine, check: { ...verified.engine.check!, forcedMateAgainstLearner: true } } },
+    { ...verified, engine: { ...verified.engine, status: 'quarantined' as const, quarantineReasons: [] } },
+    { ...verified, engine: { ...verified.engine, quarantineReasons: ['verified records cannot carry quarantine prose'] } },
+    {
+      ...verified,
+      engine: {
+        ...verified.engine,
+        check: {
+          ...verified.engine.check!,
+          bestEvaluation: { kind: 'centipawn' as const, value: 20, unit: 'centipawn' as const, perspective: 'trained-side' as const },
+          moveEvaluation: { kind: 'centipawn' as const, value: 30, unit: 'centipawn' as const, perspective: 'trained-side' as const },
+          centipawnLoss: 0,
+        },
+      },
+    },
+  ]
+  for (const candidate of invalid) {
+    assert.equal(RepertoireBranchEvidenceSchema.safeParse(candidate).success, false)
+  }
+
+  const winningMate = structuredClone(verified)
+  winningMate.engine.check!.bestEvaluation = {
+    kind: 'mate', value: 3, unit: 'signed-plies-to-mate', perspective: 'trained-side',
+  }
+  winningMate.engine.check!.moveEvaluation = {
+    kind: 'mate', value: 5, unit: 'signed-plies-to-mate', perspective: 'trained-side',
+  }
+  winningMate.engine.check!.centipawnLoss = 0
+  assert.equal(RepertoireBranchEvidenceSchema.safeParse(winningMate).success, true)
+
+  const incomparable = structuredClone(verified)
+  incomparable.engine.centipawnLoss = null
+  incomparable.engine.check!.bestEvaluation = {
+    kind: 'mate', value: 3, unit: 'signed-plies-to-mate', perspective: 'trained-side',
+  }
+  incomparable.engine.check!.centipawnLoss = null
+  assert.equal(RepertoireBranchEvidenceSchema.safeParse(incomparable).success, true)
+})
+
+test('family provenance binds graph references to immutable taxonomy, corpus, engine, and Scid receipts', () => {
+  const document = createSyntheticFamilyGraphProvenanceDocument({
+    releaseId: 'synthetic-provenance-release',
+    familyId: 'synthetic-family',
+  })
+  assert.equal(FamilyGraphProvenanceDocumentV1Schema.parse(document).bindings.length, 1)
+  const wrongKind = structuredClone(document)
+  wrongKind.bindings[0]!.engineReceiptId = wrongKind.bindings[0]!.taxonomyReceiptId
+  assert.equal(FamilyGraphProvenanceDocumentV1Schema.safeParse(wrongKind).success, false)
+  const unsafeAlias = structuredClone(document)
+  unsafeAlias.receipts[0]!.path = 'receipts//taxonomy.json'
+  assert.equal(FamilyGraphProvenanceDocumentV1Schema.safeParse(unsafeAlias).success, false)
+  const orphan = structuredClone(document)
+  orphan.bindings[0]!.corpusReceiptIds = [orphan.bindings[0]!.corpusReceiptIds[0]!]
+  assert.equal(FamilyGraphProvenanceDocumentV1Schema.safeParse(orphan).success, false)
+  const wrongCorpusKind = structuredClone(document)
+  wrongCorpusKind.bindings[0]!.corpusReceiptIds = [wrongCorpusKind.bindings[0]!.taxonomyReceiptId]
+  assert.equal(FamilyGraphProvenanceDocumentV1Schema.safeParse(wrongCorpusKind).success, false)
+  const mismatchedReceiptId = structuredClone(document)
+  mismatchedReceiptId.receipts[0]!.id = 'receipt_0000000000000000'
+  assert.equal(FamilyGraphProvenanceDocumentV1Schema.safeParse(mismatchedReceiptId).success, false)
 })
 
 test('all eligible branches remain selectable across a starvation-free coverage cycle', async () => {
@@ -476,16 +606,20 @@ test('terminal status distinguishes evidence exhaustion, sparse continuation, an
   sparse.nodes.push({
     schemaVersion: 1, id: targetId, epd: targetEpd, learnerTurn: true,
     outgoingEdgeIds: [], cardId: stableRepertoireCardId(sparse.pack.id, targetId),
+    provenanceRef: SYNTHETIC_GRAPH_PROVENANCE_REF,
   })
   sparse.edges.push({
     schemaVersion: 1, id: edgeId, fromNodeId: terminal.id, toNodeId: targetId,
     uci: 'e7e5', san: move.san, role: 'exploratory', eligibleForDrill: false,
     acceptedBookTransposition: false,
-    evidence: {
-      cohorts: [{ cohortId: 'cohort_regression-fixture-only', n: 499 }], conditionalUsage: 0.25,
-      engine: { status: 'unverified', centipawnLoss: null, forcedMateAgainstLearner: false, quarantineReasons: [] },
-    },
-    provenanceRef: 'synthetic-regression-fixture-only',
+    evidence: createSyntheticRepertoireEvidence({
+      uci: 'e7e5',
+      trainedSide: 'white',
+      moveN: 499,
+      reachN: 1_996,
+      status: 'unverified',
+    }),
+    provenanceRef: SYNTHETIC_GRAPH_PROVENANCE_REF,
   })
   sparse.pack.nodeIds.push(targetId)
   sparse.pack.edgeIds.push(edgeId)
@@ -634,11 +768,12 @@ test('semantic graph audit reports corrupt relationships without trusting stable
   unreachable.nodes.push(
     {
       schemaVersion: 1, id: isolatedSourceId, epd: isolatedSourceEpd, learnerTurn: false,
-      outgoingEdgeIds: [isolatedEdgeId],
+      outgoingEdgeIds: [isolatedEdgeId], provenanceRef: SYNTHETIC_GRAPH_PROVENANCE_REF,
     },
     {
       schemaVersion: 1, id: isolatedTargetId, epd: isolatedTargetEpd, learnerTurn: true,
       outgoingEdgeIds: [], cardId: stableRepertoireCardId(unreachable.pack.id, isolatedTargetId),
+      provenanceRef: SYNTHETIC_GRAPH_PROVENANCE_REF,
     },
   )
   unreachable.edges.push({
@@ -648,6 +783,7 @@ test('semantic graph audit reports corrupt relationships without trusting stable
     toNodeId: isolatedTargetId,
     uci: 'e7e5',
     san: isolatedMove.san,
+    evidence: createSyntheticRepertoireEvidence({ uci: 'e7e5', trainedSide: 'white' }),
   })
   unreachable.pack.nodeIds.push(isolatedSourceId, isolatedTargetId)
   unreachable.pack.edgeIds.push(isolatedEdgeId)

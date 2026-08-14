@@ -18,9 +18,9 @@ Public source: <https://github.com/jviola1019/linerecall>
 
 This repository is under active release-gated development. Any self-contained
 HTML under `build/candidate` is a **review candidate**, not a production
-release. Exact-byte audit evidence applies only when its recorded SHA-256
-matches that candidate; the retained 2026-07-20 evidence does not approve the
-newer unified-family source or later working builds.
+release. Exact-byte audit evidence applies only when its recorded SHA-256 and
+source snapshot match that candidate. Older generated reports do not approve
+the current unified-family source or a later working build.
 `dist/linerecall.html` does not exist because the complete schema-v3 corpus,
 engine, puzzle, staging, assistive-technology, localization, security-review,
 and legal gates have not all passed.
@@ -44,9 +44,15 @@ Current engineering foundations include bounded two-pass schema-v3 ingestion,
 content-addressed archive receipts, exact-position repertoire graphs, stable
 position/card identities, starvation-free branch rotation, CSP-safe spatial
 piece transitions, canonical family contracts, hash-addressable product routes,
-a separate tactical-puzzle resource, and a durable Lichess sync worker. These
-foundations are covered with fixture and adversarial tests. They do not stand
-in for the unfinished full-corpus and manual campaigns.
+a separate tactical-puzzle resource, a versioned family-training cloud journal,
+a complete portable progress bundle for snapshot-capable repositories, and a
+durable Lichess sync worker. The hosted family adapter retains failed writes in
+memory for retry; the API and PostgreSQL adapter persist append-only completion
+and cycle events plus versioned cursors. These are source boundaries, not live
+provider evidence. The repository contains fixture and adversarial suites for
+these boundaries, but this document does not claim a current test pass.
+Fixtures do not stand in for the unfinished full-corpus, engine, Scid, puzzle,
+staging, or manual campaigns.
 
 The generated review-family catalog currently assigns all 3,790 taxonomy rows
 to exactly 149 primary families. This is a taxonomy/navigation measurement,
@@ -64,6 +70,17 @@ Due cards survive bounded batches, and a failed completion write blocks
 advancement until an accessible retry succeeds. The embedded v2 review data
 deliberately supplies no production family graph, so the interface shows no
 fabricated Caro–Kann or other real-corpus path totals.
+
+The Progress screen's versioned portable JSON contains opening progress,
+tactical-puzzle progress, and the complete family journal when the active
+repository supports atomic snapshot/replace. Session memory supports that
+contract. The hosted cloud adapter instead synchronizes the journal through
+the authenticated family-training API and includes server-held family records
+in account export; it does not silently substitute browser storage. Durable
+named-branch reload is reconstructed from exact generation-bound pack cursors
+and manifest memberships; ambiguous saved scopes fail closed instead of being
+guessed. A supported Claude Artifact family-journal adapter and real provider
+staging remain unfinished.
 
 ## Product routes
 
@@ -137,18 +154,45 @@ currently exits nonzero because
 `data/generated/v3/family-promotion-index.json` does not exist. No family,
 pack, path, eligible-edge, or tactical count is production-promoted.
 
+The v3 promotion chain is deliberately receipt-bound. It requires complete
+exact broadcast and Q2 states, a compact family handoff, empirical learner-edge
+inventories, a real Stockfish 18 campaign, rebuilt family graphs, a Scid
+cross-check, promoted puzzle proofs/shards, a family promotion index, a
+production app manifest, and a production-readiness receipt. Builders and
+validators for that chain are present; none of those production handoff files
+exists in the current workspace. Synthetic Caro–Kann, Sicilian, Ruy Lopez, and
+puzzle fixtures exercise contracts only and supply no real sample, path,
+engine, Scid, or puzzle total.
+
 Development uses `npm run dev`. The downloaded application uses no runtime
 CDN, remote font, analytics, telemetry, opening API, API key, Stockfish binary,
 or Scid file.
+
+## Review evidence workflow
+
+Committed records under `audit/templates/evidence/` are immutable `not_run`
+templates. They contain required environments and checks, not reviewer results
+or release approval. `npm run audit:init-evidence` copies missing templates to
+the ignored `audit/evidence/` workspace without replacing existing review
+records. Qualified reviewers work only in that ignored directory against one
+exact hardened candidate and, where required, one exact source snapshot.
+
+After the referenced reports are final,
+`npm run release:evidence-receipts -- --write` stores content-addressed copies
+and binds each completed record to the candidate digest. The command refuses
+to refresh completed evidence for other
+bytes. Generated reports remain under ignored paths and are never committed as
+manual or legal claims. The tracked templates must remain `not_run`.
 
 ## Data boundaries
 
 - Opening taxonomy: pinned `lichess-org/chess-openings` commit
   `17ee660257de02870636f36248e919f2e01d8e85`, CC0-1.0, 3,790 rows and all
   500 ECO codes.
-- Historical broadcast evidence: 78 official Lichess broadcast archives
-  through June 2026, CC BY-SA 4.0; 1,146,297 records seen, 800,176 accepted,
-  346,121 rejected, and zero duplicates in the recorded run.
+- Historical schema-v2 broadcast diagnostic: 78 official Lichess broadcast
+  archives through June 2026, CC BY-SA 4.0; 1,146,297 records seen, 800,176
+  accepted, 346,121 rejected, and zero duplicates in that recorded run. These
+  are not compact-v3 totals and cannot be used for production promotion.
 - Required club cohort: all April–June 2026 Lichess Standard-rated archives,
   CC0, with 267,333,507 published games and 87,256,474,116 compressed bytes.
   This corpus has not been fully processed.
