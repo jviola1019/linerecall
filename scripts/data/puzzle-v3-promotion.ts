@@ -2,8 +2,10 @@ import { z } from 'zod'
 import {
   FamilyIdSchema,
   FamilyReleaseIdSchema,
-  TacticalPuzzleShardV1Schema,
-  type TacticalPuzzleShardV1,
+  TacticalPuzzleShardPayloadV1Schema,
+  TacticalPuzzlePromotionBindingV1Schema,
+  type TacticalPuzzleShardPayloadV1,
+  type TacticalPuzzlePromotionBindingV1,
 } from '../../src/domain/opening-family.ts'
 import { PuzzleRecordV1Schema, type PuzzleRecord } from '../../src/domain/tactical-puzzles.ts'
 import { PuzzleEngineProofSchema } from './puzzle-contracts.ts'
@@ -150,9 +152,9 @@ export function validatePromotedPuzzleShardAgainstInventory(options: {
   shardSha256: string
   shard: unknown
   inventory: unknown
-}): TacticalPuzzleShardV1 {
+}): TacticalPuzzleShardPayloadV1 {
   const inventory = validatePuzzlePromotionProofInventory(options.inventory)
-  const shard = TacticalPuzzleShardV1Schema.parse(options.shard)
+  const shard = TacticalPuzzleShardPayloadV1Schema.parse(options.shard)
   const proofShard = inventory.shards.find(({ shardSha256 }) => shardSha256 === options.shardSha256)
   if (!proofShard) throw new Error('Promoted puzzle shard has no content-addressed proof inventory')
   if (shard.releaseId !== inventory.releaseId || !sameStringSet(shard.familyIds, proofShard.familyIds)) {
@@ -223,5 +225,69 @@ export function derivePuzzlePromotionReceipt(options: {
     evidenceBindingSha256: inventory.evidenceBindingSha256,
     engineCampaignSha256: inventory.evidence.engineCampaign.campaignSha256,
     proofInventory: options.proofInventory,
+  })
+}
+
+/**
+ * Project the complete offline proof inventory into the small authenticated
+ * statement needed by the browser. Exact shard SHA-256 membership is the
+ * transitive link to every source, association, legality, and engine proof.
+ */
+export function deriveTacticalPuzzlePromotionBinding(options: {
+  familyPromotionIndexSha256: string
+  promotionReceiptSha256: string
+  proofInventorySha256: string
+  receipt: unknown
+  inventory: unknown
+  promotedShards: Array<{ sha256: string; shard: unknown }>
+}): TacticalPuzzlePromotionBindingV1 {
+  const familyPromotionIndexSha256 = Sha256Schema.parse(options.familyPromotionIndexSha256)
+  const promotionReceiptSha256 = Sha256Schema.parse(options.promotionReceiptSha256)
+  const proofInventorySha256 = Sha256Schema.parse(options.proofInventorySha256)
+  const receipt = PuzzlePromotionReceiptV1Schema.parse(options.receipt)
+  if (receipt.proofInventory.sha256 !== proofInventorySha256) {
+    throw new Error('Puzzle promotion binding uses another proof inventory receipt')
+  }
+  const inventory = validatePuzzlePromotionProofInventory(options.inventory)
+  if (
+    inventory.releaseId !== receipt.releaseId
+    || inventory.evidenceBindingSha256 !== receipt.evidenceBindingSha256
+    || inventory.evidence.engineCampaign.campaignSha256 !== receipt.engineCampaignSha256
+    || inventory.evidence.puzzleSource.sha256 !== receipt.sourceSha256
+  ) throw new Error('Puzzle promotion binding evidence differs from its promotion receipt')
+
+  const shards = options.promotedShards.map(({ sha256, shard: shardInput }) => {
+    const parsedSha256 = Sha256Schema.parse(sha256)
+    const shard = validatePromotedPuzzleShardAgainstInventory({
+      shardSha256: parsedSha256,
+      shard: shardInput,
+      inventory,
+    })
+    const expectedId = `blob_${parsedSha256.slice(0, 16)}`
+    return {
+      schemaVersion: 1 as const,
+      shardId: expectedId,
+      shardSha256: parsedSha256,
+      familyIds: shard.familyIds,
+      puzzleCount: shard.puzzles.length,
+    }
+  })
+  if (shards.reduce((sum, shard) => sum + shard.puzzleCount, 0) !== receipt.promotedPuzzleCount) {
+    throw new Error('Puzzle promotion binding shard total differs from its promotion receipt')
+  }
+  return TacticalPuzzlePromotionBindingV1Schema.parse({
+    schemaVersion: 1,
+    releaseId: receipt.releaseId,
+    status: 'pass',
+    gate: 'lichess-puzzle-promotion',
+    familyPromotionIndexSha256,
+    promotionReceiptSha256,
+    proofInventorySha256,
+    sourceSha256: receipt.sourceSha256,
+    evidenceBindingSha256: receipt.evidenceBindingSha256,
+    engineCampaignSha256: receipt.engineCampaignSha256,
+    promotedAt: receipt.completedAt,
+    promotedPuzzleCount: receipt.promotedPuzzleCount,
+    shards,
   })
 }

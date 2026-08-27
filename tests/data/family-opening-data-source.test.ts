@@ -13,13 +13,20 @@ import {
   ContentAddressedRefV1Schema,
   OpeningFamilyCatalogV1Schema,
   OpeningFamilyManifestV1Schema,
-  TacticalPuzzleShardV1Schema,
+  TacticalPuzzlePromotionBindingV1Schema,
+  TacticalPuzzleShardPayloadV1Schema,
   type ContentAddressedRefV1,
   type OpeningFamilyCatalogV1,
   type OpeningFamilyManifestV1,
-  type TacticalPuzzleShardV1,
+  type TacticalPuzzlePromotionBindingV1,
+  type TacticalPuzzleShardPayloadV1,
 } from '../../src/domain/opening-family.ts'
 import type { RepertoireGraphDocument } from '../../src/domain/repertoire.ts'
+import {
+  isTrustedTacticalPuzzleResource,
+  loadTrustedTacticalPuzzleResource,
+  validateTacticalPuzzleResource,
+} from '../../src/data/tactical-puzzle-resource.ts'
 import { createSyntheticTacticalPuzzle } from '../fixtures/synthetic-tactical-puzzle.ts'
 import { createSyntheticTranspositionGraph } from '../fixtures/synthetic-repertoire-graph.ts'
 
@@ -74,7 +81,8 @@ interface FamilyFixture {
   catalogRef: ContentAddressedRefV1
   manifest: OpeningFamilyManifestV1
   graph: RepertoireGraphDocument
-  puzzleShard: TacticalPuzzleShardV1
+  puzzleShard: TacticalPuzzleShardPayloadV1
+  puzzlePromotion: TacticalPuzzlePromotionBindingV1
   resources: Map<string, Uint8Array>
 }
 
@@ -83,15 +91,35 @@ async function familyFixture(): Promise<FamilyFixture> {
   graph.releaseId = RELEASE_ID
   const graphBlob = encode(graph, 'graphs/fixture-opening.json.gz')
 
-  const puzzleShard = TacticalPuzzleShardV1Schema.parse({
+  const puzzleShard = TacticalPuzzleShardPayloadV1Schema.parse({
     schemaVersion: 1,
-    id: `blob_${'f'.repeat(16)}`,
     releaseId: RELEASE_ID,
     generatedAt: GENERATED_AT,
     familyIds: [FAMILY_ID],
     puzzles: [createSyntheticTacticalPuzzle()],
   })
   const puzzleBlob = encode(puzzleShard, 'puzzles/fixture-opening.json.gz')
+  const puzzlePromotion = TacticalPuzzlePromotionBindingV1Schema.parse({
+    schemaVersion: 1,
+    releaseId: RELEASE_ID,
+    status: 'pass',
+    gate: 'lichess-puzzle-promotion',
+    familyPromotionIndexSha256: '1'.repeat(64),
+    promotionReceiptSha256: '2'.repeat(64),
+    proofInventorySha256: '3'.repeat(64),
+    sourceSha256: puzzleShard.puzzles[0]!.source.sha256,
+    evidenceBindingSha256: '4'.repeat(64),
+    engineCampaignSha256: '5'.repeat(64),
+    promotedAt: GENERATED_AT,
+    promotedPuzzleCount: puzzleShard.puzzles.length,
+    shards: [{
+      schemaVersion: 1,
+      shardId: puzzleBlob.ref.id,
+      shardSha256: puzzleBlob.ref.sha256,
+      familyIds: [FAMILY_ID],
+      puzzleCount: puzzleShard.puzzles.length,
+    }],
+  })
   const provenanceBlob = encode(
     { schemaVersion: 1, releaseId: RELEASE_ID, source: 'synthetic-test-only' },
     'provenance/fixture-opening.json.gz',
@@ -156,6 +184,7 @@ async function familyFixture(): Promise<FamilyFixture> {
     manifest,
     graph,
     puzzleShard,
+    puzzlePromotion,
     resources: new Map([
       [catalogBlob.ref.path, catalogBlob.bytes],
       [manifestBlob.ref.path, manifestBlob.bytes],
@@ -179,11 +208,13 @@ function source(
   reader: BoundedFamilyResourceReader = new FixtureReader(fixture.resources),
   catalogRef = fixture.catalogRef,
   expectedReleaseId = RELEASE_ID,
+  puzzlePromotion: unknown = fixture.puzzlePromotion,
 ): ContentAddressedFamilyOpeningDataSource {
   return new ContentAddressedFamilyOpeningDataSource(unusedBaseSource(), {
     trustedCatalogRef: catalogRef,
     expectedReleaseId,
     reader,
+    trustedPuzzlePromotion: puzzlePromotion,
   })
 }
 
@@ -200,10 +231,22 @@ test('loads, binds, freezes, and caches each validated family resource once per 
   const manifest = await data.loadFamilyManifest(FAMILY_ID)
   const graph = await data.loadRepertoirePack(manifest.packRefs[0]!)
   const puzzles = await data.loadPuzzleShard(manifest.puzzleShardRefs[0]!)
+  const trusted = await loadTrustedTacticalPuzzleResource({
+    dataSource: data,
+    familyId: FAMILY_ID,
+    verifiedManifest: manifest,
+  })
 
   assert.equal(catalog.releaseId, RELEASE_ID)
   assert.equal(graph.pack.id, fixture.graph.pack.id)
   assert.equal(puzzles.puzzles[0]?.puzzleId, fixture.puzzleShard.puzzles[0]?.puzzleId)
+  assert.equal(puzzles.id, manifest.puzzleShardRefs[0]!.id)
+  assert.equal(isTrustedTacticalPuzzleResource(trusted), true)
+  assert.equal(validateTacticalPuzzleResource(trusted), trusted)
+  assert.equal(trusted.status, 'ready')
+  if (trusted.status === 'ready') {
+    assert.equal(trusted.release.collectionIdentity.includes(manifest.puzzleShardRefs[0]!.id), true)
+  }
   assert.equal(Object.isFrozen(catalog), true)
   assert.equal(Object.isFrozen(manifest.packRefs[0]), true)
   assert.equal(Object.isFrozen(graph.nodes[0]), true)
@@ -262,6 +305,59 @@ test('uses fatal gzip, UTF-8, JSON, and Zod validation', async () => {
     const reader = new FixtureReader(new Map([[ref.path, bytes]]))
     await assert.rejects(source(fixture, reader, ref).loadFamilyCatalog(), isCode('corrupt'))
   }
+})
+
+test('rejects a serialized puzzle shard that attempts to supply a mismatched internal content ID', async () => {
+  const fixture = await familyFixture()
+  const legacyPuzzleBlob = encode(
+    { id: `blob_${'f'.repeat(16)}`, ...fixture.puzzleShard },
+    'puzzles/legacy-self-identified.json.gz',
+  )
+  const manifestValue = structuredClone(fixture.manifest)
+  manifestValue.puzzleShardRefs = [legacyPuzzleBlob.ref]
+  const manifestBlob = encode(manifestValue, 'families/legacy-puzzle-manifest.json.gz')
+  const catalogValue = structuredClone(fixture.catalog)
+  catalogValue.families[0]!.manifestRef = manifestBlob.ref
+  const catalogBlob = encode(catalogValue, 'catalog/legacy-puzzle-catalog.json.gz')
+  const resources = new Map(fixture.resources)
+  resources.set(legacyPuzzleBlob.ref.path, legacyPuzzleBlob.bytes)
+  resources.set(manifestBlob.ref.path, manifestBlob.bytes)
+  resources.set(catalogBlob.ref.path, catalogBlob.bytes)
+  const data = source(fixture, new FixtureReader(resources), catalogBlob.ref)
+  const manifest = await data.loadFamilyManifest(FAMILY_ID)
+  await assert.rejects(data.loadPuzzleShard(manifest.puzzleShardRefs[0]!), isCode('corrupt'))
+})
+
+test('trusted puzzle factory rejects copied manifests and promotion membership or source drift', async () => {
+  const fixture = await familyFixture()
+  const ordinary = source(fixture)
+  const manifest = await ordinary.loadFamilyManifest(FAMILY_ID)
+  await assert.rejects(loadTrustedTacticalPuzzleResource({
+    dataSource: ordinary,
+    familyId: FAMILY_ID,
+    verifiedManifest: structuredClone(manifest),
+  }), /exact verified family manifest instance/u)
+
+  const wrongMembership = structuredClone(fixture.puzzlePromotion)
+  wrongMembership.shards[0]!.shardSha256 = '6'.repeat(64)
+  wrongMembership.shards[0]!.shardId = `blob_${'6'.repeat(16)}`
+  const membershipSource = source(fixture, undefined, undefined, undefined, wrongMembership)
+  const membershipManifest = await membershipSource.loadFamilyManifest(FAMILY_ID)
+  await assert.rejects(loadTrustedTacticalPuzzleResource({
+    dataSource: membershipSource,
+    familyId: FAMILY_ID,
+    verifiedManifest: membershipManifest,
+  }), /different shard inventories|absent from the authenticated promotion binding/u)
+
+  const wrongSource = structuredClone(fixture.puzzlePromotion)
+  wrongSource.sourceSha256 = '7'.repeat(64)
+  const sourceDrift = source(fixture, undefined, undefined, undefined, wrongSource)
+  const sourceManifest = await sourceDrift.loadFamilyManifest(FAMILY_ID)
+  await assert.rejects(loadTrustedTacticalPuzzleResource({
+    dataSource: sourceDrift,
+    familyId: FAMILY_ID,
+    verifiedManifest: sourceManifest,
+  }), /another approved-source digest/u)
 })
 
 test('fails closed for unsafe identifiers, unapproved paths, and cross-release or resource identity drift', async () => {

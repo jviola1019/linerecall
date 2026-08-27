@@ -1,6 +1,6 @@
 import { Chess, type PieceSymbol, type Square } from 'chess.js'
 import { z } from 'zod'
-import { defaultReviewGrade, type ReviewGrade } from './progress.ts'
+import { defaultReviewGrade, ReviewGradeSchema, type ReviewGrade } from './progress.ts'
 import {
   FamilyTrainingCursorV1Schema,
   type FamilyTrainingCursorV1,
@@ -122,6 +122,13 @@ export interface GraphTrainingSessionState {
   pendingPathIds: string[]
   completedPathIds: string[]
   traversedEdgeIds: string[]
+  /**
+   * Edges actually played since the most recent explicit path boundary.
+   * Unlike `traversedEdgeIds`, this is reset when the next path starts. It
+   * lets the UI report recall for the active audited path without crediting a
+   * destination path's unplayed prefix after a transposition.
+   */
+  activePathRunEdgeIds: string[]
   dueCardIds: string[]
   repeatCardIds: string[]
   phase: GraphTrainingPhase
@@ -173,6 +180,15 @@ export interface GraphTrainingCoverageProgress {
   completedPathIds: string[]
   remainingPathIds: string[]
   families: GraphTrainingFamilyProgress[]
+}
+
+export interface GraphTrainingPathLearningProgress {
+  pathId: string
+  completedLearnerDecisions: number
+  totalLearnerDecisions: number
+  currentLearnerDecision: number | null
+  terminalPly: number
+  terminalStatus: RepertoirePath['terminalStatus']
 }
 
 export const GraphTrainingPathCompletionV1Schema = z.object({
@@ -801,6 +817,7 @@ export function createGraphTrainingSession(options: {
     pendingPathIds: selection.includedPathIds.filter((pathId) => pathId !== activePathId),
     completedPathIds: [],
     traversedEdgeIds: [],
+    activePathRunEdgeIds: [],
     dueCardIds: [...selection.dueCardIds],
     repeatCardIds: [],
     phase: phaseForNode(options.adapter, activePath, 0),
@@ -840,6 +857,43 @@ export function graphTrainingFen(adapter: GraphTrainingAdapter, state: GraphTrai
   return `${node.epd} 0 1`
 }
 
+/**
+ * Reports recall progress for the exact audited path instead of treating every
+ * board ply as a learner move. Credit requires an edge from the active path to
+ * have actually been played during this path run. A later transposition can
+ * therefore continue on another audited path without claiming that path's
+ * divergent prefix was recalled.
+ */
+export function graphTrainingPathLearningProgress(
+  adapter: GraphTrainingAdapter,
+  state: GraphTrainingSessionState,
+): GraphTrainingPathLearningProgress {
+  const { path, node } = assertCurrentState(adapter, state)
+  const learnerDecisionIndexes = path.nodeIds
+    .slice(0, -1)
+    .flatMap((nodeId, index) => adapter.nodesById.get(nodeId)?.learnerTurn ? [index] : [])
+  if (learnerDecisionIndexes.length !== path.learnerDecisionCount) {
+    throw new Error('Audited path learner-decision count is inconsistent with its position graph')
+  }
+  const playedThisRun = new Set(state.activePathRunEdgeIds)
+  const completedLearnerDecisions = learnerDecisionIndexes.filter((index) => {
+    const edgeId = path.edgeIds[index]
+    return edgeId !== undefined && playedThisRun.has(edgeId)
+  }).length
+  const currentLearnerDecision = node.learnerTurn
+    && state.activePathNodeIndex < path.edgeIds.length
+    ? completedLearnerDecisions + 1
+    : null
+  return {
+    pathId: path.id,
+    completedLearnerDecisions,
+    totalLearnerDecisions: path.learnerDecisionCount,
+    currentLearnerDecision,
+    terminalPly: path.terminalPly,
+    terminalStatus: path.terminalStatus,
+  }
+}
+
 export function expectedGraphTrainingMoves(adapter: GraphTrainingAdapter, state: GraphTrainingSessionState): RepertoireEdge[] {
   const { node } = assertCurrentState(adapter, state)
   if (!node.learnerTurn) return []
@@ -857,6 +911,29 @@ export function markGraphTrainingHint(adapter: GraphTrainingAdapter, state: Grap
   assertCurrentState(adapter, state)
   if (state.phase !== 'awaiting_learner_move' && state.phase !== 'correction_required') return state
   return { ...state, usedHint: true }
+}
+
+/** Confirm or change an inferred review before Manual Pacing persists it. */
+export function overrideLastGraphTrainingReviewGrade(
+  state: GraphTrainingSessionState,
+  input: ReviewGrade,
+): GraphTrainingSessionState {
+  const grade = ReviewGradeSchema.parse(input)
+  const review = state.lastFeedback?.review
+  if (!review || !state.lastFeedback?.accepted) {
+    throw new Error('The graph session has no accepted review to grade')
+  }
+  const repeatCardIds = grade === 'again'
+    ? appendUniqueAtEnd(state.repeatCardIds, review.cardId)
+    : state.repeatCardIds.filter((cardId) => cardId !== review.cardId)
+  return {
+    ...state,
+    repeatCardIds,
+    lastFeedback: {
+      ...state.lastFeedback,
+      review: { ...review, grade },
+    },
+  }
 }
 
 function moveParts(uci: string): { from: Square; to: Square; promotion?: PieceSymbol } {
@@ -982,6 +1059,7 @@ function settleAfterTransition(options: {
       ? [...options.state.completedPathIds, options.path.id]
       : options.state.completedPathIds,
     traversedEdgeIds: [...options.state.traversedEdgeIds, options.edge.id],
+    activePathRunEdgeIds: [...options.state.activePathRunEdgeIds, options.edge.id],
     dueCardIds: options.dueCardIds ?? options.state.dueCardIds,
     repeatCardIds: options.repeatCardIds ?? options.state.repeatCardIds,
     phase,
@@ -1190,6 +1268,7 @@ export function continueGraphTrainingSession(
     incorrectAttempts: 0,
     lastFeedback: null,
     lastTransition: null,
+    activePathRunEdgeIds: [],
     pathBoundaryCount: state.pathBoundaryCount + 1,
   }
 }
@@ -1229,6 +1308,7 @@ export function skipCurrentGraphTrainingPath(
     incorrectAttempts: 0,
     lastFeedback: null,
     lastTransition: null,
+    activePathRunEdgeIds: [],
     pathBoundaryCount: state.pathBoundaryCount + 1,
   }
 }

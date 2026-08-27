@@ -5,9 +5,16 @@ import '../../src/app/styles.css'
 import './review-harness.css'
 import { EmbeddedSnapshotPayloadSchema } from '../../src/data/embedded-contract.ts'
 import { EmbeddedOpeningDataSource } from '../../src/data/embedded-opening-data-source.ts'
-import { TacticalPuzzleResourceSchema } from '../../src/data/tactical-puzzle-resource.ts'
+import {
+  TacticalPuzzleResourceSchema,
+  isTrustedTacticalPuzzleResource,
+  type TacticalPuzzleResource,
+} from '../../src/data/tactical-puzzle-resource.ts'
 import snapshotJson from '../../src/generated/embedded-snapshot.json' with { type: 'json' }
-import { createSyntheticTacticalPuzzle } from '../fixtures/synthetic-tactical-puzzle.ts'
+import {
+  createSyntheticPuzzleResource,
+  createSyntheticTacticalPuzzle,
+} from '../fixtures/synthetic-tactical-puzzle.ts'
 import { BoardMotionReview } from './BoardMotionReview.tsx'
 import { createReviewFixtureDataSource } from './review-fixture-data.ts'
 
@@ -32,7 +39,7 @@ function fixtureShell(content: React.JSX.Element): React.JSX.Element {
   )
 }
 
-function puzzleResourceFromQuery(): ReturnType<typeof TacticalPuzzleResourceSchema.parse> {
+function puzzleResourceFromQuery(): TacticalPuzzleResource {
   const searchParams = new URL(window.location.href).searchParams
   const requested = searchParams.get('puzzleState') ?? 'ready'
   const puzzleScenario = searchParams.get('puzzleScenario') ?? 'ordinary'
@@ -61,37 +68,41 @@ function puzzleResourceFromQuery(): ReturnType<typeof TacticalPuzzleResourceSche
               'Mate01',
             )
           : createSyntheticTacticalPuzzle()
-  const resources: Record<string, unknown> = {
+  const resources: Record<string, TacticalPuzzleResource> = {
     disabled: { status: 'disabled', reason: 'No tactical shard has passed release verification.' },
     loading: { status: 'loading' },
-    ready: { status: 'ready', puzzles: [puzzle] },
+    ready: createSyntheticPuzzleResource([puzzle], { identity: `review-${puzzle.puzzleId}` }),
     empty: { status: 'empty', reason: 'No promoted puzzle matches the selected filters.' },
-    stale: {
+    stale: createSyntheticPuzzleResource([puzzle], {
+      identity: `review-stale-${puzzle.puzzleId}`,
       status: 'stale',
-      puzzles: [puzzle],
       staleAt: '2026-07-28T12:00:00.000Z',
       reason: 'A refresh is pending.',
-    },
-    offline: {
+    }),
+    offline: createSyntheticPuzzleResource([puzzle], {
+      identity: `review-offline-${puzzle.puzzleId}`,
       status: 'offline',
-      puzzles: [puzzle],
       reason: 'Using the verified in-session shard.',
-    },
+    }),
     'offline-empty': {
       status: 'offline',
       puzzles: [],
       reason: 'No verified puzzle shard is cached.',
+      release: null,
     },
     'rate-limited': {
       status: 'rate-limited',
-      retryAt: '2026-07-28T12:01:00.000Z',
+      retryAt: new Date(Date.now() + 60_000).toISOString(),
       retryAfterSeconds: 60,
       reason: 'Puzzle refresh is cooling down.',
     },
     corrupt: { status: 'corrupt', reason: 'The signed shard failed validation.' },
     error: { status: 'error', reason: 'The puzzle service did not respond.' },
   }
-  return TacticalPuzzleResourceSchema.parse(resources[requested] ?? resources.ready)
+  const resource = resources[requested] ?? resources.ready!
+  return isTrustedTacticalPuzzleResource(resource)
+    ? resource
+    : TacticalPuzzleResourceSchema.parse(resource)
 }
 
 async function mount(): Promise<void> {

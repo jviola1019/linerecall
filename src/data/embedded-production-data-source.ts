@@ -94,6 +94,7 @@ export function createEmbeddedOpeningDataSource(input?: unknown): OpeningDataSou
   return new ContentAddressedFamilyOpeningDataSource(base, {
     trustedCatalogRef: payload.familyCatalogRef,
     expectedReleaseId: payload.releaseId,
+    trustedPuzzlePromotion: payload.puzzlePromotion,
     reader: new EmbeddedFamilyResourceReader(payload),
   })
 }

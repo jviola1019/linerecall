@@ -3,15 +3,22 @@ import { masteryPercent, type CardProgress } from './progress.ts'
 
 export interface ProgressVariantCatalogEntry {
   id: string
-  sourceLineId: string
+  sourceLineId: string | null
+  /** Canonical opening-family ID for graph packs; defaults to sourceLineId. */
+  openingId?: string
+  /** Canonical family label when the variation name is pack-specific. */
+  openingName?: string
   eco: string
   name: string
   trainedSide: 'white' | 'black'
   cardCount: number
+  /** Exact learner node IDs for graph packs. Legacy taxonomy rows omit this. */
+  nodeIds?: readonly string[]
 }
 
 export interface VariationProgressSummary {
   id: string
+  openingId: string
   sourceLineId: string | null
   eco: string | null
   name: string
@@ -116,24 +123,29 @@ function validVariantNodeId(
 function metricsForVariation(
   definition: Omit<VariationProgressSummary, 'mastery' | 'reviewedCards' | 'dueCards' | 'totalCards' | 'excludedCards' | 'lastReviewedAt' | 'streak'>,
   cards: readonly CardProgress[],
-  catalogCardCount: number | null,
+  catalog: Pick<ProgressVariantCatalogEntry, 'cardCount' | 'nodeIds'> | null,
   nowMs: number,
   streak: number,
 ): VariationMetrics {
+  const catalogCardCount = catalog?.cardCount ?? null
+  const graphNodeIds = catalog?.nodeIds ? new Set(catalog.nodeIds) : null
   const eligibleCards = catalogCardCount === null || definition.trainedSide === null
     ? cards
-    : cards.filter((card) => validVariantNodeId(
-      card.nodeId,
-      definition.id,
-      definition.trainedSide!,
-      catalogCardCount,
-    ))
+    : graphNodeIds
+      ? cards.filter((card) => graphNodeIds.has(card.nodeId))
+      : cards.filter((card) => validVariantNodeId(
+          card.nodeId,
+          definition.id,
+          definition.trainedSide!,
+          catalogCardCount,
+        ))
   const distinctCards = distinctNodeCards(eligibleCards)
   const totalCards = catalogCardCount ?? distinctCards.length
   const reviewedCards = Math.min(totalCards, distinctCards.filter((card) => card.reviewCount > 0).length)
   const trackedDue = distinctCards.filter((card) => Date.parse(card.dueAt) <= nowMs).length
-  const untrackedDue = Math.max(0, totalCards - distinctCards.length)
-  const dueCards = Math.min(totalCards, trackedDue + untrackedDue)
+  // A move becomes due only after it has a persisted schedule. Unseen learner
+  // positions belong to Learn mode and must not inflate Review counts.
+  const dueCards = Math.min(totalCards, trackedDue)
   const masteryPoints = Math.min(
     totalCards * 100,
     distinctCards.reduce((sum, card) => sum + masteryPercent(card), 0),
@@ -184,36 +196,40 @@ export function summarizeProgress(
 
   const searchBySource = new Map(searchEntries.map((entry) => [entry.sourceLineId, entry] as const))
   const variantById = new Map(variants.map((variant) => [variant.id, variant] as const))
-  const startedSources = new Set<string>()
+  const startedOpenings = new Set<string>()
   for (const lineId of cardsByVariant.keys()) {
     const known = variantById.get(lineId)
     if (known) {
-      startedSources.add(known.sourceLineId)
+      startedOpenings.add(known.openingId ?? known.sourceLineId ?? `unknown:${known.id}`)
       continue
     }
     const parsed = parseVariantId(lineId)
-    if (parsed && searchBySource.has(parsed.sourceLineId)) startedSources.add(parsed.sourceLineId)
+    if (parsed && searchBySource.has(parsed.sourceLineId)) startedOpenings.add(parsed.sourceLineId)
   }
 
   const metrics: VariationMetrics[] = []
   for (const variant of variants) {
-    if (!startedSources.has(variant.sourceLineId)) continue
+    const openingId = variant.openingId ?? variant.sourceLineId ?? `unknown:${variant.id}`
+    if (!startedOpenings.has(openingId)) continue
     metrics.push(metricsForVariation({
       id: variant.id,
+      openingId,
       sourceLineId: variant.sourceLineId,
       eco: variant.eco,
       name: variant.name,
       trainedSide: variant.trainedSide,
       availableInCurrentSnapshot: true,
-    }, cardsByVariant.get(variant.id) ?? [], variant.cardCount, now.getTime(), variationStreaks[variant.id]?.current ?? 0))
+    }, cardsByVariant.get(variant.id) ?? [], variant, now.getTime(), variationStreaks[variant.id]?.current ?? 0))
   }
 
   for (const [lineId, variantCards] of cardsByVariant) {
     if (variantById.has(lineId)) continue
     const parsed = parseVariantId(lineId)
     const source = parsed ? searchBySource.get(parsed.sourceLineId) : undefined
+    const openingId = source?.sourceLineId ?? `unknown:${lineId}`
     metrics.push(metricsForVariation({
       id: lineId,
+      openingId,
       sourceLineId: source?.sourceLineId ?? null,
       eco: source?.eco ?? null,
       name: source?.name ?? 'Unknown imported opening',
@@ -225,10 +241,9 @@ export function summarizeProgress(
   metrics.sort(progressOrder)
   const metricsByOpening = new Map<string, VariationMetrics[]>()
   for (const variation of metrics) {
-    const key = variation.sourceLineId ?? `unknown:${variation.id}`
-    const grouped = metricsByOpening.get(key) ?? []
+    const grouped = metricsByOpening.get(variation.openingId) ?? []
     grouped.push(variation)
-    metricsByOpening.set(key, grouped)
+    metricsByOpening.set(variation.openingId, grouped)
   }
 
   const openings: OpeningProgressSummary[] = [...metricsByOpening.entries()].map(([id, grouped]) => {
@@ -239,7 +254,8 @@ export function summarizeProgress(
       id,
       sourceLineId: first.sourceLineId,
       eco: first.eco,
-      name: first.name,
+      name: variants.find((variant) =>
+        (variant.openingId ?? variant.sourceLineId ?? `unknown:${variant.id}`) === id)?.openingName ?? first.name,
       mastery: totalCards === 0 ? 0 : Math.round(masteryPoints / totalCards),
       reviewedCards: grouped.reduce((sum, variation) => sum + variation.reviewedCards, 0),
       dueCards: grouped.reduce((sum, variation) => sum + variation.dueCards, 0),

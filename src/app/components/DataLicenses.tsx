@@ -29,20 +29,30 @@ export function DataLicenses({ audit, selectedLine }: { audit: DataManifest; sel
   return (
     <div className="documentation-view">
       <header className="documentation-header">
-        <p className="eyebrow">Auditable by design</p>
         <h1>Data &amp; Licenses</h1>
         <p>
-          These values are read from the checksum-validated release manifest. No game count, rate, engine result, or discrepancy is generated in the browser.
+          Source receipts, licenses, game counts, and verification status for this build.
         </p>
         <span className={`eligibility-badge ${audit.releaseEligible ? 'eligible' : 'quarantined'}`}>
           <span aria-hidden="true">{audit.releaseEligible ? '✓' : '⊘'}</span>
-          {audit.releaseEligible ? 'Embedded snapshot gates passed' : 'Embedded snapshot gates failed'}
+          {audit.releaseEligible ? 'Legacy browse snapshot validated' : 'Legacy browse snapshot failed validation'}
         </span>
       </header>
 
       <aside className="inline-warning" aria-label="Connected data release status">
-        <strong>Connected redesign status:</strong> This page audits the data currently embedded for offline study. Its pass does not clear the deeper connected packs. The compact v3 graph, complete Q2 club corpus, receipt-bound tactical-puzzle shard, and graph-level Stockfish/Scid campaigns remain separate hard gates.
+        <strong>Production training data is not promoted.</strong> The figures below describe the embedded schema-v2 browse snapshot. They do not clear the compact-v3 family graphs, complete Q2 club corpus, receipt-bound tactical-puzzle shards, or graph-level Stockfish and Scid campaigns.
       </aside>
+
+      <nav className="documentation-toc" aria-label="Data and license sections">
+        <a href="#taxonomy-license-title">Taxonomy</a>
+        <a href="#corpus-license-title">Games</a>
+        <a href="#engine-title">Engine</a>
+        <a href="#crosscheck-title">Cross-check</a>
+        <a href="#snapshot-title">Build</a>
+        <a href="#selected-provenance-title">Selected opening</a>
+        <a href="#interface-assets-title">Assets</a>
+        <a href="#limitations-title">Limitations</a>
+      </nav>
 
       <section className="documentation-section" aria-labelledby="taxonomy-license-title">
         <h2 id="taxonomy-license-title">Opening taxonomy</h2>
@@ -55,9 +65,9 @@ export function DataLicenses({ audit, selectedLine }: { audit: DataManifest; sel
       </section>
 
       <section className="documentation-section" aria-labelledby="corpus-license-title">
-        <h2 id="corpus-license-title">Backtest corpus</h2>
+        <h2 id="corpus-license-title">Legacy broadcast backtest</h2>
         <p>
-          Official Lichess broadcast PGNs from {audit.corpus.startMonth} through {audit.corpus.cutoffMonth}. The derived snapshot remains under
+          This review snapshot was derived from official Lichess broadcast PGNs from {audit.corpus.startMonth} through {audit.corpus.cutoffMonth}. These totals are not compact-v3 or Q2 results. The derived snapshot remains under
           {' '}{sourceLink(audit.corpus.licenseUrl, audit.corpus.license)} attribution and share-alike terms.
         </p>
         <dl className="audit-grid prominent-audit-grid">
@@ -110,9 +120,9 @@ export function DataLicenses({ audit, selectedLine }: { audit: DataManifest; sel
       </section>
 
       <section className="documentation-section" aria-labelledby="engine-title">
-        <h2 id="engine-title">Offline engine sanity-check</h2>
+        <h2 id="engine-title">Legacy line-node engine checks</h2>
         <p>
-          {sourceLink('https://stockfishchess.org/', audit.engine.name)} was used offline only under {audit.engine.license}; no engine binary or WASM ships in this app.
+          {sourceLink('https://stockfishchess.org/', audit.engine.name)} was used offline only for this review snapshot under {audit.engine.license}; no engine binary or WASM ships in this app. Production family graphs still require their own receipt-bound campaign.
         </p>
         <dl className="audit-grid">
           <div><dt>Commit</dt><dd><code>{audit.engine.releaseCommit}</code></dd></div>
@@ -124,9 +134,9 @@ export function DataLicenses({ audit, selectedLine }: { audit: DataManifest; sel
       </section>
 
       <section className="documentation-section" aria-labelledby="crosscheck-title">
-        <h2 id="crosscheck-title">Independent Scid cross-check</h2>
+        <h2 id="crosscheck-title">Legacy sampled Scid cross-check</h2>
         <p>
-          The GPL-2.0-only Scid oracle was used during auditing and is not copied into the shipped snapshot. Base-ECO mismatches quarantine affected lines; naming differences remain visible in line metadata.
+          The GPL-2.0-only Scid oracle was used for this review snapshot and is not copied into the application. Base-ECO mismatches quarantine affected legacy lines; the production family-level cross-check remains pending.
         </p>
         <dl className="audit-grid">
           <div><dt>Stratified lines sampled</dt><dd>{number(audit.crosscheck.sampled)}</dd></div>
@@ -165,7 +175,7 @@ export function DataLicenses({ audit, selectedLine }: { audit: DataManifest; sel
       </section>
 
       <section className="documentation-section" aria-labelledby="snapshot-title">
-        <h2 id="snapshot-title">Release snapshot</h2>
+        <h2 id="snapshot-title">Embedded review snapshot</h2>
         <dl className="audit-grid prominent-audit-grid">
           <div><dt>Browsable lines</dt><dd>{number(audit.audit.browsableLines)}</dd></div>
           <div><dt>Verified side variants</dt><dd>{number(audit.audit.verifiedVariants)}</dd></div>

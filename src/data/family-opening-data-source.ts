@@ -6,11 +6,14 @@ import {
   FamilyReleaseIdSchema,
   OpeningFamilyCatalogV1Schema,
   OpeningFamilyManifestV1Schema,
+  TacticalPuzzlePromotionBindingV1Schema,
+  TacticalPuzzleShardPayloadV1Schema,
   TacticalPuzzleShardV1Schema,
   type ContentAddressedRefV1,
   type FamilyPackRefV1,
   type OpeningFamilyCatalogV1,
   type OpeningFamilyManifestV1,
+  type TacticalPuzzlePromotionBindingV1,
   type TacticalPuzzleShardV1,
 } from '../domain/opening-family.ts'
 import {
@@ -66,6 +69,12 @@ export interface FamilyOpeningDataSourceOptions {
   trustedCatalogRef: ContentAddressedRefV1
   expectedReleaseId: string
   reader: BoundedFamilyResourceReader
+  /**
+   * Optional puzzle promotion statement from the separately authenticated
+   * production app root. Supplying shard references alone is insufficient to
+   * make a puzzle-bearing UI resource trusted.
+   */
+  trustedPuzzlePromotion?: unknown
 }
 
 function abortIfRequested(signal?: AbortSignal): void {
@@ -151,6 +160,7 @@ export class ContentAddressedFamilyOpeningDataSource implements FamilyOpeningDat
   readonly #reader: BoundedFamilyResourceReader
   readonly #catalogRef: ContentAddressedRefV1
   readonly #releaseId: string
+  readonly #puzzlePromotion: TacticalPuzzlePromotionBindingV1 | null
   #catalog: Promise<OpeningFamilyCatalogV1> | null = null
   readonly #manifests = new Map<string, Promise<OpeningFamilyManifestV1>>()
   readonly #graphs = new Map<string, Promise<RepertoireGraphDocument>>()
@@ -175,6 +185,20 @@ export class ContentAddressedFamilyOpeningDataSource implements FamilyOpeningDat
     if (this.#catalogRef.releaseId !== this.#releaseId) {
       throw new FamilyResourceError('corrupt', 'Opening-family catalog reference uses another release')
     }
+    if (options.trustedPuzzlePromotion === undefined) {
+      this.#puzzlePromotion = null
+    } else {
+      try {
+        this.#puzzlePromotion = freezeJsonGraph(
+          TacticalPuzzlePromotionBindingV1Schema.parse(options.trustedPuzzlePromotion),
+        )
+      } catch (cause) {
+        throw new FamilyResourceError('corrupt', 'Tactical puzzle promotion binding is invalid', { cause })
+      }
+      if (this.#puzzlePromotion.releaseId !== this.#releaseId) {
+        throw new FamilyResourceError('corrupt', 'Tactical puzzle promotion binding uses another release')
+      }
+    }
   }
 
   initialize(signal?: AbortSignal): Promise<OpeningDataCore> {
@@ -187,6 +211,16 @@ export class ContentAddressedFamilyOpeningDataSource implements FamilyOpeningDat
 
   loadAudit(signal?: AbortSignal): Promise<DataManifest> {
     return this.#base.loadAudit(signal)
+  }
+
+  loadPuzzlePromotionBinding(): TacticalPuzzlePromotionBindingV1 {
+    if (!this.#puzzlePromotion) {
+      throw new FamilyResourceError(
+        'unsupported',
+        'No authenticated tactical puzzle promotion binding is available',
+      )
+    }
+    return this.#puzzlePromotion
   }
 
   async loadFamilyCatalog(signal?: AbortSignal): Promise<OpeningFamilyCatalogV1> {
@@ -397,12 +431,13 @@ export class ContentAddressedFamilyOpeningDataSource implements FamilyOpeningDat
     shardRef: ContentAddressedRefV1,
     signal?: AbortSignal,
   ): Promise<TacticalPuzzleShardV1> {
-    const shard = await this.#readJson(
+    const payload = await this.#readJson(
       shardRef,
       `Tactical puzzle shard ${shardRef.id}`,
-      (value) => TacticalPuzzleShardV1Schema.parse(value),
+      (value) => TacticalPuzzleShardPayloadV1Schema.parse(value),
       signal,
     )
+    const shard = TacticalPuzzleShardV1Schema.parse({ id: shardRef.id, ...payload })
     if (shard.releaseId !== this.#releaseId) {
       throw new FamilyResourceError('corrupt', `Tactical puzzle shard ${shardRef.id} uses another release`)
     }

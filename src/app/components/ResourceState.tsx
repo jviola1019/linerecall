@@ -24,14 +24,14 @@ export function ErrorState({
 }: {
   title: string
   detail: string
-  onRetry: () => void
+  onRetry?: () => void
 }): React.JSX.Element {
   return (
     <div className="resource-state error-state" role="alert">
       <span className="state-icon" aria-hidden="true">!</span>
       <h2>{title}</h2>
       <p>{detail}</p>
-      <button type="button" onClick={onRetry}>Retry</button>
+      {onRetry ? <button type="button" onClick={onRetry}>Retry</button> : null}
     </div>
   )
 }

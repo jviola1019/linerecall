@@ -179,7 +179,6 @@ function inventory() {
 function tacticalShard() {
   return {
     schemaVersion: 1 as const,
-    id: `blob_${SHARD_SHA.slice(0, 16)}`,
     releaseId: RELEASE,
     generatedAt: '2026-08-06T12:00:00.000Z',
     familyIds: [FAMILY],

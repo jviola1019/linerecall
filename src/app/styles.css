@@ -29,11 +29,11 @@
   --board-ink: #101713;
   --focus: #f8e46c;
   --shadow: 0 1px 0 rgb(255 255 255 / 3%), 0 10px 30px rgb(0 0 0 / 12%);
-  --radius-sm: 0.375rem;
-  --radius-md: 0.625rem;
-  --radius-lg: 0.875rem;
-  --radius: 0.625rem;
-  --radius-small: 0.375rem;
+  --radius-sm: 0.25rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius: 0.5rem;
+  --radius-small: 0.25rem;
   --space-1: 0.25rem;
   --space-2: 0.5rem;
   --space-3: 0.75rem;
@@ -144,7 +144,7 @@ a:hover { text-decoration-thickness: 0.15em; }
 h1, h2, h3, h4, p { overflow-wrap: anywhere; }
 h1 {
   margin: 0.1rem 0 0.45rem;
-  font-size: clamp(2rem, 4vw, 3.35rem);
+  font-size: clamp(1.75rem, 3vw, 2.5rem);
   font-weight: 600;
   line-height: 1.02;
   letter-spacing: -0.045em;
@@ -792,6 +792,21 @@ kbd { padding: 0.12rem 0.3rem; border: 1px solid var(--border-strong); border-ra
   border-left: 3px solid var(--accent);
   background: var(--surface-soft);
 }
+.progress-first-run {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+  padding: clamp(1rem, 3vw, 1.75rem);
+  border: 1px solid var(--border);
+  border-inline-start: 3px solid var(--accent);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+.progress-first-run .state-icon { margin: 0; }
+.progress-first-run h2 { margin-block: 0.15rem 0.35rem; font-size: clamp(1.2rem, 2vw, 1.55rem); }
+.progress-first-run p:last-child { max-width: 56ch; margin-bottom: 0; color: var(--muted); }
 .progress-separated-summary strong { font-size: 1.55rem; }
 .progress-separated-summary span { color: var(--muted); }
 .transfer-panel { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 1rem; }
@@ -884,9 +899,6 @@ kbd { padding: 0.12rem 0.3rem; border: 1px solid var(--border-strong); border-ra
   .progress-separated-summary { grid-template-columns: 1fr; }
   .transfer-actions { display: grid; }
   .transfer-actions button, .file-button { width: 100%; }
-}
-
-@media (max-width: 360px) {
   .brand-copy strong { font-size: 0.94rem; }
   .header-actions { gap: 0.2rem; }
   .segmented-control span { font-size: 0.75rem; }
@@ -1082,7 +1094,7 @@ kbd { padding: 0.12rem 0.3rem; border: 1px solid var(--border-strong); border-ra
 }
 .family-card-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   margin: 0;
   padding: 0;
   border-top: 1px solid var(--border);
@@ -1160,6 +1172,22 @@ kbd { padding: 0.12rem 0.3rem; border: 1px solid var(--border-strong); border-ra
   border-color: var(--accent);
   background: var(--accent-soft);
 }
+.family-course-details {
+  max-width: 48rem;
+  padding-block: 0.25rem;
+  border-block: 1px solid var(--border);
+}
+.family-course-details summary {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  cursor: pointer;
+  font-weight: 700;
+}
+.family-course-details p,
+.family-course-details li { color: var(--muted); font-size: 0.84rem; }
+.family-course-details ul { display: grid; gap: 0.35rem; margin-top: 0.4rem; }
+.family-course-details li[aria-current="step"] { color: var(--text); font-weight: 700; }
 .family-primary-actions { display: flex; flex-wrap: wrap; gap: 0.65rem; }
 .family-syllabus > p { max-width: 58rem; color: var(--muted); }
 .family-branch-search {
@@ -1181,7 +1209,7 @@ kbd { padding: 0.12rem 0.3rem; border: 1px solid var(--border-strong); border-ra
 }
 .family-branch-list li {
   display: grid;
-  grid-template-columns: minmax(12rem, 1fr) repeat(3, minmax(7rem, auto));
+  grid-template-columns: minmax(12rem, 1fr) auto;
   align-items: center;
   gap: 0.75rem;
   min-height: 3.25rem;
@@ -1189,6 +1217,19 @@ kbd { padding: 0.12rem 0.3rem; border: 1px solid var(--border-strong); border-ra
   background: var(--surface);
 }
 .family-branch-list span { color: var(--muted); font-size: 0.8rem; }
+.family-branch-list .family-branch-name { display: grid; gap: 0.2rem; color: var(--text); }
+.family-branch-name strong { font-size: 0.96rem; }
+.family-branch-name small { color: var(--muted); font-size: 0.8rem; }
+.family-branch-practice { min-width: 6.5rem; min-height: 44px; }
+.family-branch-pagination,
+.graph-path-group-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.family-branch-pagination span,
+.graph-path-group-pagination span { color: var(--muted); font-size: 0.84rem; font-variant-numeric: tabular-nums; }
 
 .today-view { padding-block: clamp(2rem, 6vw, 5rem); }
 .today-heading { display: flex; align-items: end; justify-content: space-between; gap: 2rem; padding-bottom: 2rem; border-bottom: 1px solid var(--border); }
@@ -1201,6 +1242,18 @@ kbd { padding: 0.12rem 0.3rem; border: 1px solid var(--border-strong); border-ra
 .today-grid article { min-width: 0; min-height: 18rem; padding: clamp(1.25rem, 3vw, 2.5rem); border-right: 1px solid var(--border); }
 .today-grid article:last-child { border-right: 0; }
 .today-grid h2 { max-width: 25ch; font-size: clamp(1.25rem, 2.2vw, 1.8rem); font-weight: 600; letter-spacing: -0.025em; }
+.today-grid .today-data-card { min-height: 0; align-self: start; }
+.today-data-card details { display: grid; gap: 0.75rem; }
+.today-data-card summary {
+  display: grid;
+  min-height: 44px;
+  gap: 0.15rem;
+  cursor: pointer;
+  list-style-position: outside;
+}
+.today-data-card summary span { color: var(--muted); font-size: 0.78rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+.today-data-card summary strong { font-size: 1.15rem; }
+.today-data-card details > p { color: var(--muted); font-size: 0.88rem; }
 .start-card h2 {
   max-width: 22ch;
   font-size: clamp(1.55rem, 2.8vw, 2.4rem);
@@ -1332,7 +1385,7 @@ kbd { padding: 0.12rem 0.3rem; border: 1px solid var(--border-strong); border-ra
   .pack-syllabus { padding-left: 0; }
   .family-catalog-heading { display: grid; gap: 0.75rem; }
   .family-catalog-controls { grid-template-columns: 1fr; gap: 0.65rem; }
-  .family-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .family-card-grid { grid-template-columns: 1fr; }
   .family-detail-heading-row { align-items: start; flex-direction: column; gap: 0.75rem; }
   .family-detail-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .family-branch-list li { grid-template-columns: minmax(10rem, 1fr) minmax(7rem, auto); }
@@ -1550,9 +1603,9 @@ kbd { padding: 0.12rem 0.3rem; border: 1px solid var(--border-strong); border-ra
 
 .resource-state {
   width: min(calc(100% - 2rem), 42rem);
-  min-height: 18rem;
-  margin: clamp(1rem, 5vw, 4rem) auto;
-  padding: clamp(1.5rem, 4vw, 3rem);
+  min-height: 10rem;
+  margin: clamp(1rem, 3vw, 2rem) auto;
+  padding: clamp(1.25rem, 3vw, 2rem);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--surface);
@@ -1610,9 +1663,30 @@ kbd { padding: 0.12rem 0.3rem; border: 1px solid var(--border-strong); border-ra
   color: var(--muted);
 }
 
+.documentation-toc {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  margin-block: var(--space-4);
+  padding-block: var(--space-3);
+  border-block: 1px solid var(--border);
+}
+
+.documentation-toc a {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  color: var(--text);
+  font-size: 0.875rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.documentation-toc a:hover { text-decoration: underline; }
+
 .today-heading h1 {
   max-width: 16ch;
-  font-size: clamp(2.4rem, 5vw, 4.2rem);
+  font-size: clamp(1.9rem, 3vw, 2.65rem);
   font-weight: 600;
   letter-spacing: -0.06em;
 }
@@ -1634,14 +1708,15 @@ kbd { padding: 0.12rem 0.3rem; border: 1px solid var(--border-strong); border-ra
 
 .today-grid article,
 .today-grid article:last-child {
-  min-height: 18rem;
-  padding: clamp(1.25rem, 3vw, 2rem);
+  min-height: 10.5rem;
+  padding: clamp(1rem, 2.4vw, 1.5rem);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--surface);
 }
 
 .today-grid .start-card { border-top: 3px solid var(--accent); }
+.today-grid .today-data-card { min-height: 0; align-self: start; }
 .today-grid h2 { font-size: clamp(1.2rem, 2vw, 1.6rem); }
 .start-card h2 { font-size: clamp(1.55rem, 2.5vw, 2.2rem); }
 
@@ -1665,9 +1740,32 @@ kbd { padding: 0.12rem 0.3rem; border: 1px solid var(--border-strong); border-ra
 .family-detail-facts { border-inline-start: 0; }
 .family-detail-facts div { border-inline-end: 1px solid var(--border); border-bottom: 1px solid var(--border); }
 
+.family-catalog-scope {
+  display: flex;
+  width: fit-content;
+  gap: 2px;
+  margin-top: var(--space-4);
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-muted);
+}
+
+.family-catalog-scope button {
+  border-color: transparent;
+  background: transparent;
+  font-weight: 600;
+}
+
+.family-catalog-scope button[aria-pressed="true"] {
+  border-color: var(--border);
+  background: var(--surface-raised);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
 .family-catalog-controls {
-  margin-block: var(--space-4);
-  padding: var(--space-4);
+  margin-block: var(--space-3);
+  padding: var(--space-3);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--surface-muted);
@@ -1676,27 +1774,55 @@ kbd { padding: 0.12rem 0.3rem; border: 1px solid var(--border-strong); border-ra
 .family-catalog-controls > label { color: var(--muted); font-size: 0.84rem; }
 
 .family-card-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: var(--space-3);
-  border: 0;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  border-block: 1px solid var(--border);
 }
 
 .family-card-grid li { border: 0; }
+.family-card-grid li + li { border-top: 1px solid var(--border); }
 
 .family-card {
-  min-height: 11rem;
-  padding: var(--space-5);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--surface);
+  grid-template-columns: minmax(13rem, 1.4fr) minmax(5rem, 0.35fr) minmax(12rem, 1fr) minmax(11rem, 0.8fr);
+  min-height: 0;
+  align-content: center;
+  align-items: center;
+  gap: var(--space-4);
+  padding: 0.72rem var(--space-3);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   box-shadow: none;
-  transition: border-color 130ms ease, background-color 130ms ease, transform 160ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition: border-color 140ms ease, background-color 140ms ease;
 }
 
-.family-card:hover { border-color: var(--border-strong); background: var(--surface-raised); transform: translateY(-1px); }
-.family-card:active { transform: translateY(0); }
+.family-card:hover { border-color: var(--border-strong); background: var(--surface-raised); }
 .family-card-topline strong { font-size: 1.08rem; letter-spacing: -0.015em; }
-.family-card-progress { border-top-color: var(--border); }
+.family-card-progress {
+  display: grid;
+  gap: var(--space-2);
+  padding-top: 0;
+  border-top: 0;
+}
+
+.family-card-progress progress,
+.family-learning-progress progress {
+  display: block;
+  width: 100%;
+  height: 0.3rem;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  background: var(--surface-soft);
+  appearance: none;
+}
+
+.family-card-progress progress::-webkit-progress-bar,
+.family-learning-progress progress::-webkit-progress-bar { background: var(--surface-soft); }
+.family-card-progress progress::-webkit-progress-value,
+.family-learning-progress progress::-webkit-progress-value { background: var(--accent); }
+.family-card-progress progress::-moz-progress-bar,
+.family-learning-progress progress::-moz-progress-bar { background: var(--accent); }
 
 .family-graph-status {
   padding: 0.22rem 0.4rem;
@@ -1707,6 +1833,25 @@ kbd { padding: 0.12rem 0.3rem; border: 1px solid var(--border-strong); border-ra
 
 .family-side-panel,
 .family-syllabus { padding-block: var(--space-6); }
+
+.family-detail-header > .text-button {
+  width: fit-content;
+  justify-self: start;
+  padding-inline: var(--space-2);
+}
+
+.family-learning-progress {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(12rem, 0.55fr);
+  align-items: end;
+  gap: var(--space-5);
+  padding-block: var(--space-5);
+  border-bottom: 1px solid var(--border);
+}
+
+.family-learning-progress h2 { margin-block: 0; }
+.family-learning-progress p:last-child { max-width: 58ch; margin-bottom: 0; color: var(--muted); }
+.family-learning-progress progress { height: 0.5rem; margin-bottom: var(--space-2); }
 
 .family-pack-tabs { border-radius: var(--radius-md); }
 
@@ -1736,22 +1881,85 @@ kbd { padding: 0.12rem 0.3rem; border: 1px solid var(--border-strong); border-ra
 .documentation-section > h2,
 .transfer-panel h2,
 .card-history > h2 { margin-bottom: var(--space-2); }
+.card-history > .section-row { align-items: start; }
+.card-history > .section-row h2 { margin-bottom: var(--space-1); }
+.card-history > .section-row p { margin: 0; color: var(--muted); font-size: 0.84rem; }
 
 .audit-grid { gap: var(--space-2); }
 .audit-grid > div { border-radius: var(--radius-md); background: var(--surface-muted); }
 .prominent-audit-grid > div { border-top-width: 1px; border-inline-start: 3px solid var(--accent); }
 
 .progress-summary { margin-top: var(--space-4); }
-.progress-summary div { min-height: 7.5rem; align-content: center; }
+.progress-summary {
+  gap: 0;
+  border-block: 1px solid var(--border);
+}
+.progress-summary div {
+  min-height: 5.25rem;
+  align-content: center;
+  border: 0;
+  border-inline-end: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+}
+.progress-summary div:last-child { border-inline-end: 0; }
 .progress-summary strong { color: var(--text); font-variant-numeric: tabular-nums; }
 
 .progress-separated-summary { gap: var(--space-3); }
 .progress-separated-summary article {
-  padding: var(--space-4);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--surface-muted);
+  padding: var(--space-3) var(--space-4);
+  border: 0;
+  border-block: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
   border-inline-start: 3px solid var(--accent);
+}
+
+.progress-family-list {
+  display: grid;
+  margin: var(--space-3) 0 0;
+  padding: 0;
+  border-block: 1px solid var(--border);
+  list-style: none;
+}
+
+.progress-family-list li {
+  display: grid;
+  grid-template-columns: minmax(12rem, 1.25fr) minmax(12rem, 1fr) minmax(5rem, 0.4fr) minmax(7rem, 0.5fr) auto;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-2);
+}
+
+.progress-family-list li + li { border-top: 1px solid var(--border); }
+.progress-family-name,
+.progress-family-coverage,
+.progress-family-recall { display: grid; min-width: 0; gap: var(--space-1); }
+.progress-family-name span,
+.progress-family-coverage span,
+.progress-family-recall span,
+.progress-family-depth,
+.progress-family-status { color: var(--muted); font-size: 0.8rem; }
+.progress-family-recall { grid-template-columns: auto 1fr; align-items: baseline; }
+.progress-family-recall strong { font-size: 1.15rem; font-variant-numeric: tabular-nums; }
+.progress-family-coverage progress {
+  width: 100%;
+  height: 0.3rem;
+  border: 0;
+  background: var(--surface-soft);
+  appearance: none;
+}
+.progress-family-coverage progress::-webkit-progress-bar { background: var(--surface-soft); }
+.progress-family-coverage progress::-webkit-progress-value { background: var(--accent); }
+.progress-family-coverage progress::-moz-progress-bar { background: var(--accent); }
+.progress-family-action { min-width: 5.5rem; }
+
+.card-history > .resource-state {
+  width: 100%;
+  min-height: 10rem;
+  margin: var(--space-4) 0 0;
+  padding: var(--space-5);
 }
 
 .stats-table { border-collapse: separate; border-spacing: 0; }
@@ -1793,7 +2001,15 @@ kbd { padding: 0.12rem 0.3rem; border: 1px solid var(--border-strong); border-ra
   .today-grid article,
   .today-grid article:nth-child(2),
   .today-grid article:last-child { grid-column: auto; border: 1px solid var(--border); }
-  .family-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .today-grid .start-card { min-height: 10.5rem; }
+  .family-card-grid { grid-template-columns: 1fr; }
+  .family-card { grid-template-columns: minmax(12rem, 1.2fr) minmax(5rem, 0.35fr) minmax(11rem, 1fr); }
+  .family-card-progress { grid-column: 1 / -1; }
+  .family-learning-progress { grid-template-columns: 1fr; gap: var(--space-3); }
+  .progress-family-list li {
+    grid-template-columns: minmax(12rem, 1fr) minmax(10rem, 0.9fr) minmax(5rem, auto) auto;
+  }
+  .progress-family-depth { display: none; }
 }
 
 @media (max-width: 600px) {
@@ -1815,28 +2031,52 @@ kbd { padding: 0.12rem 0.3rem; border: 1px solid var(--border-strong); border-ra
   .family-catalog-heading,
   .family-detail-header,
   .documentation-header { padding-bottom: var(--space-4); }
-  .today-heading h1 { font-size: clamp(2.25rem, 12vw, 3.1rem); line-height: 1; }
+  .today-heading h1 { font-size: clamp(1.85rem, 9vw, 2.5rem); line-height: 1.05; }
   .today-grid { gap: var(--space-2); padding-block: var(--space-4); }
   .today-grid article,
   .today-grid article:last-child { padding: var(--space-4); border-radius: var(--radius-md); }
-  .today-grid .start-card { min-height: 12.5rem; }
+  .today-grid .start-card { min-height: 10.5rem; }
   .family-catalog-totals,
   .family-detail-facts { gap: var(--space-2); }
   .family-catalog-totals div,
   .family-detail-facts div { padding: var(--space-3); }
   .family-catalog-controls { margin-block: var(--space-3); padding: var(--space-3); border-radius: var(--radius-md); }
-  .family-card-grid { grid-template-columns: 1fr; gap: var(--space-2); }
-  .family-card { min-height: 8.75rem; padding: var(--space-4); border-radius: var(--radius-md); }
+  .family-catalog-scope { display: grid; grid-template-columns: 1fr 1fr; width: 100%; }
+  .family-card-grid { grid-template-columns: 1fr; gap: 0; }
+  .family-card { grid-template-columns: minmax(0, 1fr) auto; min-height: 0; padding: var(--space-3) var(--space-2); border-radius: 0; }
+  .family-card-meta,
+  .family-card-progress { grid-column: 1 / -1; }
+  .family-card-topline strong { font-size: 1rem; }
+  .family-card-progress { gap: var(--space-1); padding-top: var(--space-2); }
+  .family-detail-header { gap: var(--space-1); }
+  .family-detail-header .family-detail-heading-row > div > p:last-child { display: none; }
+  .family-learning-progress { padding-block: var(--space-4); }
+  .family-learning-progress h2 { font-size: 1.12rem; }
+  .family-learning-progress p:last-child { margin-top: var(--space-1); font-size: 0.84rem; line-height: 1.4; }
+  .family-side-panel { gap: var(--space-3); padding-block: var(--space-4); }
+  .family-side-panel h2 { font-size: 1.15rem; }
   .documentation-section,
   .transfer-panel,
   .card-history { padding: var(--space-4); border-radius: var(--radius-md); }
   .progress-summary { gap: var(--space-2); }
-  .progress-summary div { min-height: 6.5rem; padding: var(--space-3); }
+  .progress-summary div { min-height: 5rem; padding: var(--space-2); }
+  .progress-summary div:nth-of-type(2) { border-inline-end: 0; }
+  .progress-summary div:nth-of-type(n + 3) { border-top: 1px solid var(--border); }
+  .progress-family-list li {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: var(--space-2) var(--space-3);
+    padding: var(--space-3) 0;
+  }
+  .progress-family-coverage { grid-column: 1 / -1; }
+  .progress-family-recall { grid-column: 1; grid-row: 3; }
+  .progress-family-action,
+  .progress-family-status { grid-column: 2; grid-row: 3; }
+  .progress-first-run { grid-template-columns: auto minmax(0, 1fr); }
+  .progress-first-run .primary-action { grid-column: 1 / -1; width: 100%; }
   .resource-state { width: calc(100% - 1rem); margin-block: var(--space-4); }
-}
-
-@media (max-width: 360px) {
   .brand-copy strong { font-size: 0.9rem; }
+  .family-catalog-heading > div > p:last-child { display: none; }
+  .family-card { min-height: 0; padding: var(--space-2); }
   .family-catalog-totals div,
   .family-detail-facts div { padding-inline: var(--space-2); }
   .family-catalog-totals dt,
@@ -1893,6 +2133,42 @@ kbd { padding: 0.12rem 0.3rem; border: 1px solid var(--border-strong); border-ra
 }
 
 .graph-path-picker li + li { border-top: 1px solid var(--border); }
+
+.graph-variation-chooser {
+  display: grid;
+  gap: 0.65rem;
+  margin-block: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+.graph-variation-chooser h3 { margin: 0; font-size: 1rem; }
+.graph-variation-chooser .graph-path-search { margin-block: 0; }
+.graph-path-group-picker {
+  display: grid;
+  max-height: min(24rem, 52vh);
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  border-block: 1px solid var(--border);
+  list-style: none;
+}
+.graph-path-group-picker li + li { border-top: 1px solid var(--border); }
+.graph-path-group-picker button {
+  display: grid;
+  width: 100%;
+  min-height: 44px;
+  gap: 0.2rem;
+  padding: 0.65rem 0.75rem;
+  border: 0;
+  border-inline-start: 3px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: start;
+}
+.graph-path-group-picker button:hover { background: var(--surface-soft); }
+.graph-path-group-picker button[aria-pressed="true"] { border-inline-start-color: var(--accent); background: var(--accent-soft); }
+.graph-path-group-picker span { color: var(--muted); font-size: 0.8rem; }
 
 .graph-path-option {
   display: grid;
@@ -2149,7 +2425,7 @@ kbd { padding: 0.12rem 0.3rem; border: 1px solid var(--border-strong); border-ra
   background: var(--surface-soft);
 }
 
-@media (max-width: 760px) {
+@media (max-width: 900px) {
   .family-training-view {
     padding-top: 0.1rem;
   }
@@ -2406,6 +2682,18 @@ kbd { padding: 0.12rem 0.3rem; border: 1px solid var(--border-strong); border-ra
   .flow-mode-toggle input::before { border-color: ButtonText; background: Canvas; color: CanvasText; }
   .flow-mode-toggle input:checked::before { background: Highlight; color: HighlightText; }
   .spinner { border-color: CanvasText; border-top-color: Highlight; }
+  .family-card-progress progress,
+  .family-learning-progress progress,
+  .progress-family-coverage progress { border: 1px solid CanvasText; }
+  .family-card-progress progress::-webkit-progress-bar,
+  .family-learning-progress progress::-webkit-progress-bar,
+  .progress-family-coverage progress::-webkit-progress-bar { background: Canvas; }
+  .family-card-progress progress::-webkit-progress-value,
+  .family-learning-progress progress::-webkit-progress-value,
+  .progress-family-coverage progress::-webkit-progress-value { background: Highlight; }
+  .family-card-progress progress::-moz-progress-bar,
+  .family-learning-progress progress::-moz-progress-bar,
+  .progress-family-coverage progress::-moz-progress-bar { background: Highlight; }
 }
 
 @media print {

@@ -5,6 +5,7 @@ import { masteryPercent, type ProgressRepository, type ProgressV1 } from '../../
 import { puzzleMasteryPercent, type PuzzleProgress } from '../../domain/puzzle-progress.ts'
 import {
   summarizeProgress,
+  type ProgressVariantCatalogEntry,
   type VariationProgressSummary,
 } from '../../domain/progress-summary.ts'
 import {
@@ -15,19 +16,29 @@ import {
   importPortableProgressJson,
   type PortableProgressImport,
 } from '../../infrastructure/portable-progress-bundle.ts'
+import type {
+  FamilyCatalogSummaryV2,
+  NextTrainingTargetV1,
+} from '../../domain/family-catalog-summary.ts'
 
 export interface ProgressViewProps {
   progress: ProgressV1
   variantSummaries: readonly OpeningVariantSummary[]
+  familyPackSummaries?: readonly ProgressVariantCatalogEntry[]
   searchEntries: readonly OpeningSearchEntry[]
   repositoryKind: ProgressRepository['kind']
   storageWarning: string | null
   saveError: string | null
   puzzleProgress?: PuzzleProgress
   familyCompletionCount?: Readonly<Record<string, number>>
+  familySummaries?: readonly FamilyCatalogSummaryV2[]
+  nextTrainingTarget?: NextTrainingTargetV1 | null
+  trainingTargetsByFamily?: Readonly<Record<string, NextTrainingTargetV1>>
+  onStartTrainingTarget?: (target: NextTrainingTargetV1) => void
   onImport: (progress: ProgressV1) => void | Promise<void>
   onPortableExport?: () => Promise<string>
   onPortableImport?: (candidate: Extract<PortableProgressImport, { kind: 'bundle-v1' }>) => Promise<void>
+  onBrowseRepertoire?: () => void
   onAnnouncement: (message: string) => void
 }
 
@@ -42,7 +53,7 @@ function variationIdentity(variation: VariationProgressSummary | undefined): Rea
     <>
       <span>{variation.name}</span><br />
       <small>{variation.eco ?? 'Unknown ECO'} · {side}</small>
-      {!variation.availableInCurrentSnapshot ? <><br /><small>Not in the current audited drill snapshot</small></> : null}
+      {!variation.availableInCurrentSnapshot ? <><br /><small>Not available in the current opening library</small></> : null}
     </>
   )
 }
@@ -65,19 +76,40 @@ function downloadProgress(source: string, fullBundle: boolean): void {
 }
 
 const MAX_DUE_TIMER_DELAY_MS = 2_147_483_647
+const REVIEW_DATE_FORMAT = new Intl.DateTimeFormat('en-US', {
+  year: 'numeric',
+  month: 'short',
+  day: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+  timeZone: 'UTC',
+  timeZoneName: 'short',
+})
+
+function formatReviewDate(value: string | null, emptyLabel: string): string {
+  if (value === null) return emptyLabel
+  const date = new Date(value)
+  return Number.isFinite(date.getTime()) ? REVIEW_DATE_FORMAT.format(date) : emptyLabel
+}
 
 export function ProgressView({
   progress,
   variantSummaries,
+  familyPackSummaries = [],
   searchEntries,
   repositoryKind,
-  storageWarning,
   saveError,
   puzzleProgress,
   familyCompletionCount = {},
+  familySummaries = [],
+  nextTrainingTarget = null,
+  trainingTargetsByFamily = {},
+  onStartTrainingTarget,
   onImport,
   onPortableExport,
   onPortableImport,
+  onBrowseRepertoire,
   onAnnouncement,
 }: ProgressViewProps): React.JSX.Element {
   const cards = useMemo(() => Object.values(progress.cards).sort((left, right) => {
@@ -89,13 +121,13 @@ export function ProgressView({
   const summaries = useMemo(
     () => summarizeProgress(
       cards,
-      variantSummaries,
+      [...variantSummaries, ...familyPackSummaries],
       searchEntries,
       new Date(),
       progress.openingStreaks,
       progress.variationStreaks,
     ),
-    [cards, dueClock, progress.openingStreaks, progress.variationStreaks, searchEntries, variantSummaries],
+    [cards, dueClock, familyPackSummaries, progress.openingStreaks, progress.variationStreaks, searchEntries, variantSummaries],
   )
   const variationById = useMemo(
     () => new Map(summaries.variations.map((variation) => [variation.id, variation] as const)),
@@ -106,7 +138,19 @@ export function ProgressView({
       (right.lastAttemptAt ?? '').localeCompare(left.lastAttemptAt ?? '', 'en')),
     [puzzleProgress],
   )
-  const completedFamilyPaths = Object.values(familyCompletionCount).reduce((total, count) => total + count, 0)
+  const completedFamilyPaths = familySummaries.length > 0
+    ? familySummaries.reduce((total, summary) => total + summary.completedPaths, 0)
+    : Object.values(familyCompletionCount).reduce((total, count) => total + count, 0)
+  const activeFamilySummaries = useMemo(() => familySummaries
+    .filter((summary) =>
+      summary.completedPaths > 0 || summary.dueCards > 0 || summary.lastReviewedAt !== undefined)
+    .sort((left, right) =>
+      right.dueCards - left.dueCards
+      || Number(left.completedPaths === left.totalPaths) - Number(right.completedPaths === right.totalPaths)
+      || (right.lastReviewedAt ?? '').localeCompare(left.lastReviewedAt ?? '', 'en')
+      || left.canonicalName.localeCompare(right.canonicalName, 'en')),
+  [familySummaries])
+  const hasTrainingActivity = cards.length > 0 || puzzleEntries.length > 0 || completedFamilyPaths > 0
   const [candidate, setCandidate] = useState<PortableProgressImport | null>(null)
   const [fileName, setFileName] = useState<string | null>(null)
   const [importError, setImportError] = useState<string | null>(null)
@@ -153,8 +197,8 @@ export function ProgressView({
         ? Object.keys(parsed.bundle.openingProgress.cards).length
         : Object.keys(parsed.progress.cards).length
       onAnnouncement(parsed.kind === 'bundle-v1'
-        ? `Validated ${file.name}. Confirm replacement of opening, puzzle, and family progress. The bundle contains ${cardCount} opening cards.`
-        : `Validated ${file.name}. Confirm replacement of ${cardCount} opening cards. Puzzle and family progress will be kept.`)
+        ? `Validated ${file.name}. Confirm replacement of opening, puzzle, and variation history. The bundle contains ${cardCount} moves.`
+        : `Validated ${file.name}. Confirm replacement of ${cardCount} moves. Puzzle results and variation history will be kept.`)
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : 'Progress file is invalid.'
       setImportError(message)
@@ -204,55 +248,125 @@ export function ProgressView({
   return (
     <div className="progress-view">
       <header className="documentation-header">
-        <p className="eyebrow">Spaced repetition</p>
+        <p className="eyebrow">Learning history</p>
         <h1>Your progress</h1>
-        <p>Each learner-side decision position is scheduled as a separate SM-2 card.</p>
+        <p>Remembered moves return less often. Missed positions come back sooner.</p>
       </header>
 
-      {storageWarning ? <div className="persistent-warning" role="status"><strong>Storage:</strong> {storageWarning}</div> : null}
       {saveError ? <div className="persistent-warning error-warning" role="alert"><span aria-hidden="true">!</span> {saveError}</div> : null}
 
       <section className="progress-summary" aria-labelledby="progress-summary-title">
         <h2 id="progress-summary-title" className="sr-only">Progress summary</h2>
-        <div><strong>{summaries.reviewedCards}</strong><span>Cards reviewed</span></div>
+        <div><strong>{summaries.reviewedCards}</strong><span>Moves reviewed</span></div>
         <div><strong>{summaries.dueCards}</strong><span>Due now</span></div>
-        <div><strong>{summaries.mastery}%</strong><span>Mean mastery</span></div>
+        <div><strong>{summaries.mastery}%</strong><span>Average recall</span></div>
         <div><strong>{progress.streak.current}</strong><span>Day streak</span></div>
       </section>
       <section className="progress-separated-summary" aria-label="Family coverage and tactical progress">
         <article>
           <p className="eyebrow">Family coverage</p>
           <strong>{completedFamilyPaths}</strong>
-          <span>audited paths completed</span>
+          <span>variations practiced</span>
         </article>
         <article>
           <p className="eyebrow">Tactical puzzles</p>
           <strong>{puzzleEntries.reduce((total, entry) => total + entry.solves, 0)}</strong>
-          <span>solutions · separate mastery</span>
+          <span>solutions · tracked separately</span>
         </article>
       </section>
       <p className="field-help">
-        Mastery includes every learner position in each started opening; unreviewed cards count as 0%.
-        Streaks count consecutive local calendar days with completed reviews globally and within each opening and trained-side variation.
+        New positions begin at 0%. Your streak counts consecutive local calendar days with a completed review.
       </p>
+      {nextTrainingTarget && onStartTrainingTarget ? (
+        <div className="inline-controls" aria-label="Next opening practice">
+          <button type="button" className="primary-action" onClick={() => onStartTrainingTarget(nextTrainingTarget)}>
+            {nextTrainingTarget.mode === 'review' ? 'Review due moves' : 'Continue opening'}
+          </button>
+        </div>
+      ) : null}
+      {activeFamilySummaries.length > 0 ? (
+        <section className="card-history" aria-labelledby="family-progress-title">
+          <div className="section-row">
+            <div>
+              <h2 id="family-progress-title">Opening family coverage</h2>
+              <p>Resume a family without losing which variations you have already practiced.</p>
+            </div>
+          </div>
+          <ul className="progress-family-list" aria-label="Opening family coverage">
+            {activeFamilySummaries.map((summary) => {
+              const preferredTarget = trainingTargetsByFamily[summary.familyId] ?? null
+              const percentage = summary.totalPaths === 0
+                ? 0
+                : Math.round((summary.completedPaths / summary.totalPaths) * 100)
+              return (
+                <li key={summary.familyId}>
+                  <div className="progress-family-name">
+                    <strong>{summary.canonicalName}</strong>
+                    <span>{summary.ecoCodes[0]}{summary.ecoCodes.length > 1 ? `–${summary.ecoCodes.at(-1)}` : ''}</span>
+                  </div>
+                  <div className="progress-family-coverage">
+                    <span>{summary.completedPaths} of {summary.totalPaths} variations</span>
+                    <progress
+                      max={Math.max(1, summary.totalPaths)}
+                      value={summary.completedPaths}
+                      aria-label={`${summary.canonicalName}: ${percentage}% of variations practiced`}
+                    />
+                  </div>
+                  <div className="progress-family-recall">
+                    <strong>{summary.dueCards}</strong>
+                    <span>{summary.dueCards === 1 ? 'move due' : 'moves due'}</span>
+                  </div>
+                  <span className="progress-family-depth">
+                    {summary.learnerDepthRange
+                      ? `${summary.learnerDepthRange[0]}–${summary.learnerDepthRange[1]} moves`
+                      : 'Depth pending'}
+                  </span>
+                  {preferredTarget && onStartTrainingTarget ? (
+                    <button
+                      type="button"
+                      className="secondary-button progress-family-action"
+                      onClick={() => onStartTrainingTarget(preferredTarget)}
+                    >
+                      {preferredTarget.mode === 'review' ? 'Review' : 'Resume'}
+                    </button>
+                  ) : <span className="progress-family-status">Study only</span>}
+                </li>
+              )
+            })}
+          </ul>
+        </section>
+      ) : null}
+      {!hasTrainingActivity ? (
+        <section className="progress-first-run" aria-labelledby="progress-first-run-title">
+          <span className="state-icon" aria-hidden="true">↗</span>
+          <div>
+            <p className="eyebrow">Start here</p>
+            <h2 id="progress-first-run-title">Your first session will build this page.</h2>
+            <p>Choose an opening, finish a variation, and LineRecall will track recall and puzzle practice separately.</p>
+          </div>
+          {onBrowseRepertoire ? (
+            <button type="button" className="primary-action" onClick={onBrowseRepertoire}>Choose an opening</button>
+          ) : null}
+        </section>
+      ) : null}
       {summaries.excludedCards > 0 ? (
         <div className="persistent-warning" role="status">
           <span aria-hidden="true">!</span>{' '}
-          {summaries.excludedCards} stored {summaries.excludedCards === 1 ? 'card record was' : 'card records were'} excluded from progress totals because {summaries.excludedCards === 1 ? 'it does' : 'they do'} not match a current audited learner position or {summaries.excludedCards === 1 ? 'it duplicates' : 'they duplicate'} one. The raw review history remains below.
+          {summaries.excludedCards} stored {summaries.excludedCards === 1 ? 'position was' : 'positions were'} excluded because {summaries.excludedCards === 1 ? 'it does' : 'they do'} not match the current opening library or {summaries.excludedCards === 1 ? 'it duplicates' : 'they duplicate'} another record. The original review history remains below.
         </div>
       ) : null}
 
-      <section className="card-history" aria-labelledby="puzzle-progress-title">
+      {hasTrainingActivity ? <section className="card-history" aria-labelledby="puzzle-progress-title">
         <h2 id="puzzle-progress-title">Puzzle progress</h2>
-        <p className="field-help">Puzzle attempts never change opening-recall schedules or family coverage.</p>
+        <p className="field-help">Puzzle attempts never change opening recall or variations practiced.</p>
         {puzzleEntries.length === 0 ? (
-          <p className="field-help">Audited tactical results appear here after a promoted puzzle shard is available.</p>
+          <p className="field-help">Puzzle results appear here after your first tactical session.</p>
         ) : (
           <div className="table-scroll" tabIndex={0} role="region" aria-label="Puzzle progress, horizontally scrollable">
             <table className="stats-table">
               <caption>{puzzleEntries.length} attempted tactical {puzzleEntries.length === 1 ? 'puzzle' : 'puzzles'}</caption>
               <thead>
-                <tr><th scope="col">Puzzle</th><th scope="col">Mastery</th><th scope="col">Solved</th><th scope="col">Clean solves</th><th scope="col">Hints</th><th scope="col">Incorrect moves</th><th scope="col">Abandoned</th></tr>
+                <tr><th scope="col">Puzzle</th><th scope="col">Puzzle recall</th><th scope="col">Solved</th><th scope="col">Clean solves</th><th scope="col">Hints</th><th scope="col">Incorrect moves</th><th scope="col">Abandoned</th></tr>
               </thead>
               <tbody>
                 {puzzleEntries.map((entry) => (
@@ -270,14 +384,14 @@ export function ProgressView({
             </table>
           </div>
         )}
-      </section>
+      </section> : null}
 
       <section className="transfer-panel" aria-labelledby="transfer-title">
         <div>
           <h2 id="transfer-title">Keep a portable copy</h2>
           <p>
             Storage mode: <strong>{repositoryKind === 'cloud' ? 'cloud account' : repositoryKind === 'artifact' ? 'personal Artifact storage' : 'session only'}</strong>.
-            Exported JSON is versioned and strictly validated on import. Complete bundles include opening recall, tactical puzzles, and autonomous family coverage.
+            Exported JSON is versioned and strictly validated on import. Complete bundles include opening recall, tactical puzzles, and variation history.
           </p>
         </div>
         <div className="transfer-actions">
@@ -309,15 +423,15 @@ export function ProgressView({
           <div className="import-confirmation" role="group" aria-label="Confirm progress import">
             {candidate.kind === 'bundle-v1' ? (
               <p>
-                <strong>{fileName}</strong> is a complete bundle: {Object.keys(candidate.bundle.openingProgress.cards).length} opening cards,{' '}
+                <strong>{fileName}</strong> is a complete bundle: {Object.keys(candidate.bundle.openingProgress.cards).length} opening moves,{' '}
                 {Object.keys(candidate.bundle.puzzleProgress.puzzles).length} attempted puzzles,{' '}
-                {candidate.bundle.familyJournal.coverageEvents.length} family-path completions, and{' '}
-                {candidate.bundle.familyJournal.latestCursors.length} resumable family cursors. Confirming replaces all current opening, puzzle, and family training data.
+                {candidate.bundle.familyJournal.coverageEvents.length} completed variations, and{' '}
+                {candidate.bundle.familyJournal.latestCursors.length} saved opening sessions. Confirming replaces all current opening, puzzle, and variation history.
               </p>
             ) : (
               <p>
-                <strong>{fileName}</strong> is an older progress-only file: {Object.keys(candidate.progress.cards).length} cards, {candidate.progress.streak.current}-day streak.
-                Confirming replaces opening progress and settings only. Current puzzle progress and family coverage stay unchanged.
+                <strong>{fileName}</strong> is an older progress-only file: {Object.keys(candidate.progress.cards).length} moves, {candidate.progress.streak.current}-day streak.
+                Confirming replaces opening progress and settings only. Current puzzle results and variation history stay unchanged.
               </p>
             )}
             <div className="inline-controls">
@@ -348,7 +462,7 @@ export function ProgressView({
         ) : null}
       </section>
 
-      <section className="card-history" aria-labelledby="opening-progress-title">
+      {hasTrainingActivity ? <section className="card-history" aria-labelledby="opening-progress-title">
         <h2 id="opening-progress-title">Opening progress</h2>
         {summaries.openings.length === 0 ? (
           <div className="resource-state empty-state">
@@ -361,7 +475,7 @@ export function ProgressView({
             <table className="stats-table">
               <caption>{summaries.openings.length} started {summaries.openings.length === 1 ? 'opening' : 'openings'}</caption>
               <thead>
-                <tr><th scope="col">Opening</th><th scope="col">Mastery</th><th scope="col">Reviewed cards</th><th scope="col">Due now</th><th scope="col">Total cards</th><th scope="col">Streak</th><th scope="col">Last reviewed (UTC)</th></tr>
+                <tr><th scope="col">Opening</th><th scope="col">Average recall</th><th scope="col">Moves reviewed</th><th scope="col">Due now</th><th scope="col">Moves tracked</th><th scope="col">Streak</th><th scope="col">Last reviewed</th></tr>
               </thead>
               <tbody>
                 {summaries.openings.map((opening) => (
@@ -372,25 +486,25 @@ export function ProgressView({
                     <td>{opening.dueCards}</td>
                     <td>{opening.totalCards}</td>
                     <td>{opening.streak} {opening.streak === 1 ? 'day' : 'days'}</td>
-                    <td>{opening.lastReviewedAt ?? 'Not reviewed'}</td>
+                    <td>{formatReviewDate(opening.lastReviewedAt, 'Not reviewed')}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         )}
-      </section>
+      </section> : null}
 
-      <section className="card-history" aria-labelledby="variation-progress-title">
-        <h2 id="variation-progress-title">Training-side variation progress</h2>
+      {hasTrainingActivity ? <section className="card-history" aria-labelledby="variation-progress-title">
+        <h2 id="variation-progress-title">Opening-side recall</h2>
         {summaries.variations.length === 0 ? (
           <p className="field-help">White- and Black-side variation totals appear after the first review in an opening.</p>
         ) : (
           <div className="table-scroll" tabIndex={0} role="region" aria-label="Training-side variation progress, horizontally scrollable">
             <table className="stats-table">
-              <caption>{summaries.variations.length} trained-side {summaries.variations.length === 1 ? 'variation' : 'variations'} in started openings</caption>
+              <caption>{summaries.variations.length} opening {summaries.variations.length === 1 ? 'side' : 'sides'} with review history</caption>
               <thead>
-                <tr><th scope="col">Opening / trained side</th><th scope="col">Mastery</th><th scope="col">Reviewed cards</th><th scope="col">Due now</th><th scope="col">Total cards</th><th scope="col">Streak</th><th scope="col">Last reviewed (UTC)</th></tr>
+                <tr><th scope="col">Opening / side</th><th scope="col">Average recall</th><th scope="col">Moves reviewed</th><th scope="col">Due now</th><th scope="col">Moves tracked</th><th scope="col">Streak</th><th scope="col">Last reviewed</th></tr>
               </thead>
               <tbody>
                 {summaries.variations.map((variation) => (
@@ -401,29 +515,29 @@ export function ProgressView({
                     <td>{variation.dueCards}</td>
                     <td>{variation.totalCards}</td>
                     <td>{variation.streak} {variation.streak === 1 ? 'day' : 'days'}</td>
-                    <td>{variation.lastReviewedAt ?? 'Not reviewed'}</td>
+                    <td>{formatReviewDate(variation.lastReviewedAt, 'Not reviewed')}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         )}
-      </section>
+      </section> : null}
 
-      <section className="card-history" aria-labelledby="card-history-title">
+      {hasTrainingActivity ? <section className="card-history" aria-labelledby="card-history-title">
         <h2 id="card-history-title">Review history</h2>
         {cards.length === 0 ? (
           <div className="resource-state empty-state">
             <span className="state-icon" aria-hidden="true">○</span>
             <h3>No reviews yet</h3>
-            <p>Start a line from Repertoire. New cards begin at 0% mastery.</p>
+            <p>Choose an opening from Repertoire. New moves begin at 0% recall.</p>
           </div>
         ) : (
           <div className="table-scroll" tabIndex={0} role="region" aria-label="Review card history, horizontally scrollable">
             <table className="stats-table">
-              <caption>{cards.length} stored {cards.length === 1 ? 'card' : 'cards'}</caption>
+              <caption>{cards.length} stored {cards.length === 1 ? 'move' : 'moves'}</caption>
               <thead>
-                <tr><th scope="col">Variation / node</th><th scope="col">Mastery</th><th scope="col">Interval</th><th scope="col">Reviews</th><th scope="col">Lapses</th><th scope="col">Last reviewed (UTC)</th><th scope="col">Due (UTC)</th></tr>
+                <tr><th scope="col">Variation / move</th><th scope="col">Recall</th><th scope="col">Review interval</th><th scope="col">Reviews</th><th scope="col">Misses</th><th scope="col">Last reviewed</th><th scope="col">Due</th></tr>
               </thead>
               <tbody>
                 {cards.map((card) => (
@@ -433,15 +547,15 @@ export function ProgressView({
                     <td>{card.intervalDays} {card.intervalDays === 1 ? 'day' : 'days'}</td>
                     <td>{card.reviewCount}</td>
                     <td>{card.lapseCount}</td>
-                    <td>{card.lastReviewedAt ?? 'New'}</td>
-                    <td>{card.dueAt}</td>
+                    <td>{formatReviewDate(card.lastReviewedAt, 'New')}</td>
+                    <td>{formatReviewDate(card.dueAt, 'Not scheduled')}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         )}
-      </section>
+      </section> : null}
     </div>
   )
 }

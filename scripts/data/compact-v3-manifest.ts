@@ -68,10 +68,13 @@ export function approvedCompactCorpusFromBytes(
       cutoff: lastDayOfMonth(manifest.cutoffMonth),
       publishedGameTotal: BROADCAST_PUBLISHED_GAME_TOTAL,
       archives: manifest.archives.map((archive) => ({
-        ...archive,
-        compressedBytes: null,
-        etagObserved: null,
-        lastModifiedObserved: null,
+        month: archive.month,
+        filename: archive.filename,
+        url: archive.url,
+        sha256: archive.sha256,
+        compressedBytes: archive.bytes ?? null,
+        etagObserved: archive.etagObserved ?? null,
+        lastModifiedObserved: archive.lastModifiedObserved ?? null,
         publishedGames: null,
       })),
     }

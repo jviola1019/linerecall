@@ -14,7 +14,7 @@ test.describe('production artifact interactions', () => {
   test('search, validation, ECO, and move-list navigation work by keyboard', async ({ page }) => {
     await page.getByRole('button', { name: 'Explore' }).click()
     await expect(page.getByRole('heading', { name: 'Explore openings' })).toBeVisible()
-    const search = page.getByLabel('Search by opening name, ECO, SAN, or UCI')
+    const search = page.getByLabel('Opening name or ECO code')
     await search.fill('Sicilian')
     await search.press('Enter')
     await expect(page.getByRole('heading', { name: /Search results/u })).toBeVisible()
@@ -45,18 +45,18 @@ test.describe('production artifact interactions', () => {
     await page.keyboard.press('ArrowRight')
     await expect(secondMove).toBeFocused()
 
-    await page.getByLabel('PGN', { exact: true }).check()
-    const pgn = page.getByLabel('Paste a Standard-chess PGN')
+    await page.getByLabel('Paste PGN', { exact: true }).check()
+    const pgn = page.getByLabel('Standard-chess PGN')
     await pgn.fill('[Event "Malformed"]\n\n1. e4 e5 2. ThisIsNotAMove 1-0')
     await pgn.press('Control+Enter')
     await page.getByRole('button', { name: 'Search openings' }).click()
     await expect(page.getByRole('alert')).toContainText(/PGN|move|parse|legal/iu)
 
-    await page.getByLabel('Name / ECO', { exact: true }).check()
+    await page.getByLabel('Search by name or ECO', { exact: true }).check()
     await page.evaluate(() => { (window as Window & { __linerecallXss?: number }).__linerecallXss = 0 })
-    await page.getByLabel('Search by opening name, ECO, SAN, or UCI').fill('<img src=x onerror="window.__linerecallXss=1">')
+    await page.getByLabel('Opening name or ECO code').fill('<img src=x onerror="window.__linerecallXss=1">')
     await page.getByRole('button', { name: 'Search openings' }).click()
-    await expect(page.getByText('No audited opening matches found.')).toBeVisible()
+    await expect(page.getByText('No openings found.')).toBeVisible()
     expect(await page.evaluate(() => (window as Window & { __linerecallXss?: number }).__linerecallXss)).toBe(0)
     await expect(page.locator('.search-results img')).toHaveCount(0)
   })
@@ -78,7 +78,7 @@ test.describe('production artifact interactions', () => {
 
     await page.getByRole('button', { name: 'Progress' }).click()
     await expect(page.getByRole('heading', { name: 'Your progress' })).toBeVisible()
-    await expect(page.getByText('Cards reviewed').locator('..').getByRole('strong')).not.toHaveText('0')
+    await expect(page.getByText('Moves reviewed').locator('..').getByRole('strong')).not.toHaveText('0')
 
     const invalid = page.getByLabel('Choose progress JSON')
     await invalid.setInputFiles({ name: 'hostile.json', mimeType: 'application/json', buffer: Buffer.from('{"__proto__":') })

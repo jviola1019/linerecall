@@ -15,5 +15,25 @@
     { "id": "legal-certification", "pattern": "\\b(?:ADA|WCAG|Section 508)[- ](?:certified|compliant)\\b" },
     { "id": "unsupported-human-review", "pattern": "\\bhuman[- ]reviewed\\b" },
     { "id": "assistant-filler", "pattern": "\\b(?:delve into|seamlessly|effortlessly|elevate your|journey)\\b" }
-  ]
+  ],
+  "learnerWorkflow": {
+    "pathPrefixes": [
+      "src/app/App.tsx",
+      "src/app/components/GraphTrainingBoundary.tsx",
+      "src/app/components/OpeningBrowser.tsx",
+      "src/app/components/OpeningFamilyView.tsx",
+      "src/app/components/ProgressView.tsx",
+      "src/app/components/TacticalPuzzleView.tsx"
+    ],
+    "prohibitedPatterns": [
+      { "id": "implementation-coverage", "pattern": "\\bcoverage (?:cycle|run|generation)\\b" },
+      { "id": "implementation-cursor", "pattern": "\\b(?:saved )?cursor(?: update)?s?\\b" },
+      { "id": "implementation-shard", "pattern": "\\b(?:data|puzzle|tactical) shards?\\b" },
+      { "id": "implementation-release", "pattern": "\\brelease checks?\\b" },
+      { "id": "implementation-schema", "pattern": "\\bruntime schemas?\\b" },
+      { "id": "implementation-terminal", "pattern": "\\bevidence terminals?\\b" },
+      { "id": "implementation-ply", "pattern": "\\bply 100\\b" },
+      { "id": "implementation-graph", "pattern": "\\b(?:training|repertoire) graph\\b" }
+    ]
+  }
 }

@@ -4,7 +4,7 @@ import { AxeBuilder } from '@axe-core/playwright'
 export const APP_PATH = '/linerecall.html'
 
 export async function waitForReadyApp(page: Page): Promise<void> {
-  await expect(page.getByRole('heading', { name: 'Ready when you are.', level: 1 })).toBeVisible({ timeout: 20_000 })
+  await expect(page.getByRole('heading', { name: 'Your opening practice', level: 1 })).toBeVisible({ timeout: 20_000 })
   await expect(page.getByRole('navigation', { name: 'Primary navigation' })).toBeVisible({ timeout: 15_000 })
 }
 
@@ -33,8 +33,12 @@ export async function openDataLicenses(page: Page): Promise<void> {
     await utilityButton.click()
   } else {
     await page.getByRole('button', { name: 'Today' }).click()
-    await expect(page.getByRole('heading', { name: 'Ready when you are.' })).toBeVisible()
-    await page.getByRole('button', { name: 'Review data provenance' }).click()
+    await expect(page.getByRole('heading', { name: 'Your opening practice' })).toBeVisible()
+    const viewSources = page.getByRole('button', { name: 'View sources and checks' })
+    if (!await viewSources.isVisible().catch(() => false)) {
+      await page.locator('.today-data-card summary').click()
+    }
+    await viewSources.click()
   }
   await expect(page.getByRole('heading', { name: /Data.*licenses/iu })).toBeVisible({ timeout: 15_000 })
 }
@@ -50,13 +54,12 @@ export async function startAnyDrill(page: Page): Promise<void> {
   await expect(caroKann).toHaveCount(1)
   await caroKann.click()
   await expect(page.getByRole('heading', { name: /^Caro.*Kann$/iu, level: 1 })).toBeVisible({ timeout: 15_000 })
-  const openTraining = page.getByRole('button', { name: 'Start full family' })
+  const openTraining = page.getByRole('button', { name: 'Practice all variations' })
   await expect(openTraining).toBeEnabled({ timeout: 15_000 })
   await openTraining.click()
-  await expect(page.getByRole('heading', { name: 'Practice every audited branch' })).toBeVisible({ timeout: 15_000 })
-  const start = page.getByRole('button', { name: 'Start full repertoire' })
-  await expect(start).toBeEnabled()
-  await start.click()
+  // A deliberate family-card action carries start intent, so the first
+  // unfinished variation opens immediately. Bare deep links still stop at the
+  // scope chooser and are covered separately.
   await expect(board).toBeVisible({ timeout: 10_000 })
 }
 

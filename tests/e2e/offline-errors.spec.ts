@@ -1,7 +1,7 @@
 import { pathToFileURL } from 'node:url'
 import { resolve } from 'node:path'
 import { test, expect } from '@playwright/test'
-import { APP_PATH, loadReadyApp, openRepertoire, startAnyDrill } from './helpers.ts'
+import { APP_PATH, loadReadyApp, openRepertoire } from './helpers.ts'
 
 test('initial unsupported-data failure is visible and retryable without fabricated fallback content', async ({ page }) => {
   await page.addInitScript(() => {
@@ -69,8 +69,12 @@ test('already loaded hosted artifact continues with all network requests blocked
   await expect(page.getByRole('heading', { name: 'Puzzles', level: 1 })).toBeVisible()
   await page.getByRole('button', { name: 'Data & licenses' }).click()
   await expect(page.getByRole('heading', { name: /Data.*licenses/iu })).toBeVisible()
-  await startAnyDrill(page)
-  expect(requests.length, 'Embedded browse/drill/data use made an unexpected network request').toBe(readyRequestCount)
+  await page.getByRole('button', { name: 'Repertoire' }).click()
+  await page.getByRole('searchbox', { name: 'Find an opening' }).fill('Caro')
+  await page.getByRole('list', { name: 'Opening families' }).getByRole('button', { name: /^Caro.*Kann/iu }).click()
+  await expect(page.getByRole('heading', { name: /^Caro.*Kann$/iu, level: 1 })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Practice unavailable' })).toBeDisabled()
+  expect(requests.length, 'Embedded browse, puzzle, family, and data use made an unexpected network request').toBe(readyRequestCount)
 })
 
 test('downloaded self-contained HTML starts directly from file URL with the network disabled', async ({ page }) => {
@@ -78,12 +82,12 @@ test('downloaded self-contained HTML starts directly from file URL with the netw
   await page.route('https://**/*', (route) => route.abort('internetdisconnected'))
   const url = pathToFileURL(resolve('build/candidate/linerecall.html')).href
   await page.goto(url, { waitUntil: 'domcontentloaded' })
-  await expect(page.getByRole('heading', { name: 'Ready when you are.' })).toBeVisible({ timeout: 20_000 })
-  const familyAction = page.getByRole('button', { name: 'Open family' })
+  await expect(page.getByRole('heading', { name: 'Your opening practice' })).toBeVisible({ timeout: 20_000 })
+  const familyAction = page.getByRole('button', { name: 'Open Caro–Kann' })
   await expect(familyAction).toBeVisible()
   await familyAction.click()
   await expect(page.getByRole('heading', { name: /Caro.Kann/u, level: 1 })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Training graph pending audit' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Practice unavailable' })).toBeDisabled()
   await page.getByRole('button', { name: 'Progress' }).click()
   await expect(page.getByRole('heading', { name: 'Your progress' })).toBeVisible()
 })
@@ -91,7 +95,7 @@ test('downloaded self-contained HTML starts directly from file URL with the netw
 test('empty search state is explicit', async ({ page }) => {
   await loadReadyApp(page)
   await page.getByRole('button', { name: 'Explore' }).click()
-  await page.getByLabel('Search by opening name, ECO, SAN, or UCI').fill('zzzz-no-opening-can-match-99999')
+  await page.getByLabel('Opening name or ECO code').fill('zzzz-no-opening-can-match-99999')
   await page.getByRole('button', { name: 'Search openings' }).click()
-  await expect(page.getByText('No audited opening matches found.')).toBeVisible()
+  await expect(page.getByText('No openings found.')).toBeVisible()
 })

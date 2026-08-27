@@ -117,11 +117,29 @@ test.describe('review-only board and tactical audit', () => {
     await chooseScenario(page, 'capture')
     const capturingId = await pieceIdAt(page, 'e4')
     const capturedId = await pieceIdAt(page, 'd5')
+    await page.evaluate((expectedCapturedId) => {
+      const layer = document.querySelector('.visual-piece-layer')
+      if (!layer) throw new Error('The visual piece layer is not rendered')
+      document.body.dataset.captureStateObserved = 'false'
+      const observeCapturedState = (): void => {
+        const captured = Array.from(layer.querySelectorAll<HTMLElement>('.visual-piece'))
+          .find((piece) => piece.dataset.pieceId === expectedCapturedId)
+        if (captured?.dataset.transitionState !== 'captured') return
+        document.body.dataset.captureStateObserved = 'true'
+        observer.disconnect()
+      }
+      const observer = new MutationObserver(observeCapturedState)
+      observer.observe(layer, {
+        subtree: true,
+        childList: true,
+        attributes: true,
+        attributeFilter: ['data-transition-state'],
+      })
+      observeCapturedState()
+    }, capturedId)
     await runTransition(page)
     await expect(page.locator(`.visual-piece[data-piece-id="${capturingId}"]`)).toHaveAttribute('data-square', 'd5')
-    await expect(page.locator(
-      `.visual-piece[data-piece-id="${capturedId}"][data-transition-state="captured"]`,
-    )).toHaveCount(1)
+    await expect.poll(() => page.evaluate(() => document.body.dataset.captureStateObserved)).toBe('true')
     await page.waitForTimeout(220)
     await expect(page.locator(`.visual-piece[data-piece-id="${capturedId}"]`)).toHaveCount(0)
 
@@ -384,12 +402,12 @@ test.describe('review-only board and tactical audit', () => {
 
   test('shows each tactical resource state without substituting opening recall', async ({ page }, testInfo) => {
     const states = [
-      ['disabled', 'Tactical puzzles are not released yet'],
-      ['loading', 'Loading the audited tactical puzzle shard'],
+      ['disabled', 'Verified puzzles aren’t included in this build yet.'],
+      ['loading', 'Loading puzzles'],
       ['empty', 'No matching tactical puzzles'],
       ['offline-empty', 'Puzzles unavailable offline'],
       ['rate-limited', 'Puzzle service is rate-limited'],
-      ['corrupt', 'Puzzle shard rejected'],
+      ['corrupt', 'Puzzles could not be loaded'],
       ['error', 'Puzzles unavailable'],
     ] as const
     for (const [state, copy] of states) {
@@ -406,6 +424,85 @@ test.describe('review-only board and tactical audit', () => {
     }
   })
 
+  test('separates mobile edge coordinates from pieces in both board orientations', async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 320, height: 800 })
+    await page.goto(`${APP_PATH}?puzzleState=ready#/puzzles`, { waitUntil: 'domcontentloaded' })
+    const board = page.getByRole('grid', { name: 'Chessboard, white orientation' })
+    await expect(board).toBeVisible()
+
+    const edgeSnapshot = async (): Promise<{
+      orientation: string | undefined
+      firstRow: string[]
+      lastRow: string[]
+      ranks: string[]
+      files: string[]
+      overlaps: Array<{ square: string; coordinate: string }>
+      compared: number
+    }> => page.evaluate(() => {
+      const grid = document.querySelector<HTMLElement>('.chessboard')
+      const layer = document.querySelector<HTMLElement>('.visual-piece-layer')
+      if (!grid || !layer) throw new Error('The board layers are not rendered')
+      const rows = [...grid.querySelectorAll<HTMLElement>('.board-row')]
+      const squareName = (square: HTMLElement): string => square.getAttribute('aria-label')?.split(',')[0] ?? ''
+      const rowNames = (row: HTMLElement | undefined): string[] => row
+        ? [...row.querySelectorAll<HTMLElement>('.board-square')].map(squareName)
+        : []
+      const overlaps: Array<{ square: string; coordinate: string }> = []
+      let compared = 0
+      for (const label of grid.querySelectorAll<HTMLElement>('.rank-label, .file-label')) {
+        const square = label.closest<HTMLElement>('.board-square')
+        if (!square) continue
+        const coordinate = squareName(square)
+        const piece = layer.querySelector<HTMLElement>(`.visual-piece[data-square="${coordinate}"] .piece`)
+        if (!piece) continue
+        compared += 1
+        const labelBox = label.getBoundingClientRect()
+        const pieceBox = piece.getBoundingClientRect()
+        const intersects = Math.min(labelBox.right, pieceBox.right) - Math.max(labelBox.left, pieceBox.left) > 0.25
+          && Math.min(labelBox.bottom, pieceBox.bottom) - Math.max(labelBox.top, pieceBox.top) > 0.25
+        if (intersects) overlaps.push({ square: coordinate, coordinate: label.textContent ?? '' })
+      }
+      return {
+        orientation: layer.dataset.orientation,
+        firstRow: rowNames(rows[0]),
+        lastRow: rowNames(rows.at(-1)),
+        ranks: [...grid.querySelectorAll<HTMLElement>('.rank-label')].map(({ textContent }) => textContent ?? ''),
+        files: [...grid.querySelectorAll<HTMLElement>('.file-label')].map(({ textContent }) => textContent ?? ''),
+        overlaps,
+        compared,
+      }
+    })
+
+    const white = await edgeSnapshot()
+    expect(white).toMatchObject({
+      orientation: 'white',
+      firstRow: ['a8', 'b8', 'c8', 'd8', 'e8', 'f8', 'g8', 'h8'],
+      lastRow: ['a1', 'b1', 'c1', 'd1', 'e1', 'f1', 'g1', 'h1'],
+      ranks: ['8', '7', '6', '5', '4', '3', '2', '1'],
+      files: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'],
+      overlaps: [],
+    })
+    expect(white.compared).toBeGreaterThan(0)
+
+    await page.getByRole('button', { name: 'Flip board' }).click()
+    await expect(page.getByRole('grid', { name: 'Chessboard, black orientation' })).toBeVisible()
+    const black = await edgeSnapshot()
+    expect(black).toMatchObject({
+      orientation: 'black',
+      firstRow: ['h1', 'g1', 'f1', 'e1', 'd1', 'c1', 'b1', 'a1'],
+      lastRow: ['h8', 'g8', 'f8', 'e8', 'd8', 'c8', 'b8', 'a8'],
+      ranks: ['1', '2', '3', '4', '5', '6', '7', '8'],
+      files: ['h', 'g', 'f', 'e', 'd', 'c', 'b', 'a'],
+      overlaps: [],
+    })
+    expect(black.compared).toBeGreaterThan(0)
+
+    await testInfo.attach('mobile-board-coordinate-separation.json', {
+      body: JSON.stringify({ viewport: { width: 320, height: 800 }, white, black }, null, 2),
+      contentType: 'application/json',
+    })
+  })
+
   test('replays castling, en passant, promotion, and an alternate mate through the tactical UI', async ({ page }, testInfo) => {
     await page.setViewportSize({ width: 1440, height: 1200 })
 
@@ -416,7 +513,7 @@ test.describe('review-only board and tactical audit', () => {
     await page.getByRole('button', { name: 'Play move' }).click()
     await expect(page.locator(`.visual-piece[data-piece-id="${castlingKingId}"]`)).toHaveAttribute('data-square', 'g1')
     await expect(page.locator(`.visual-piece[data-piece-id="${castlingRookId}"]`)).toHaveAttribute('data-square', 'f1')
-    await expect(page.getByText(/full audited line is complete/u)).toBeVisible()
+    await expect(page.getByText(/full line is complete/u)).toBeVisible()
 
     await page.goto(`${APP_PATH}?puzzleState=ready&puzzleScenario=en-passant#/puzzles`, { waitUntil: 'domcontentloaded' })
     const enPassantPawnId = await pieceIdAt(page, 'e5')
@@ -425,7 +522,7 @@ test.describe('review-only board and tactical audit', () => {
     await page.getByRole('button', { name: 'Play move' }).click()
     await expect(page.locator(`.visual-piece[data-piece-id="${enPassantPawnId}"]`)).toHaveAttribute('data-square', 'd6')
     await expect(page.locator(`.visual-piece[data-piece-id="${enPassantCapturedId}"]`)).toHaveCount(0, { timeout: 500 })
-    await expect(page.getByText(/full audited line is complete/u)).toBeVisible()
+    await expect(page.getByText(/full line is complete/u)).toBeVisible()
 
     await page.goto(`${APP_PATH}?puzzleState=ready&puzzleScenario=promotion#/puzzles`, { waitUntil: 'domcontentloaded' })
     const promotionPawnId = await pieceIdAt(page, 'b7')
@@ -435,19 +532,35 @@ test.describe('review-only board and tactical audit', () => {
     await expect(promotedPiece).toHaveAttribute('data-square', 'b8')
     await expect(promotedPiece).toHaveAttribute('data-piece-type', 'wq')
     await expect(promotedPiece.locator('img')).toHaveCount(1)
-    await expect(page.getByText(/full audited line is complete/u)).toBeVisible()
+    await expect(page.getByText(/full line is complete/u)).toBeVisible()
 
     await page.goto(`${APP_PATH}?puzzleState=ready&puzzleScenario=alternate-mate#/puzzles`, { waitUntil: 'domcontentloaded' })
     await page.getByRole('combobox', { name: 'Legal move picker' }).selectOption('f7g7')
     await page.getByRole('button', { name: 'Play move' }).click()
     await expect(page.getByText('Solved with another legal mating move.')).toBeVisible()
-    await expect(page.getByRole('progressbar', { name: '1 of 1 learner decisions completed' })).toHaveAttribute('value', '1')
+    await expect(page.getByRole('progressbar', { name: '1 of 1 moves completed' })).toHaveAttribute('value', '1')
     await auditAxeIncludingModerate(page, testInfo, 'puzzle-special-moves')
   })
 
   test('sequences learner and forced puzzle moves, focuses evidence, and keeps mobile controls above navigation', async ({ page }, testInfo) => {
-    await page.setViewportSize({ width: 320, height: 800 })
+    await page.setViewportSize({ width: 360, height: 800 })
     await page.goto(`${APP_PATH}?puzzleState=ready#/puzzles`, { waitUntil: 'domcontentloaded' })
+    await expect(page.locator('.review-fixture-banner')).toBeVisible()
+    await expect(page.locator('.app-header')).toBeVisible()
+    const fixtureTop = await page.evaluate(() => {
+      const banner = document.querySelector<HTMLElement>('.review-fixture-banner')?.getBoundingClientRect()
+      const header = document.querySelector<HTMLElement>('.app-header')?.getBoundingClientRect()
+      if (!banner || !header) throw new Error('The mobile fixture header is incomplete')
+      return {
+        banner: { top: banner.top, bottom: banner.bottom },
+        header: { top: header.top },
+      }
+    })
+    expect(Math.abs(fixtureTop.banner.top), 'synthetic fixture banner must touch the viewport top').toBeLessThanOrEqual(1)
+    expect(
+      Math.abs(fixtureTop.header.top - fixtureTop.banner.bottom),
+      'app content must start immediately after the synthetic fixture banner',
+    ).toBeLessThanOrEqual(1)
     const whiteKnightId = await pieceIdAt(page, 'g1')
     const blackKnightId = await pieceIdAt(page, 'b8')
     await page.getByRole('combobox', { name: 'Legal move picker' }).selectOption('g1f3')
@@ -464,21 +577,47 @@ test.describe('review-only board and tactical audit', () => {
     const b5 = page.getByRole('gridcell', { name: /^b5,/u })
     await b5.focus()
     await page.keyboard.press('Space')
-    await expect(page.getByText(/Solved\. The full audited line is complete/u)).toBeVisible()
+    await expect(page.getByText(/Solved\. The full line is complete/u)).toBeVisible()
 
     const why = page.getByRole('button', { name: 'Why' })
+    const boardFrame = page.locator('.chessboard-overlay-frame')
     const dock = page.getByRole('group', { name: 'Puzzle actions' })
     const nav = page.getByRole('navigation', { name: 'Primary navigation' })
-    const [dockBox, navBox] = await Promise.all([dock.boundingBox(), nav.boundingBox()])
-    if (!dockBox || !navBox) throw new Error('The mobile puzzle controls are not rendered')
+    const [boardBox, dockBox, navBox] = await Promise.all([
+      boardFrame.boundingBox(),
+      dock.boundingBox(),
+      nav.boundingBox(),
+    ])
+    if (!boardBox || !dockBox || !navBox) throw new Error('The mobile puzzle controls are not rendered')
+    expect(boardBox.y + boardBox.height).toBeLessThanOrEqual(dockBox.y + 1)
     expect(dockBox.y + dockBox.height).toBeLessThanOrEqual(navBox.y + 1)
     await why.click()
     await expect(page.getByRole('complementary', { name: 'Solution complete' })).toBeFocused()
-    await expect(page.locator('.global-live-region')).toHaveText('Puzzle evidence opened.')
+    await expect(page.locator('.global-live-region')).toHaveText('Puzzle details opened.')
+    const focusedLayout = await page.evaluate(() => {
+      const banner = document.querySelector<HTMLElement>('.review-fixture-banner')?.getBoundingClientRect()
+      const evidence = document.querySelector<HTMLElement>('.tactical-evidence')?.getBoundingClientRect()
+      if (!banner || !evidence) throw new Error('The focused mobile fixture layout is incomplete')
+      return {
+        banner: { top: banner.top, bottom: banner.bottom },
+        evidence: { top: evidence.top },
+      }
+    })
+    expect(Math.abs(focusedLayout.banner.top), 'synthetic fixture banner must stay at the viewport top after focus moves').toBeLessThanOrEqual(1)
     await assertNoPageOverflow(page, 'review puzzle mobile')
     await testInfo.attach('review-puzzle-mobile-controls.png', {
       body: await page.screenshot({ animations: 'disabled' }),
       contentType: 'image/png',
+    })
+    await testInfo.attach('review-puzzle-mobile-layout.json', {
+      body: JSON.stringify({
+        viewport: { width: 320, height: 800 },
+        initial: fixtureTop,
+        focused: focusedLayout,
+        dock: { top: dockBox.y, bottom: dockBox.y + dockBox.height },
+        navigation: { top: navBox.y, bottom: navBox.y + navBox.height },
+      }, null, 2),
+      contentType: 'application/json',
     })
 
     const visibleCopy = await page.locator('body').innerText()

@@ -77,6 +77,18 @@ function completeBroadcastManifest(includeRequiredMetadata = true): Buffer {
       basis: 'Fixture approval basis.',
       reviewRequiredWhen: 'Fixture identity changes.',
     },
+    ...(includeRequiredMetadata ? {
+      metadataObservation: {
+        schemaVersion: 1,
+        kind: 'linerecall-broadcast-metadata-observation-ref',
+        receiptSha256: 'a'.repeat(64),
+        sourceManifestSha256: 'b'.repeat(64),
+        sourceSnapshotSha256: 'c'.repeat(64),
+        observedAt: '2026-08-06T12:00:00.000Z',
+        archiveCount: 78,
+        localArchivesVerified: true,
+      },
+    } : {}),
     archives,
   }))
 }

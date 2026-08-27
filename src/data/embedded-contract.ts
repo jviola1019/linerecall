@@ -2,6 +2,7 @@ import { z } from 'zod'
 import {
   ContentAddressedRefV1Schema,
   FamilyReleaseIdSchema,
+  TacticalPuzzlePromotionBindingV1Schema,
 } from '../domain/opening-family.ts'
 import { MAX_PRODUCTION_SNAPSHOT_BASE64_BYTES } from './production-wire.ts'
 
@@ -117,6 +118,7 @@ export const EmbeddedProductionSnapshotPayloadV3Schema = z.object({
   }).strict(),
   appManifestSha256: z.string().regex(/^[a-f0-9]{64}$/u),
   familyPromotionIndexSha256: z.string().regex(/^[a-f0-9]{64}$/u),
+  puzzlePromotion: TacticalPuzzlePromotionBindingV1Schema,
   base: EmbeddedSnapshotPayloadSchema,
   familyCatalogRef: ContentAddressedRefV1Schema,
   familyResources: z.record(
@@ -124,7 +126,27 @@ export const EmbeddedProductionSnapshotPayloadV3Schema = z.object({
     EmbeddedFamilyResourceV3Schema,
   ),
 }).strict().superRefine((payload, context) => {
+  if (
+    payload.puzzlePromotion.releaseId !== payload.releaseId
+    || payload.puzzlePromotion.familyPromotionIndexSha256 !== payload.familyPromotionIndexSha256
+  ) {
+    context.addIssue({
+      code: 'custom',
+      path: ['puzzlePromotion'],
+      message: 'Embedded puzzle promotion does not match its authenticated release index',
+    })
+  }
   const paths = new Set<string>()
+  for (const [index, shard] of payload.puzzlePromotion.shards.entries()) {
+    const resource = payload.familyResources[shard.shardId]
+    if (!resource || resource.reference.sha256 !== shard.shardSha256) {
+      context.addIssue({
+        code: 'custom',
+        path: ['puzzlePromotion', 'shards', index],
+        message: 'Embedded puzzle shard differs from its authenticated promotion membership',
+      })
+    }
+  }
   for (const [id, resource] of Object.entries(payload.familyResources)) {
     if (id !== resource.reference.id) {
       context.addIssue({

@@ -17,6 +17,7 @@ import {
 } from './synthetic-repertoire-evidence.ts'
 import { createSyntheticFamilyCampaignBindings } from './synthetic-family-campaign-bindings.ts'
 import { productionBrowseManifestFixture } from './production-app-manifest.ts'
+import { createSyntheticApprovedEditorialLedger } from './synthetic-editorial-ledger.ts'
 
 export const HANDOFF_FIXTURE_RELEASE = 'synthetic-handoff-release-not-for-shipping'
 const HASH = 'a'.repeat(64)
@@ -215,7 +216,6 @@ export async function createProductionHandoffFixture(options: {
   })
   const puzzleShard = {
     schemaVersion: 1,
-    id: 'blob_0000000000000000',
     releaseId: HANDOFF_FIXTURE_RELEASE,
     generatedAt: '2026-07-28T12:00:00.000Z',
     familyIds: ['caro-kann'],
@@ -306,6 +306,21 @@ export async function createProductionHandoffFixture(options: {
       manifestRef: contentReference(manifestReceipt),
     }],
   }, 'gzip')
+  const editorialLedger = await writeFixtureJson(
+    root,
+    'resources/family-editorial-ledger.json.gz',
+    createSyntheticApprovedEditorialLedger({
+      releaseId: HANDOFF_FIXTURE_RELEASE,
+      families: [{
+        id: 'caro-kann',
+        canonicalName: 'Caro-Kann Defence',
+        aliases: ['Caro-Kann'],
+        ecoCodes: graph.pack.ecoCodes,
+        taxonomyLineIds,
+      }],
+    }),
+    'gzip',
+  )
 
   const promotionReceipts = {
     broadcast: broadcastPromotionReceipt,
@@ -338,6 +353,7 @@ export async function createProductionHandoffFixture(options: {
       releaseId: HANDOFF_FIXTURE_RELEASE,
       selectionPolicy: { practiceBranches: 'all-eligible-audited', maximumPracticeBranches: null },
       catalog: catalogReceipt,
+      editorialLedger,
       familyGraphBuild: campaign.familyGraphBuild,
       engineProofInventory: campaign.engineProofInventory,
       scidCrosscheckReport: campaign.scidCrosscheckReport,

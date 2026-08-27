@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { Chess, type PieceSymbol, type Square } from 'chess.js'
@@ -84,9 +84,12 @@ export class JsonFileFamilyEngineCache implements FamilyEngineCache {
   async load(key: string): Promise<UciAnalysis | null> {
     const path = join(this.directory, `${key}.json`)
     try {
-      const details = await stat(path)
-      if (!details.isFile() || details.size > MAX_CONTROL_FILE_BYTES) throw new Error('Engine cache entry is not a bounded regular file')
-      const parsed = CachedAnalysisSchema.parse(JSON.parse(await readFile(path, 'utf8')) as unknown)
+      const bytes = await readHandleBoundRegularFile(
+        path,
+        'Engine cache entry',
+        MAX_CONTROL_FILE_BYTES,
+      )
+      const parsed = CachedAnalysisSchema.parse(JSON.parse(bytes.toString('utf8')) as unknown)
       if (
         parsed.cacheKey !== key ||
         parsed.engineSha256 !== this.identity.engineSha256 ||

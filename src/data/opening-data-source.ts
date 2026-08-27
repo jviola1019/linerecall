@@ -4,6 +4,7 @@ import type {
   FamilyPackRefV1,
   OpeningFamilyCatalogV1,
   OpeningFamilyManifestV1,
+  TacticalPuzzlePromotionBindingV1,
   TacticalPuzzleShardV1,
 } from '../domain/opening-family.ts'
 import type { RepertoireGraphDocument } from '../domain/repertoire.ts'
@@ -37,6 +38,7 @@ export interface OpeningDataSource {
   loadFamilyManifest?(familyId: string, signal?: AbortSignal): Promise<OpeningFamilyManifestV1>
   loadRepertoirePack?(packRef: FamilyPackRefV1, signal?: AbortSignal): Promise<RepertoireGraphDocument>
   loadPuzzleShard?(shardRef: ContentAddressedRefV1, signal?: AbortSignal): Promise<TacticalPuzzleShardV1>
+  loadPuzzlePromotionBinding?(): TacticalPuzzlePromotionBindingV1
 }
 
 export interface FamilyOpeningDataSource extends OpeningDataSource {
@@ -45,6 +47,17 @@ export interface FamilyOpeningDataSource extends OpeningDataSource {
   loadFamilyManifest(familyId: string, signal?: AbortSignal): Promise<OpeningFamilyManifestV1>
   loadRepertoirePack(packRef: FamilyPackRefV1, signal?: AbortSignal): Promise<RepertoireGraphDocument>
   loadPuzzleShard(shardRef: ContentAddressedRefV1, signal?: AbortSignal): Promise<TacticalPuzzleShardV1>
+  loadPuzzlePromotionBinding?(): TacticalPuzzlePromotionBindingV1
+}
+
+export type TrustedPuzzleOpeningDataSource = FamilyOpeningDataSource & {
+  loadPuzzlePromotionBinding(): TacticalPuzzlePromotionBindingV1
+}
+
+export function supportsTrustedTacticalPuzzles(
+  source: OpeningDataSource,
+): source is TrustedPuzzleOpeningDataSource {
+  return supportsOpeningFamilies(source) && typeof source.loadPuzzlePromotionBinding === 'function'
 }
 
 export function supportsOpeningFamilies(source: OpeningDataSource): source is FamilyOpeningDataSource {

@@ -224,7 +224,126 @@ UltraBullet 0–29 seconds, Bullet 30–179, Blitz 180–479, Rapid 480–1499,
 Classical 1500–21599, and Correspondence thereafter. The three excluded speed
 classes map to `unknown`; they are never promoted into a trainable cohort.
 
-### Compact schema-v3 foundation
+### Compact schema-v3.1 bounded plan
+
+The production replacement is the log-structured compact-v3.1 contract in
+`scripts/data/compact-v31-contracts.ts`. It supersedes the cumulative SQLite
+copy strategy below for any new full-corpus run. One archive emits immutable,
+SHA-256-partitioned delta runs; an external merge consumes the 78 canonically
+ordered delta receipts and emits the final candidate or exact partitions. An
+archive transaction never copies or promotes the complete preceding database.
+
+The workspace owner authorized **only** a provisional local broadcast
+benchmark on 2026-08-27. The checked-in authorization binds proposal SHA-256
+`c598a637c729be22a61583345b33589f462f1fb07294ef53678f0ecc85e857d5`
+to observation SHA-256
+`043b06dfd1fdf6adee65b1e1d29e18a561c0a046c4d6a5dd124aeb138465d56c`.
+It explicitly leaves Q2 ingestion, benchmark promotion, and release use
+unauthorized. `data/manifests/compact-v31-benchmark.authorization.json` is the
+machine-readable record; changing either input byte stream requires a new
+authorization.
+
+Generate all 78 release-ineligible plans from the exact retained proposal and
+observation, the checked-in authorization, and a frozen current source tree:
+
+```text
+npm run data:evidence-v31-plans -- \
+  --proposal <broadcast-proposal-with-SHA-c598...57d5.json> \
+  --observation <broadcast-observation-with-SHA-043b...d56c.json> \
+  --authorization data/manifests/compact-v31-benchmark.authorization.json \
+  --limits data/manifests/compact-v31-benchmark.limits.json \
+  --output-dir <new-empty-plan-directory> \
+  --source-snapshot-sha256 <current-treeSha256> \
+  --generated-at <ISO-8601-UTC-timestamp>
+```
+
+The generator verifies all 78 local-verification bindings, the exact
+670,155,109 compressed-byte total, URL/checksum/ETag/Last-Modified identity,
+canonical order, and authorization hashes. Every plan binds the pipeline
+source snapshot, authorization receipt, limits, partitioning, and replay rules
+through one configuration digest.
+
+Before opening any archive, run:
+
+```text
+npm run data:evidence-v31-preflight -- \
+  --plan <plan-directory>/broadcast-2020-01.json \
+  --work-dir <existing-dedicated-work-directory>
+```
+
+Preflight requires at least 8 GiB currently available memory, enforces a
+6 GiB worker-RSS cap, inventories retained delta bytes without following
+links, and preserves at least 10 GiB free storage after the complete declared
+delta/merge/final-state upper bound. A blocked assessment exits nonzero. On
+2026-08-27 this workstation had adequate disk but less than 8 GiB available
+memory, so no benchmark was started.
+
+Two complete broadcast runs that each begin in a separate empty directory are
+mandatory. The fixture-tested executor
+now implements a fixed-memory overestimating candidate sketch, an exact game
+ownership ledger, bounded sorted spill runs, deterministic external merge,
+archive checkpoints, a 250 ms RSS/free-disk abort monitor, exact run receipts,
+and a two-run repeatability binding. It never copies a cumulative database.
+Candidate-sketch collisions can retain extra deep rows but cannot omit a row
+whose exact count can reach 100; the exact replay recomputes all retained
+counts from the verified source stream.
+
+The command requires all inputs explicitly and performs no download:
+
+```text
+npm run data:evidence-v31-benchmark -- \
+  --plans-dir <directory-with-78-bound-plans> \
+  --archives-dir <directory-with-78-approved-local-archives> \
+  --work-dir <empty-or-same-run-dedicated-directory> \
+  --run-id <unique-run-id>
+```
+
+Plan/source-snapshot validation and resource preflight complete before an
+archive handle opens. Every archive is then hashed while its Zstandard bytes
+are streamed, replayed from byte zero, and committed behind an immutable
+receipt and checkpoint. A matching completed checkpoint is verified and
+resumed without reopening its source. The first invocation writes an
+authenticated run-bootstrap marker proving that the directory began empty;
+later invocations accept only that same run, plan bundle, configuration, and
+authorization. Same-run abandoned staging directories are removed only after
+their type and location are checked. Any checksum, ownership conflict,
+counter saturation, RSS cap, output cap, or free-space breach aborts before a
+checkpoint can advance.
+
+These components have passed only bounded synthetic fixtures in this source
+tree. No real archive was opened by that test run, and the authorized
+broadcast benchmark has **not** run. On 2026-08-27 this workstation still had
+less than the required 8 GiB available memory, so the real command remains
+resource-blocked. Full-corpus runtime, spill amplification, partition skew,
+and final storage remain measurements the two clean runs must establish, not
+assumptions encoded as a pass. Run and repeatability receipts always remain
+`releaseEligible: false` and require separate result review; they do not
+authorize Q2 ingestion or production promotion.
+
+After two independent clean-directory runs, create (never overwrite) the
+comparison receipt from the six exact receipt files:
+
+```text
+npm run data:evidence-v31-compare -- \
+  --first-run <run-one-receipt.json> \
+  --first-candidate-merge <run-one-candidate-merge-receipt.json> \
+  --first-exact-merge <run-one-exact-merge-receipt.json> \
+  --second-run <run-two-receipt.json> \
+  --second-candidate-merge <run-two-candidate-merge-receipt.json> \
+  --second-exact-merge <run-two-exact-merge-receipt.json> \
+  --output <new-repeatability-receipt.json> \
+  --compared-at <ISO-8601-UTC-timestamp>
+```
+
+The comparison refuses different source/configuration bindings, noncanonical
+receipt bytes, reused run identities, changed receipt hashes, or any difference
+in candidate state, exact state, or accounting.
+
+### Historical compact schema-v3 foundation
+
+The cumulative implementation below remains available for fixtures and prior
+audit reconstruction only. Do not use it for the Q2 production run; its
+repeated cumulative database copies are the reason compact-v3.1 is required.
 
 Schema v3 is implemented alongside the historical v2 database; it never opens,
 converts, or deletes `data/generated/v2/evidence-graph.sqlite`. It defines an
@@ -246,6 +365,96 @@ and candidate-filtered adaptive evidence through absolute ply 100:
    from its start; it never seeks into an unverifiable compressed-stream
    location. Only completed receipts with the approved source byte length,
    SHA-256, and chained candidate-state hashes advance the checkpoint.
+
+#### Broadcast metadata and benchmark approval handoff
+
+The historical broadcast manifest pins every publisher SHA-256 but predates
+the byte-length, ETag, and Last-Modified fields required by compact-v3 remote
+receipts. Those values may not be copied from an ad hoc request or inferred
+from the 670 MB cache. After freezing the source tree, record its printed
+`treeSha256`, then create an immutable pending observation while also hashing
+all 78 cached archives:
+
+```text
+npm run security:source-snapshot
+npm run data:broadcast-metadata-observe -- \
+  --manifest data/manifests/broadcasts.source.json \
+  --output <new-pending-observation.json> \
+  --observed-at <ISO-8601-UTC-timestamp> \
+  --source-snapshot-sha256 <treeSha256> \
+  --local-archives-dir .cache/broadcast/archives
+npm run data:broadcast-metadata-proposal -- \
+  --manifest data/manifests/broadcasts.source.json \
+  --observation <new-pending-observation.json> \
+  --output <new-pending-broadcast-manifest.json> \
+  --source-snapshot-sha256 <treeSha256>
+```
+
+Both commands are sequential and no-cost. They make HEAD requests only during
+observation, read each local archive to verify its approved digest, use
+exclusive output creation, and never change the checked-in manifest. The
+proposal is deliberately `approval.status: pending`; compact-v3 plan
+generation rejects it. A named reviewer must compare all 78 identities,
+review the exact observation SHA-256 and license/cutoff scope, explicitly set
+the proposal to `approved` with an approval date, and check those reviewed
+bytes in as the replacement manifest. No CLI self-approves this boundary.
+
+Changing the manifest changes the source snapshot. Freeze it again, create a
+reviewed limits/bounds configuration, and generate pending plans in a new
+directory. No production caps are currently approved or supplied by a fixture:
+
+```text
+npm run security:source-snapshot
+npm run data:evidence-v3-plans -- \
+  --manifest data/manifests/broadcasts.source.json \
+  --source-id lichess-broadcasts \
+  --configuration <reviewed-limits-and-bounds.json> \
+  --output-dir <new-pending-broadcast-plans-directory> \
+  --generated-at <ISO-8601-UTC-timestamp> \
+  --source-snapshot-sha256 <newTreeSha256>
+```
+
+The resulting plans remain `benchmark.status: pending`. Run the complete
+bootstrap only in a new empty work directory using the command documented
+below. It replays all 78 archives twice and can consume substantial local CPU,
+time, and bounded storage even though it uses no paid service.
+
+The bootstrap receipt is always provisional. Approval requires a separately
+authored review decision with this strict shape; the SHA-256 must name the
+exact compact JSON bootstrap receipt written by the benchmark:
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "linerecall-compact-v3-benchmark-review-decision",
+  "decision": "approved",
+  "approvedAt": "<ISO-8601-UTC-timestamp>",
+  "approvedBy": "<named-reviewer>",
+  "reviewNote": "<measured-capacity and reconciliation review>",
+  "bootstrapReceiptSha256": "<sha256>",
+  "sourceSnapshotSha256": "<newTreeSha256>"
+}
+```
+
+After that explicit review, bind the immutable approval to a pending plan
+bundle. This produces new plans and a content-addressed approval receipt in a
+new directory; it never overwrites the pending inputs and every output remains
+`releaseEligible: false`:
+
+```text
+npm run data:evidence-v3-approve-plans -- \
+  --pending-plans-dir <new-pending-broadcast-plans-directory> \
+  --bootstrap-receipt <benchmark-bootstrap-receipt.json> \
+  --decision <benchmark-review-decision.json> \
+  --output-dir <new-approved-broadcast-plans-directory> \
+  --source-snapshot-sha256 <newTreeSha256>
+```
+
+Generate the three Q2 pending plans with the same reviewed limits/bounds and
+source snapshot, then run the approval command against that bundle and the
+same approved broadcast benchmark. Approval establishes only that the caps
+were reviewed against the complete broadcast replay; it does not establish
+that Q2 will fit or make either corpus release-eligible.
 
 Before processing release-candidate evidence, create a strict preflight plan
 containing enforced byte caps, a corpus-wide `retainedCorpusMaxBytes` cap, and

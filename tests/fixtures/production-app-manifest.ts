@@ -69,6 +69,13 @@ export function productionAppManifestFixture(
     contentType: 'application/json',
     contentEncoding: 'gzip',
   }
+  const puzzleHash = 'c'.repeat(64)
+  const puzzleRef = {
+    ...familyCatalogRef,
+    id: `blob_${puzzleHash.slice(0, 16)}`,
+    path: 'puzzles/fixture.json.gz',
+    sha256: puzzleHash,
+  }
   return {
     v: 3,
     schema: 'linerecall-app-wire-v3',
@@ -80,20 +87,42 @@ export function productionAppManifestFixture(
       terminal: 'evidence-defined-through-ply-100',
     },
     familyPromotionIndexSha256: hash,
+    puzzlePromotion: {
+      schemaVersion: 1,
+      releaseId,
+      status: 'pass',
+      gate: 'lichess-puzzle-promotion',
+      familyPromotionIndexSha256: hash,
+      promotionReceiptSha256: 'd'.repeat(64),
+      proofInventorySha256: 'e'.repeat(64),
+      sourceSha256: 'f'.repeat(64),
+      evidenceBindingSha256: '1'.repeat(64),
+      engineCampaignSha256: '2'.repeat(64),
+      promotedAt: '2026-07-16T12:00:00.000Z',
+      promotedPuzzleCount: 1,
+      shards: [{
+        schemaVersion: 1,
+        shardId: puzzleRef.id,
+        shardSha256: puzzleRef.sha256,
+        familyIds: ['fixture-family'],
+        puzzleCount: 1,
+      }],
+    },
     browseManifestSha256: hash,
     browse,
     familyCatalogRef,
     familyResources: {
       [familyCatalogRef.id]: familyCatalogRef,
+      [puzzleRef.id]: puzzleRef,
     },
     totals: {
       families: 1,
       packs: 1,
       graphs: 1,
       puzzleShards: 1,
-      familyResources: 1,
-      compressedBytes: browse.totals.compressedBytes + 1,
-      estimatedBase64Bytes: browse.totals.estimatedBase64Bytes + 4,
+      familyResources: 2,
+      compressedBytes: browse.totals.compressedBytes + 2,
+      estimatedBase64Bytes: browse.totals.estimatedBase64Bytes + 8,
     },
   }
 }

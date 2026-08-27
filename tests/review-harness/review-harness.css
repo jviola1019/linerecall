@@ -29,6 +29,21 @@ html {
   padding-top: var(--review-fixture-banner-height);
 }
 
+@media (max-width: 900px) {
+  /* Keep the synthetic warning in normal mobile flow so there is exactly one
+     reserved banner row. Sticky positioning retains it through evidence-focus
+     scrolls without the fixed-banner spacer becoming a blank strip. */
+  .review-fixture-banner {
+    position: sticky;
+    inset: auto;
+    top: 0;
+  }
+
+  .review-fixture-shell .app-shell {
+    padding-top: 0;
+  }
+}
+
 @media (min-width: 1101px) {
   .review-fixture-shell .app-header {
     top: var(--review-fixture-banner-height);
@@ -90,7 +105,7 @@ html {
   font-weight: 700;
 }
 
-@media (max-width: 760px) {
+@media (max-width: 900px) {
   .board-motion-review-controls,
   .board-motion-review-status { grid-template-columns: 1fr; }
 }

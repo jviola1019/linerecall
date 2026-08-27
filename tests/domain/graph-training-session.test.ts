@@ -16,9 +16,11 @@ import {
   deferGraphTrainingPathToCycleEnd,
   expectedGraphTrainingMoves,
   graphTrainingFen,
+  graphTrainingPathLearningProgress,
   listGraphTrainingPaths,
   markGraphTrainingHint,
   nextNonemptyGraphTrainingBatch,
+  overrideLastGraphTrainingReviewGrade,
   pendingOpponentGraphMove,
   prepareGraphTrainingAdapter,
   removeTransferredPathFromFutureBatches,
@@ -30,7 +32,10 @@ import {
   type GraphTrainingSessionState,
 } from '../../src/domain/graph-training-session.ts'
 import { stableRepertoireCardId } from '../../src/domain/repertoire.ts'
-import { createSyntheticTranspositionGraph } from '../fixtures/synthetic-repertoire-graph.ts'
+import {
+  createSyntheticDivergentPrefixTranspositionGraph,
+  createSyntheticTranspositionGraph,
+} from '../fixtures/synthetic-repertoire-graph.ts'
 import { createSyntheticRepertoireEvidence } from '../fixtures/synthetic-repertoire-evidence.ts'
 
 async function adapterFixture() {
@@ -82,6 +87,30 @@ function expandAdapterForBatchBoundary(
   }
 }
 
+test('manual grade override updates both the review and resumable repeat queue', async () => {
+  const { graph, adapter } = await adapterFixture()
+  const cardId = stableRepertoireCardId(graph.pack.id, graph.pack.rootNodeId)
+  const selection = createExplicitGraphSessionSelection({
+    adapter,
+    pathIds: [graph.paths[0]!.id],
+    dueCardIds: [cardId],
+  })
+  const session = createGraphTrainingSession({ adapter, selection })
+  const expected = expectedGraphTrainingMoves(adapter, session)[0]
+  assert.ok(expected)
+  const answered = submitGraphTrainingMove({ adapter, state: session, moveUci: expected.uci })
+  assert.equal(answered.lastFeedback?.review?.grade, 'good')
+  assert.equal(answered.repeatCardIds.includes(cardId), false)
+
+  const again = overrideLastGraphTrainingReviewGrade(answered, 'again')
+  assert.equal(again.lastFeedback?.review?.grade, 'again')
+  assert.equal(again.repeatCardIds.at(-1), cardId)
+
+  const easy = overrideLastGraphTrainingReviewGrade(again, 'easy')
+  assert.equal(easy.lastFeedback?.review?.grade, 'easy')
+  assert.equal(easy.repeatCardIds.includes(cardId), false)
+})
+
 test('the v3 feature boundary rejects raw v2-shaped input and validates every learner card', async () => {
   const graph = await createSyntheticTranspositionGraph()
   await assert.rejects(() => prepareGraphTrainingAdapter(graph), /contractId|Invalid input/u)
@@ -112,6 +141,76 @@ test('all audited paths are exposed and explicit selection never applies a top-N
     dueCardIds: [],
   })
   assert.deepEqual(new Set(selection.includedPathIds), new Set(adapter.graph.pack.pathIds))
+})
+
+test('exact-path learning progress counts learner decisions without inflating opponent replies', async () => {
+  const { adapter } = await adapterFixture()
+  const selection = createExplicitGraphSessionSelection({
+    adapter,
+    pathIds: listGraphTrainingPaths(adapter).map(({ id }) => id),
+    dueCardIds: [],
+  })
+  let state = createGraphTrainingSession({ adapter, selection })
+
+  assert.deepEqual(graphTrainingPathLearningProgress(adapter, state), {
+    pathId: state.activePathId,
+    completedLearnerDecisions: 0,
+    totalLearnerDecisions: 3,
+    currentLearnerDecision: 1,
+    terminalPly: 5,
+    terminalStatus: 'evidence_terminal',
+  })
+
+  state = submitGraphTrainingMove({
+    adapter,
+    state,
+    moveUci: expectedGraphTrainingMoves(adapter, state)[0]!.uci,
+  })
+  assert.equal(graphTrainingPathLearningProgress(adapter, state).completedLearnerDecisions, 1)
+  assert.equal(graphTrainingPathLearningProgress(adapter, state).currentLearnerDecision, null)
+
+  state = applyPendingOpponentGraphMove(adapter, state)
+  assert.equal(graphTrainingPathLearningProgress(adapter, state).completedLearnerDecisions, 1)
+  assert.equal(graphTrainingPathLearningProgress(adapter, state).currentLearnerDecision, 2)
+
+  while (state.phase !== 'path_complete') {
+    state = state.phase === 'opponent_move_ready'
+      ? applyPendingOpponentGraphMove(adapter, state)
+      : submitGraphTrainingMove({ adapter, state, moveUci: activePathMove(adapter, state) })
+  }
+  const complete = graphTrainingPathLearningProgress(adapter, state)
+  assert.equal(complete.completedLearnerDecisions, complete.totalLearnerDecisions)
+  assert.equal(complete.currentLearnerDecision, null)
+})
+
+test('a non-root transposition never credits the destination path divergent prefix as recalled', async () => {
+  const graph = await createSyntheticDivergentPrefixTranspositionGraph()
+  const adapter = await prepareGraphTrainingAdapter({ contractId: GRAPH_TRAINING_CONTRACT_ID, graph })
+  const selection = createExplicitGraphSessionSelection({
+    adapter,
+    pathIds: listGraphTrainingPaths(adapter).map(({ id }) => id),
+    dueCardIds: [],
+  })
+  let state = createGraphTrainingSession({ adapter, selection })
+  assert.deepEqual(adapter.pathsById.get(state.activePathId)?.familyTags, ['Knight first'])
+
+  state = submitGraphTrainingMove({ adapter, state, moveUci: 'g1f3' })
+  state = applyPendingOpponentGraphMove(adapter, state)
+  state = submitGraphTrainingMove({ adapter, state, moveUci: 'g2g3' })
+  state = applyPendingOpponentGraphMove(adapter, state)
+  state = submitGraphTrainingMove({ adapter, state, moveUci: 'd2d3' })
+
+  assert.equal(state.lastFeedback?.switchedPath, true)
+  assert.deepEqual(adapter.pathsById.get(state.activePathId)?.familyTags, ['Fianchetto then d3'])
+  assert.equal(state.phase, 'path_complete')
+  assert.deepEqual(graphTrainingPathLearningProgress(adapter, state), {
+    pathId: state.activePathId,
+    completedLearnerDecisions: 1,
+    totalLearnerDecisions: 3,
+    currentLearnerDecision: null,
+    terminalPly: 5,
+    terminalStatus: 'evidence_terminal',
+  })
 })
 
 test('autonomous planning batches every audited path exactly once and progress counts families without a top-N cutoff', async () => {

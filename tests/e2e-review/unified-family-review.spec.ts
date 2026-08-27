@@ -16,7 +16,7 @@ async function playMove(page: Page, uci: string): Promise<void> {
 }
 
 async function expectCompletedPaths(page: Page, count: number): Promise<void> {
-  const completedPaths = page.locator('dt', { hasText: /^Completed paths$/u }).locator('..')
+  const completedPaths = page.locator('dt', { hasText: /^Practiced$/u }).locator('..')
   await expect(completedPaths.locator('dd')).toHaveText(String(count))
 }
 
@@ -34,26 +34,26 @@ test.describe('review-only unified-family fixture', () => {
     await page.goto(`${HARNESS_PATH}#/train/caro-kann/white`, { waitUntil: 'domcontentloaded' })
     await expect(page.getByRole('note')).toContainText(/synthetic data.*not production/u)
     await expect(page.getByRole('heading', { name: /Caro.Kann/iu, level: 1 })).toBeVisible()
-    await page.getByRole('button', { name: 'Start full repertoire' }).click()
-    await expect(page.getByText(/Path 1 of 2/u)).toBeVisible()
+    await page.getByRole('button', { name: 'Start full opening' }).click()
+    await expect(page.getByText(/Variation 1 of 2/u)).toBeVisible()
     await expect(page.getByRole('button', { name: /^(Again|Hard|Good|Easy)$/u })).toHaveCount(0)
 
     await playMove(page, 'g1f3')
-    await expect(page.getByText(/move 3 of 6/u)).toBeVisible()
+    await expect(page.getByText(/Variation 1 of 2.*1 of 3 moves recalled/u)).toBeVisible()
     await playMove(page, 'g2g3')
-    await expect(page.getByText(/move 5 of 6/u)).toBeVisible()
+    await expect(page.getByText(/Variation 1 of 2.*2 of 3 moves recalled/u)).toBeVisible()
     await playMove(page, 'f1g2')
-    await expect(page.getByText(/Path 2 of 2/u)).toBeVisible()
+    await expect(page.getByText(/Variation 2 of 2/u)).toBeVisible()
     await expectCompletedPaths(page, 1)
 
     await playMove(page, 'g2g3')
-    await expect(page.getByText(/move 3 of 6/u)).toBeVisible()
+    await expect(page.getByText(/Variation 2 of 2.*1 of 3 moves recalled/u)).toBeVisible()
     await playMove(page, 'g1f3')
-    await expect(page.getByText(/move 5 of 6/u)).toBeVisible()
+    await expect(page.getByText(/Variation 2 of 2.*2 of 3 moves recalled/u)).toBeVisible()
     await playMove(page, 'f1g2')
 
-    await expect(page.getByRole('heading', { name: 'Every selected path is complete.' })).toBeVisible()
-    await expect(page.getByText(/2 of 2 audited paths completed/u)).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Every selected variation is complete.' })).toBeVisible()
+    await expect(page.locator('.family-training-progress')).toHaveText('2 of 2 variations practiced this round.')
     await expect(page.getByRole('button', { name: /^(Again|Hard|Good|Easy)$/u })).toHaveCount(0)
     await expect(page.getByRole('note')).toBeVisible()
     await testInfo.attach('review-fixture-family-complete.png', {
@@ -74,20 +74,20 @@ test.describe('review-only unified-family fixture', () => {
     await playMove(page, 'g1f3')
     await expect(page.getByText(/Opponent reply complete/u)).toBeVisible()
     await playMove(page, 'f1b5')
-    await expect(page.getByText(/Solved\. The full audited line is complete/u)).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Next puzzle' })).toBeEnabled()
+    await expect(page.getByText(/Solved\. The full line is complete/u)).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Practice again' })).toBeEnabled()
     await assertNoSeriousOrCriticalAxe(page, testInfo, 'review-fixture-ready-puzzle')
 
     await page.getByRole('button', { name: 'Progress' }).click()
     await expect(page.getByRole('heading', { name: 'Your progress' })).toBeVisible()
-    const recallSummary = page.getByText('Cards reviewed').locator('..')
+    const recallSummary = page.getByText('Moves reviewed').locator('..')
     await expect(recallSummary.locator('strong')).toHaveText('0')
     const tacticalSummary = page.locator('.progress-separated-summary article').filter({ hasText: 'Tactical puzzles' })
     await expect(tacticalSummary.locator('strong')).toHaveText('1')
     const puzzleRow = page.getByRole('row', { name: /Puzzle1/u })
     await expect(puzzleRow).toContainText('33%')
     await expect(puzzleRow).toContainText('1')
-    await expect(page.getByText(/Puzzle attempts never change opening-recall schedules/u)).toBeVisible()
+    await expect(page.getByText(/Puzzle attempts never change opening recall or variations practiced/u)).toBeVisible()
     await expect(page.getByRole('note')).toBeVisible()
     await testInfo.attach('review-fixture-puzzle-progress.png', {
       body: await page.screenshot({
@@ -102,7 +102,7 @@ test.describe('review-only unified-family fixture', () => {
   test('keeps the unified family board and primary controls usable in one mobile viewport', async ({ page }, testInfo) => {
     await page.setViewportSize({ width: 390, height: 844 })
     await page.goto(`${HARNESS_PATH}#/train/caro-kann/white`, { waitUntil: 'domcontentloaded' })
-    await page.getByRole('button', { name: 'Start full repertoire' }).click()
+    await page.getByRole('button', { name: 'Start full opening' }).click()
     await expect(page.getByRole('grid', { name: /Chessboard/u })).toBeVisible()
     await expect(page.getByRole('alert')).toHaveCount(0)
     await expect(page.getByRole('combobox', { name: 'Legal move picker' })).toBeVisible()

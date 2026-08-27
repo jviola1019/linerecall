@@ -1,6 +1,10 @@
 import { Chess, type PieceSymbol, type Square } from 'chess.js'
 import { normalizedEpd } from '../../src/domain/input-validation.ts'
 import { PuzzleRecordV1Schema, type PuzzleRecord } from '../../src/domain/tactical-puzzles.ts'
+import {
+  createTestOnlyTrustedTacticalPuzzleResource,
+  type TrustedTacticalPuzzleResource,
+} from '../../src/data/tactical-puzzle-resource.ts'
 
 function applyMove(chess: Chess, uci: string): void {
   const promotion = uci[4] as PieceSymbol | undefined
@@ -62,5 +66,24 @@ export function createSyntheticTacticalPuzzle(
       retrievedAt: '2026-07-16T12:00:00.000Z',
     },
     engine: { name: 'Stockfish 18', allLearnerNodesVerified: true, proofRefs },
+  })
+}
+
+/** Review/test-only resource. It must never be used as release evidence. */
+export function createSyntheticPuzzleResource(
+  puzzles: readonly PuzzleRecord[],
+  options: {
+    identity?: string
+    status?: 'ready' | 'stale' | 'offline'
+    staleAt?: string
+    reason?: string
+  } = {},
+): TrustedTacticalPuzzleResource {
+  return createTestOnlyTrustedTacticalPuzzleResource({
+    puzzles,
+    collectionIdentity: options.identity ?? puzzles.map(({ puzzleId }) => puzzleId).join(':'),
+    ...(options.status ? { status: options.status } : {}),
+    ...(options.staleAt ? { staleAt: options.staleAt } : {}),
+    ...(options.reason ? { reason: options.reason } : {}),
   })
 }

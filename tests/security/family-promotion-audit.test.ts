@@ -16,6 +16,7 @@ import {
   createSyntheticFamilyGraphProvenanceDocument,
 } from '../fixtures/synthetic-repertoire-evidence.ts'
 import { createSyntheticFamilyCampaignBindings } from '../fixtures/synthetic-family-campaign-bindings.ts'
+import { createSyntheticApprovedEditorialLedger } from '../fixtures/synthetic-editorial-ledger.ts'
 
 type Receipt = {
   path: string
@@ -63,6 +64,7 @@ async function fixture(options: {
   omitProvenanceFor?: 'node' | 'path'
   tamperNestedReceipt?: boolean
   puzzleProofFailure?: 'missing' | 'arbitrary-reference' | 'cross-campaign'
+  puzzleInternalId?: string
 } = {}): Promise<{ root: string; index: any }> {
   const root = await mkdtemp(join(tmpdir(), 'linerecall-family-promotion-'))
   const graph = await createSyntheticTranspositionGraph()
@@ -167,14 +169,16 @@ async function fixture(options: {
     shippedPuzzle.engine.proofRefs[0] = arbitrary
     shippedPuzzle.learnerNodes[0]!.engineProofRef = arbitrary
   }
-  const puzzleShard = {
+  const auditedPuzzleShard = {
     schemaVersion: 1,
-    id: 'blob_0000000000000000',
     releaseId: RELEASE,
     generatedAt: '2026-07-28T12:00:00.000Z',
     familyIds: ['synthetic-family'],
     puzzles: [shippedPuzzle],
   }
+  const puzzleShard = options.puzzleInternalId
+    ? { id: options.puzzleInternalId, ...auditedPuzzleShard }
+    : auditedPuzzleShard
   const puzzleReceipt = await writeJson(root, 'resources/puzzles.json.gz', puzzleShard, 'gzip')
   const inventoryEvidence = structuredClone(verifiedPuzzle.evidence)
   const inventoryEnvelope = structuredClone(verifiedPuzzle.envelope)
@@ -212,7 +216,7 @@ async function fixture(options: {
       }
     : derivePuzzlePromotionReceipt({
         inventory: puzzleProofInventory,
-        promotedShards: [{ sha256: puzzleReceipt.sha256, shard: puzzleShard }],
+        promotedShards: [{ sha256: puzzleReceipt.sha256, shard: auditedPuzzleShard }],
         proofInventory: puzzleProofInventoryReceipt,
         completedAt,
       })
@@ -272,6 +276,21 @@ async function fixture(options: {
       manifestRef: contentRef(manifestReceipt),
     }],
   }, 'gzip')
+  const editorialLedger = await writeJson(
+    root,
+    'resources/editorial-ledger.json.gz',
+    createSyntheticApprovedEditorialLedger({
+      releaseId: RELEASE,
+      families: [{
+        id: 'synthetic-family',
+        canonicalName: 'Synthetic Family',
+        aliases: [],
+        ecoCodes: ['A00'],
+        taxonomyLineIds,
+      }],
+    }),
+    'gzip',
+  )
 
   const gates = {
     broadcast: broadcastGate,
@@ -286,6 +305,7 @@ async function fixture(options: {
     releaseId: RELEASE,
     selectionPolicy: { practiceBranches: 'all-eligible-audited', maximumPracticeBranches: null },
     catalog: catalogReceipt,
+    editorialLedger,
     familyGraphBuild: campaign.familyGraphBuild,
     engineProofInventory: campaign.engineProofInventory,
     scidCrosscheckReport: campaign.scidCrosscheckReport,
@@ -311,6 +331,48 @@ test('promotion audit passes only a complete receipt-bound family release with e
   assert.ok(report.gates.every(({ status }) => status === 'pass'))
 })
 
+test('promotion audit blocks a complete mechanical family ledger until editorial review is approved', async () => {
+  const value = await fixture()
+  const approved = createSyntheticApprovedEditorialLedger({
+    releaseId: RELEASE,
+    families: [{
+      id: 'synthetic-family',
+      canonicalName: 'Synthetic Family',
+      aliases: [],
+      ecoCodes: ['A00'],
+      taxonomyLineIds: Array.from(
+        { length: 3_790 },
+        (_, index) => `tax_${index.toString(16).padStart(24, '0')}`,
+      ),
+    }],
+  })
+  const pending = {
+    ...approved,
+    editorialStatus: 'pending',
+    promotionEligible: false,
+    decisions: approved.decisions.map((decision) => ({
+      ...decision,
+      reviewStatus: 'pending',
+      decision: null,
+      reviewer: null,
+      reviewedAt: null,
+      rationale: null,
+    })),
+  }
+  value.index.editorialLedger = await writeJson(
+    value.root,
+    'resources/pending-editorial-ledger.json.gz',
+    pending,
+    'gzip',
+  )
+  await writeJson(value.root, 'pending-editorial-index.json', value.index, 'identity')
+
+  const report = await auditFamilyPromotion({ root: value.root, indexPath: 'pending-editorial-index.json' })
+  assert.equal(report.status, 'blocked')
+  assert.ok(report.findings.some(({ code }) => code === 'family-editorial-ledger-invalid'))
+  assert.equal(report.gates.find(({ id }) => id === 'family-editorial-review')?.status, 'blocked')
+})
+
 test('promotion audit rejects missing, arbitrary, and cross-campaign puzzle proofs', async () => {
   for (const failure of ['missing', 'arbitrary-reference', 'cross-campaign'] as const) {
     const fixtureValue = await fixture({ puzzleProofFailure: failure })
@@ -319,6 +381,14 @@ test('promotion audit rejects missing, arbitrary, and cross-campaign puzzle proo
     assert.ok(report.findings.some(({ code }) => code === 'puzzles-promotion-receipt-invalid'), failure)
     assert.equal(report.gates.find(({ id }) => id === 'puzzles-promotion-receipt')?.status, 'blocked', failure)
   }
+})
+
+test('promotion audit rejects a serialized shard that supplies any internal content ID', async () => {
+  const value = await fixture({ puzzleInternalId: `blob_${'f'.repeat(16)}` })
+  const report = await auditFamilyPromotion({ root: value.root, indexPath: 'index.json' })
+  assert.equal(report.status, 'blocked')
+  assert.ok(report.findings.some(({ code }) => code === 'puzzle-shard-invalid'))
+  assert.equal(report.gates.find(({ id }) => id === 'promoted-puzzle-shards')?.status, 'blocked')
 })
 
 test('promotion audit blocks absent hard-gate receipts, path traversal, and omitted eligible edges', async () => {

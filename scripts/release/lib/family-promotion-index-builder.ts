@@ -22,6 +22,7 @@ export const FamilyPromotionIndexBuildInputV1Schema = z.object({
     maximumPracticeBranches: z.null(),
   }).strict(),
   catalog: ReceiptSchema,
+  editorialLedger: ReceiptSchema,
   familyGraphBuild: ReceiptSchema,
   engineProofInventory: ReceiptSchema,
   scidCrosscheckReport: ReceiptSchema,
@@ -66,6 +67,7 @@ export class FamilyPromotionIndexBuildError extends Error {
 function allResourcePaths(input: FamilyPromotionIndexBuildInputV1): string[] {
   return [
     input.catalog.path,
+    input.editorialLedger.path,
     input.familyGraphBuild.path,
     input.engineProofInventory.path,
     input.scidCrosscheckReport.path,
@@ -105,6 +107,7 @@ export async function buildFamilyPromotionIndex(options: {
     releaseId: input.releaseId,
     selectionPolicy: input.selectionPolicy,
     catalog: input.catalog,
+    editorialLedger: input.editorialLedger,
     familyGraphBuild: input.familyGraphBuild,
     engineProofInventory: input.engineProofInventory,
     scidCrosscheckReport: input.scidCrosscheckReport,

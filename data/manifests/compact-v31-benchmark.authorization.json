@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "kind": "linerecall-compact-v31-benchmark-authorization",
+  "authorization": "benchmark-bootstrap-only",
+  "authorizedOn": "2026-08-27",
+  "authorizedBy": "workspace-owner:jviola1019",
+  "proposalSha256": "c598a637c729be22a61583345b33589f462f1fb07294ef53678f0ecc85e857d5",
+  "observationSha256": "043b06dfd1fdf6adee65b1e1d29e18a561c0a046c4d6a5dd124aeb138465d56c",
+  "sourceSnapshotSha256": "191600fea0223338cc4c371009f7cabb3fe83895b95762393c31520e75976eb4",
+  "archiveCount": 78,
+  "publishedGames": 1146297,
+  "compressedBytes": 670155109,
+  "cutoffMonth": "2026-06",
+  "permittedExecutionPurposes": [
+    "benchmark-bootstrap"
+  ],
+  "q2IngestionAuthorized": false,
+  "benchmarkPromotionAuthorized": false,
+  "releaseEligible": false,
+  "note": "The workspace owner authorized a provisional, zero-spend, local replay benchmark of the exact pending broadcast proposal and observation named above. This receipt does not approve benchmark results, compact-v3.1 evidence, Q2 ingestion, opening recommendations, or production release."
+}

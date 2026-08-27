@@ -1,14 +1,14 @@
 # LineRecall
 
 LineRecall is an offline-first chess opening trainer and an optional connected
-service. Repertoire is organized by canonical opening family: Caro–Kann,
+service. Repertoire is organized by proposed opening family: Caro–Kann,
 Sicilian Defence, Ruy Lopez, and every other assigned family appears once, with
-both learner sides and all promoted paths nested beneath it. Explore keeps the
+both practice sides and all promoted variations nested beneath it. Explore keeps the
 3,790 individual ECO taxonomy rows available for historical lookup and
 name/move/PGN search.
 
 The source tree includes legal board and non-spatial move input, autonomous
-family coverage cycles, deviation evidence, SM-2 scheduling, separate tactical
+same-family Learn rounds, due-first Review sessions, deviation evidence, SM-2 scheduling, separate tactical
 puzzle progress, JSON progress transfer, and accessible keyboard controls. The
 audited Lichess tactical-puzzle product is not yet shipped.
 
@@ -54,12 +54,14 @@ these boundaries, but this document does not claim a current test pass.
 Fixtures do not stand in for the unfinished full-corpus, engine, Scid, puzzle,
 staging, or manual campaigns.
 
-The generated review-family catalog currently assigns all 3,790 taxonomy rows
-to exactly 149 primary families. This is a taxonomy/navigation measurement,
-not a repertoire-path count. It includes one Caro–Kann family (110 rows), one
+The generated review-family proposal currently assigns all 3,790 taxonomy rows
+to exactly 149 primary families. This is a mechanical taxonomy/navigation
+proposal, not a repertoire-path count or editorial approval. It includes one Caro–Kann family (110 rows), one
 Sicilian Defence family (388 rows), and one Ruy Lopez family (234 rows).
 Runtime code validates those assignments; it does not infer families by
-splitting display names.
+splitting display names. Production promotion also requires a human-reviewed
+decision for every proposed family and all 3,790 primary assignments. The
+checked-in editorial worksheet is entirely pending and cannot promote data.
 
 For a promoted v3 family graph, the runtime requires every manifest-owned pack
 for the selected side, aggregates totals across those packs, and autonomously

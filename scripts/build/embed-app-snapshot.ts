@@ -200,6 +200,7 @@ export async function embedProductionAppSnapshot(options: {
     selectionPolicy: manifest.selectionPolicy,
     appManifestSha256: appManifestReceipt.sha256,
     familyPromotionIndexSha256: manifest.familyPromotionIndexSha256,
+    puzzlePromotion: manifest.puzzlePromotion,
     base: browse.payload,
     familyCatalogRef: manifest.familyCatalogRef,
     familyResources,

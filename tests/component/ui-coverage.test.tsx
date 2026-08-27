@@ -355,7 +355,7 @@ describe('opening browser resource and keyboard branches', () => {
     const searchableEcos = new Set(core.searchEntries.map((entry) => entry.eco))
     expect(core.catalog.every((entry) => searchableEcos.has(entry.eco))).toBe(true)
 
-    await user.type(screen.getByRole('searchbox', { name: /Search by opening name/u }), 'A00')
+    await user.type(screen.getByRole('searchbox', { name: /Opening name or ECO code/u }), 'A00')
     await user.click(screen.getByRole('button', { name: 'Search openings' }))
     const resultList = document.querySelector('.result-list')
     expect(resultList?.querySelector('.eco-pill')).toHaveTextContent('A00')
@@ -412,8 +412,8 @@ describe('opening browser resource and keyboard branches', () => {
   test('clears stale search errors while editing and supports the documented PGN shortcut', async () => {
     const user = userEvent.setup()
     render(<OpeningBrowser {...browserProps()} />)
-    await user.click(screen.getByRole('radio', { name: 'PGN' }))
-    const pgn = screen.getByRole('textbox', { name: /Paste a Standard-chess PGN/u })
+    await user.click(screen.getByRole('radio', { name: 'Paste PGN' }))
+    const pgn = screen.getByRole('textbox', { name: /Standard-chess PGN/u })
     await user.type(pgn, '<script>')
     await user.click(screen.getByRole('button', { name: 'Search openings' }))
     expect(await screen.findByRole('alert')).toBeTruthy()
@@ -433,9 +433,9 @@ describe('opening browser resource and keyboard branches', () => {
     expect(nonVerified).toBeTruthy()
     const props = { ...browserProps(), selectedLineId: nonVerified.sourceLineId, selectedVariantId: null }
     const { rerender } = render(<OpeningBrowser {...props} />)
-    await user.type(screen.getByRole('searchbox', { name: /Search by opening name/u }), 'definitely-no-match-xyz')
+    await user.type(screen.getByRole('searchbox', { name: /Opening name or ECO code/u }), 'definitely-no-match-xyz')
     await user.click(screen.getByRole('button', { name: 'Search openings' }))
-    expect(screen.getByText('No audited opening matches found.')).toBeTruthy()
+    expect(screen.getByText('No openings found.')).toBeTruthy()
     expect(screen.getByRole('note')).toHaveTextContent(nonVerified.backtestEligible ? /no side-specific record/u : /does not meet/u)
     expect(screen.getByRole('button', { name: 'Open opening family' })).toBeEnabled()
     expect(screen.queryByRole('button', { name: 'Start spaced-repetition drill' })).toBeNull()
@@ -835,7 +835,7 @@ describe('progress, evidence, licenses, and App branches', () => {
     expect(screen.getByText('1 day')).toBeTruthy()
     expect(screen.getByText('New')).toBeTruthy()
     expect(screen.getAllByText('Unknown imported opening').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('Not in the current audited drill snapshot').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Not available in the current opening library').length).toBeGreaterThan(0)
 
     const input = screen.getByLabelText('Choose progress JSON')
     const huge = new File([new Uint8Array(1_048_577)], 'huge.json', { type: 'application/json' })
@@ -857,7 +857,7 @@ describe('progress, evidence, licenses, and App branches', () => {
     const { rerender } = render(<EvidenceTable bands={zeroBands} caption="Compact" compact />)
     expect(screen.getByRole('table')).toHaveClass('compact-table')
     rerender(<MoveComparison played={null} expected={{ ...expected, bands: zeroBands }} />)
-    expect(screen.getByRole('columnheader', { name: /Played: No audited evidence/u })).toBeTruthy()
+    expect(screen.getByRole('columnheader', { name: /Played: No verified evidence/u })).toBeTruthy()
     expect(screen.getAllByText('No games').length).toBeGreaterThan(0)
     const lowBands = expected.bands.map((band) => ({ ...band, lowSample: true, n: Math.min(99, Math.max(1, band.n)) }))
     rerender(<MoveComparison played={{ ...expected, expected: false, bands: lowBands }} expected={{ ...expected, bands: lowBands }} />)
@@ -866,7 +866,7 @@ describe('progress, evidence, licenses, and App branches', () => {
 
     const failedAudit = { ...audit, releaseEligible: false }
     rerender(<DataLicenses audit={failedAudit} selectedLine={null} />)
-    expect(screen.getByText('Embedded snapshot gates failed')).toBeTruthy()
+    expect(screen.getByText('Legacy browse snapshot failed validation')).toBeTruthy()
     expect(screen.getByText(/Select any opening line/u)).toBeTruthy()
 
     const browsableOnly = c20.lines.find((line) => line.verifiedVariantIds.length === 0)!
@@ -925,12 +925,12 @@ describe('progress, evidence, licenses, and App branches', () => {
     }
     render(<App dataSource={dataSource} />)
     expect(screen.getByRole('button', { name: /Switch to dark mode/u })).toBeTruthy()
-    expect(await screen.findByRole('heading', { name: 'Ready when you are.' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: 'Your opening practice' })).toBeTruthy()
     await user.click(screen.getByRole('button', { name: 'Explore' }))
     expect(await screen.findByText('Opening partition could not be loaded')).toBeTruthy()
     await user.click(screen.getByRole('button', { name: 'Retry' }))
     expect(await screen.findByRole('heading', { name: 'Explore openings', level: 1 })).toBeTruthy()
-    const search = screen.getByRole('searchbox', { name: /Search by opening name/u })
+    const search = screen.getByRole('searchbox', { name: /Opening name or ECO code/u })
     await user.type(search, drillLine.name)
     await user.click(screen.getByRole('button', { name: 'Search openings' }))
     const resultsHeading = await screen.findByRole('heading', { name: /Search results/u })
@@ -973,7 +973,7 @@ describe('progress, evidence, licenses, and App branches', () => {
       loadAudit: vi.fn(async () => audit),
     }
     render(<App dataSource={dataSource} />)
-    await screen.findByRole('heading', { name: 'Ready when you are.' })
+    await screen.findByRole('heading', { name: 'Your opening practice' })
     await user.click(screen.getByRole('button', { name: 'Explore' }))
     await screen.findByRole('listbox', { name: 'C20 opening lines' })
     const lineList = await screen.findByRole('listbox', { name: 'C20 opening lines' })
@@ -1024,7 +1024,7 @@ describe('progress, evidence, licenses, and App branches', () => {
       loadAudit: vi.fn(async () => audit),
     }
     render(<App dataSource={dataSource} />)
-    await screen.findByRole('heading', { name: 'Ready when you are.' })
+    await screen.findByRole('heading', { name: 'Your opening practice' })
     await user.click(screen.getByRole('button', { name: 'Explore' }))
     const initialList = await screen.findByRole('listbox', { name: 'A00 opening lines' }, { timeout: 10_000 })
     const initialText = within(initialList).getAllByRole('option').map((option) => option.textContent)

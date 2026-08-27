@@ -132,8 +132,12 @@ test('builders reject normalized output/input aliases, release mismatches, and c
   const validApp = await buildBoundApp(releaseMismatch, family)
   const appValue = JSON.parse(
     await readFile(join(releaseMismatch.root, validApp.outputPath), 'utf8'),
-  ) as { familyPromotionIndexSha256: string }
+  ) as {
+    familyPromotionIndexSha256: string
+    puzzlePromotion: { familyPromotionIndexSha256: string }
+  }
   appValue.familyPromotionIndexSha256 = 'f'.repeat(64)
+  appValue.puzzlePromotion.familyPromotionIndexSha256 = 'f'.repeat(64)
   const unboundApp = await writeFixtureJson(releaseMismatch.root, 'handoff/unbound-app-wire-v3.json', appValue)
   await assert.rejects(
     buildProductionDataReadiness({

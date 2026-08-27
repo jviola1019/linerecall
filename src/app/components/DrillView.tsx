@@ -585,7 +585,7 @@ export function DrillView({
                 aria-pressed={annotationMode}
                 onClick={() => {
                   setAnnotationMode((current) => !current)
-                  onAnnouncement(annotationMode ? 'Annotation mode closed.' : 'Annotation mode opened. Move input is paused.')
+                  onAnnouncement(annotationMode ? 'Annotate mode off.' : 'Annotate mode on. Moves are paused.')
                 }}
               >
                 {annotationMode ? 'Resume moves' : 'Annotate'}
@@ -647,7 +647,7 @@ export function DrillView({
               aria-pressed={annotationMode}
               onClick={() => {
                 setAnnotationMode((current) => !current)
-                onAnnouncement(annotationMode ? 'Annotation mode closed.' : 'Annotation mode opened. Move input is paused.')
+                onAnnouncement(annotationMode ? 'Annotate mode off.' : 'Annotate mode on. Moves are paused.')
               }}
             >Annotate</button>
           </div>

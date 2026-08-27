@@ -3,6 +3,7 @@ import {
   ContentAddressedRefV1Schema,
   OpeningFamilyCatalogV1Schema,
   OpeningFamilyManifestV1Schema,
+  TacticalPuzzleShardPayloadV1Schema,
   type ContentAddressedRefV1,
 } from '../../../src/domain/opening-family.ts'
 import {
@@ -10,6 +11,11 @@ import {
   type ProductionWireAppManifestV3,
 } from '../../../src/data/production-wire.ts'
 import { WireAppManifestSchema } from '../../../src/data/wire.ts'
+import { PuzzlePromotionReceiptV1Schema } from '../../data/puzzle-v3-contracts.ts'
+import {
+  deriveTacticalPuzzlePromotionBinding,
+  validatePuzzlePromotionProofInventory,
+} from '../../data/puzzle-v3-promotion.ts'
 import {
   FamilyPromotionAuditIndexV1Schema,
   auditFamilyPromotion,
@@ -138,6 +144,34 @@ export async function buildProductionAppSnapshotManifest(options: {
   })
   const browse = WireAppManifestSchema.parse(browseRead.value)
 
+  const puzzlePromotionReceiptRef = index.promotionReceipts.puzzles
+  if (!puzzlePromotionReceiptRef) {
+    throw new Error('Passing family promotion index omitted its tactical puzzle receipt')
+  }
+  const puzzlePromotionReceipt = PuzzlePromotionReceiptV1Schema.parse((await readImmutableJsonReceipt({
+    root: options.root,
+    receipt: puzzlePromotionReceiptRef,
+  })).value)
+  const puzzleProofInventory = validatePuzzlePromotionProofInventory((await readImmutableJsonReceipt({
+    root: options.root,
+    receipt: index.puzzleProofInventory,
+  })).value)
+  const promotedPuzzleShards = await Promise.all(index.puzzleShards.map(async ({ shard }) => ({
+    sha256: shard.sha256,
+    shard: TacticalPuzzleShardPayloadV1Schema.parse((await readImmutableJsonReceipt({
+      root: options.root,
+      receipt: shard,
+    })).value),
+  })))
+  const puzzlePromotion = deriveTacticalPuzzlePromotionBinding({
+    familyPromotionIndexSha256: input.familyPromotionIndex.sha256,
+    promotionReceiptSha256: puzzlePromotionReceiptRef.sha256,
+    proofInventorySha256: index.puzzleProofInventory.sha256,
+    receipt: puzzlePromotionReceipt,
+    inventory: puzzleProofInventory,
+    promotedShards: promotedPuzzleShards,
+  })
+
   const catalogRead = await readImmutableJsonReceipt({ root: options.root, receipt: index.catalog })
   const catalog = OpeningFamilyCatalogV1Schema.parse(catalogRead.value)
   if (catalog.releaseId !== index.releaseId || catalog.familyCount !== index.families.length) {
@@ -201,6 +235,7 @@ export async function buildProductionAppSnapshotManifest(options: {
       terminal: 'evidence-defined-through-ply-100',
     },
     familyPromotionIndexSha256: input.familyPromotionIndex.sha256,
+    puzzlePromotion,
     browseManifestSha256: input.browseManifest.sha256,
     browse,
     familyCatalogRef,

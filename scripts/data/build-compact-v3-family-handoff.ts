@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto'
-import { open, readFile, realpath, stat } from 'node:fs/promises'
+import { open, realpath } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
@@ -17,7 +17,10 @@ import { auditCompactV3Foundation } from './audit-data-foundation.ts'
 import {
   compactAdapterConfigurationSha256,
 } from './compact-v3-adapter.ts'
-import { readVerifiedCompactCheckpoint } from './compact-v3-orchestrator.ts'
+import {
+  readBoundedRegularFile,
+  readVerifiedCompactCheckpoint,
+} from './compact-v3-orchestrator.ts'
 import {
   CompactExactFamilyGraphHandoffV1Schema,
   type CompactExactFamilyGraphHandoffV1,
@@ -80,11 +83,13 @@ async function identityReceipt(root: string, path: string): Promise<ImmutableJso
 }
 
 async function readPlan(path: string): Promise<CompactPreflightPlan> {
-  const details = await stat(path)
-  if (!details.isFile() || details.size <= 0 || details.size > MAX_CONTROL_FILE_BYTES) {
-    throw new Error('Compact plan is missing or exceeds the control-file bound')
-  }
-  return CompactPreflightPlanSchema.parse(JSON.parse(await readFile(path, 'utf8')) as unknown)
+  const bytes = await readBoundedRegularFile(
+    path,
+    MAX_CONTROL_FILE_BYTES,
+    'Compact plan',
+    1,
+  )
+  return CompactPreflightPlanSchema.parse(JSON.parse(bytes.toString('utf8')) as unknown)
 }
 
 async function corpusHandoff(options: {
@@ -153,12 +158,19 @@ export async function buildCompactV3FamilyHandoff(options: {
   if (!isWithin(root, dirname(output))) throw new Error('Compact handoff output escapes the approved project root')
 
   const [broadcastBytes, q2Bytes] = await Promise.all([
-    readFile(broadcastManifestPath),
-    readFile(q2ManifestPath),
+    readBoundedRegularFile(
+      broadcastManifestPath,
+      MAX_CONTROL_FILE_BYTES,
+      'Approved broadcast source manifest',
+      1,
+    ),
+    readBoundedRegularFile(
+      q2ManifestPath,
+      MAX_CONTROL_FILE_BYTES,
+      'Approved Q2 source manifest',
+      1,
+    ),
   ])
-  if (broadcastBytes.byteLength > MAX_CONTROL_FILE_BYTES || q2Bytes.byteLength > MAX_CONTROL_FILE_BYTES) {
-    throw new Error('Approved source manifest exceeds the control-file bound')
-  }
   const corpora = [
     approvedCompactCorpusFromBytes(broadcastBytes, 'lichess-broadcasts'),
     approvedCompactCorpusFromBytes(q2Bytes, 'lichess-standard-rated-q2-2026'),

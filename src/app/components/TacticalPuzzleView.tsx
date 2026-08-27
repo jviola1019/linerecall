@@ -13,8 +13,9 @@ import {
   type PuzzleAttemptEventV1,
 } from '../../domain/puzzle-progress.ts'
 import {
-  TacticalPuzzleResourceSchema,
+  validateTacticalPuzzleResource,
   type TacticalPuzzleResource,
+  type TrustedTacticalPuzzleRelease,
 } from '../../data/tactical-puzzle-resource.ts'
 import { ChessBoard } from './ChessBoard.tsx'
 import { EmptyState, ErrorState, LoadingState } from './ResourceState.tsx'
@@ -34,6 +35,8 @@ export interface TacticalPuzzleViewProps {
   onSetOrientation?: (orientation: BoardOrientation) => void
   onAttempt?: (event: PuzzleAttemptEventV1) => void | Promise<void>
   onRetry?: () => void
+  onBrowseOpenings?: () => void
+  onOpenData?: () => void
   onAnnouncement?: (message: string) => void
 }
 
@@ -58,6 +61,50 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'The tactical puzzle could not be continued.'
 }
 
+function readableUtcDate(value: string): string {
+  return new Intl.DateTimeFormat('en-US', {
+    dateStyle: 'medium',
+    timeZone: 'UTC',
+  }).format(new Date(value))
+}
+
+function PuzzleRateLimitState({
+  retryAt,
+  reason,
+  onRetry,
+}: {
+  retryAt: string
+  reason: string
+  onRetry?: () => void
+}): React.JSX.Element {
+  const remainingSeconds = (): number => Math.max(0, Math.ceil((Date.parse(retryAt) - Date.now()) / 1_000))
+  const [remaining, setRemaining] = useState(remainingSeconds)
+
+  useEffect(() => {
+    if (!onRetry || remaining === 0) return
+    const timer = setInterval(() => setRemaining(remainingSeconds()), 1_000)
+    return () => clearInterval(timer)
+  }, [onRetry, remaining, retryAt])
+
+  return (
+    <div className="resource-state error-state" role="alert">
+      <span className="state-icon" aria-hidden="true">!</span>
+      <h2>Puzzle service is rate-limited</h2>
+      <p>{reason}</p>
+      {onRetry ? (
+        <>
+          <p role="timer" aria-live="off">
+            {remaining > 0
+              ? `Try again in ${remaining} ${remaining === 1 ? 'second' : 'seconds'}.`
+              : 'Retry is available now.'}
+          </p>
+          <button type="button" disabled={remaining > 0} onClick={onRetry}>Retry</button>
+        </>
+      ) : <p>This build cannot reload puzzle data.</p>}
+    </div>
+  )
+}
+
 function TacticalPuzzleSession({
   puzzles,
   orientation,
@@ -66,14 +113,16 @@ function TacticalPuzzleSession({
   onAttempt,
   onAnnouncement,
   resourceNotice,
+  release,
 }: {
-  puzzles: PuzzleRecord[]
+  puzzles: readonly PuzzleRecord[]
   orientation: BoardOrientation
   reducedMotion?: boolean
   onSetOrientation?: (orientation: BoardOrientation) => void
   onAttempt?: (event: PuzzleAttemptEventV1) => void | Promise<void>
   onAnnouncement?: (message: string) => void
   resourceNotice?: string
+  release: TrustedTacticalPuzzleRelease
 }): React.JSX.Element {
   const [puzzleIndex, setPuzzleIndex] = useState(0)
   const puzzle = puzzles[puzzleIndex]!
@@ -85,6 +134,7 @@ function TacticalPuzzleSession({
   const [saving, setSaving] = useState(false)
   const [transitionLocked, setTransitionLocked] = useState(false)
   const [announcement, setAnnouncement] = useState('')
+  const [solvedThisRound, setSolvedThisRound] = useState<ReadonlySet<string>>(() => new Set())
   const startedAtRef = useRef(Date.now())
   const evidenceRef = useRef<HTMLElement>(null)
   const recordedRef = useRef(new Set<string>())
@@ -114,6 +164,11 @@ function TacticalPuzzleSession({
         : state.usedHint
           ? 'hint'
           : 'ready'
+  const nextPuzzleLabel = puzzles.length === 1
+    ? 'Practice again'
+    : puzzleIndex === puzzles.length - 1
+      ? 'Restart queue'
+      : 'Next puzzle'
 
   const openEvidence = (): void => {
     const evidence = evidenceRef.current
@@ -123,7 +178,7 @@ function TacticalPuzzleSession({
       behavior: reducedMotion ? 'auto' : 'smooth',
       block: 'start',
     })
-    announce('Puzzle evidence opened.')
+    announce('Puzzle details opened.')
   }
 
   const persistAttempt = (key: string, event: PuzzleAttemptEventV1): Promise<boolean> => {
@@ -182,6 +237,7 @@ function TacticalPuzzleSession({
   const selectPuzzle = (index: number): void => {
     const nextIndex = (index + puzzles.length) % puzzles.length
     const next = puzzles[nextIndex]!
+    if (nextIndex <= puzzleIndex) setSolvedThisRound(new Set())
     setPuzzleIndex(nextIndex)
     setState(beginTacticalPuzzle(next))
     setFeedback('Find the strongest continuation.')
@@ -201,7 +257,8 @@ function TacticalPuzzleSession({
         setLastMoveUci(result.transition.moveUci)
         setTransitionLocked(true)
         if (result.verdict === 'solved') {
-          setFeedback('Solved. The learner move and forced reply were verified separately.')
+          setSolvedThisRound((current) => new Set(current).add(puzzle.puzzleId))
+          setFeedback('Solved. Your move and the reply were checked as separate board moves.')
           void recordAttempt('solved', result.state)
           announce('Puzzle solved.')
         } else {
@@ -210,7 +267,7 @@ function TacticalPuzzleSession({
         }
       } catch (error) {
         setSaveError(errorMessage(error))
-        announce('The audited opponent reply could not be applied.')
+        announce('The opponent reply could not be applied.')
       }
     }, reducedMotion ? 0 : puzzleTransitionDelay(lastMoveUci))
     return () => clearTimeout(timeout)
@@ -246,15 +303,16 @@ function TacticalPuzzleSession({
         return
       }
       if (result.verdict === 'retry') {
-        setFeedback('That move does not solve the audited tactic. Try again.')
+        setFeedback('That move does not solve the tactic. Try again.')
         announce('Try another legal move.')
         return
       }
       setLastMoveUci(result.transition?.moveUci ?? null)
       if (result.verdict === 'solved') {
+        setSolvedThisRound((current) => new Set(current).add(puzzle.puzzleId))
         setFeedback(result.acceptedAlternateMate
           ? 'Solved with another legal mating move.'
-          : 'Solved. The full audited line is complete.')
+          : 'Solved. The full line is complete.')
         void recordAttempt('solved', result.state)
         announce('Puzzle solved.')
       } else {
@@ -273,7 +331,10 @@ function TacticalPuzzleSession({
         <div>
           <p className="eyebrow">Opening-linked tactic</p>
           <h1 id="tactical-puzzle-title">Puzzles</h1>
-          <p>Puzzle {puzzleIndex + 1} of {puzzles.length} · {puzzle.learnerNodes.length} learner decision{puzzle.learnerNodes.length === 1 ? '' : 's'}</p>
+          <p>
+            Puzzle {puzzleIndex + 1} of {puzzles.length} · {puzzle.learnerNodes.length} move{puzzle.learnerNodes.length === 1 ? '' : 's'} to find
+            {' · '}{solvedThisRound.size} solved this round
+          </p>
         </div>
         <div className="inline-controls">
           {onSetOrientation ? (
@@ -306,7 +367,7 @@ function TacticalPuzzleSession({
         className="puzzle-progress-track"
         max={puzzle.learnerNodes.length}
         value={progressValue}
-        aria-label={`${progressValue} of ${puzzle.learnerNodes.length} learner decisions completed`}
+        aria-label={`${progressValue} of ${puzzle.learnerNodes.length} moves completed`}
       />
       <div className="tactical-puzzle-workspace">
         <div className="tactical-board-column">
@@ -346,7 +407,7 @@ function TacticalPuzzleSession({
                     disabled={saving || pendingSave !== null}
                     onClick={() => selectPuzzle(puzzleIndex + 1)}
                   >
-                    {saving ? 'Saving…' : 'Next puzzle'}
+                    {saving ? 'Saving…' : nextPuzzleLabel}
                   </button>
                 ) : null}
               </div>
@@ -381,23 +442,27 @@ function TacticalPuzzleSession({
           ) : null}
           <dl className="puzzle-evidence-facts">
             <div><dt>Rating</dt><dd>{puzzle.rating}</dd></div>
-            <div><dt>Attempts</dt><dd>{puzzle.attempts.toLocaleString('en-US')}</dd></div>
-            <div><dt>Popularity</dt><dd>{puzzle.popularity}</dd></div>
-            <div><dt>Match</dt><dd>{puzzle.association.confidence === 'exact-position' ? 'Exact position' : 'Opening family'}</dd></div>
-            <div><dt>Engine</dt><dd>{puzzle.engine.name}, verified</dd></div>
-            <div><dt>Source</dt><dd>Lichess puzzle database · CC0</dd></div>
+            <div><dt>Community attempts</dt><dd>{puzzle.attempts.toLocaleString('en-US')}</dd></div>
+            <div><dt>Popularity</dt><dd>{puzzle.popularity} / 100</dd></div>
+            <div><dt>Opening match</dt><dd>{puzzle.association.confidence === 'exact-position' ? 'Exact position' : 'Opening family only'}</dd></div>
+            <div><dt>Engine check</dt><dd>{puzzle.engine.name} passed</dd></div>
+            <div><dt>Source</dt><dd>Lichess puzzle database · CC0 · <time dateTime={puzzle.source.retrievedAt}>{readableUtcDate(puzzle.source.retrievedAt)}</time></dd></div>
+            <div><dt>Release</dt><dd><code>{release.releaseId}</code> · <time dateTime={release.promotedAt}>{readableUtcDate(release.promotedAt)}</time></dd></div>
           </dl>
           <p><strong>Themes:</strong> {puzzle.themes.join(', ')}</p>
           <details className="puzzle-audit-criteria">
             <summary>Why this puzzle appears here</summary>
             <p>
               Released puzzles must replay legally, carry an opening association, have at least 100 attempts,
-              popularity of at least 80, rating deviation no greater than 100, and a passing engine check at each learner move.
+              popularity of at least 80, rating deviation no greater than 100, and a passing engine check at each solution move.
             </p>
             <p>
               This item is linked by {puzzle.association.confidence === 'exact-position'
                 ? 'an exact normalized position match.'
                 : 'a unique opening-family match, not an exact repertoire position.'}
+            </p>
+            <p>
+              Attempt and popularity figures describe the source puzzle. Puzzle results stay separate from opening recall and family coverage.
             </p>
           </details>
         </aside>
@@ -409,55 +474,86 @@ function TacticalPuzzleSession({
 
 export function TacticalPuzzleView(props: TacticalPuzzleViewProps): React.JSX.Element {
   const resource = useMemo<TacticalPuzzleResource>(() => {
-    const parsed = TacticalPuzzleResourceSchema.safeParse(props.resource)
-    return parsed.success
-      ? parsed.data
-      : {
-          status: 'corrupt',
-          reason: 'The tactical puzzle resource failed runtime validation and was not loaded.',
-        }
+    try {
+      return validateTacticalPuzzleResource(props.resource)
+    } catch {
+      return {
+        status: 'corrupt',
+        reason: 'The puzzle data did not pass its integrity checks and was not loaded.',
+      }
+    }
   }, [props.resource])
   const shell = (content: React.JSX.Element): React.JSX.Element => (
     <section className="tactical-puzzle-route" aria-labelledby="tactical-route-title">
       <header className="section-intro">
-        <p className="eyebrow">Tactical study</p>
         <h1 id="tactical-route-title">Puzzles</h1>
-        <p>Opening-linked tactics use a separate evidence and mastery track from repertoire recall.</p>
+        <p>Practice tactics from the openings you study. Puzzle progress stays separate from opening recall.</p>
       </header>
       {content}
     </section>
   )
 
   if (resource.status === 'disabled') {
-    return shell(<EmptyState title="Tactical puzzles are not released yet" detail={resource.reason} />)
+    return shell(
+      <section className="puzzle-unavailable-panel" aria-labelledby="puzzle-unavailable-title">
+        <span className="state-icon" aria-hidden="true">◇</span>
+        <div>
+          <h2 id="puzzle-unavailable-title">Verified puzzles aren’t included in this build yet.</h2>
+          <p>Opening practice and the full reference library are still available.</p>
+          <details>
+            <summary>Data status</summary>
+            <p>{resource.reason}</p>
+          </details>
+        </div>
+        <div className="inline-controls">
+          {props.onBrowseOpenings ? (
+            <button type="button" className="primary-action" onClick={props.onBrowseOpenings}>Browse openings</button>
+          ) : null}
+          {props.onOpenData ? (
+            <button type="button" className="secondary-button" onClick={props.onOpenData}>See puzzle data status</button>
+          ) : null}
+        </div>
+      </section>,
+    )
   }
   if (resource.status === 'loading') {
-    return shell(<LoadingState label="Loading the audited tactical puzzle shard…" />)
+    return shell(<LoadingState label="Loading puzzles…" />)
   }
   if (resource.status === 'empty') {
     return shell(<EmptyState title="No matching tactical puzzles" detail={resource.reason} />)
   }
   if (resource.status === 'rate-limited') {
-    return shell(<ErrorState title="Puzzle service is rate-limited" detail={`${resource.reason} Retry after ${resource.retryAfterSeconds} seconds.`} onRetry={props.onRetry ?? (() => undefined)} />)
+    return shell(
+      <PuzzleRateLimitState
+        retryAt={resource.retryAt}
+        reason={resource.reason}
+        {...(props.onRetry ? { onRetry: props.onRetry } : {})}
+      />,
+    )
   }
   if (resource.status === 'corrupt') {
-    return shell(<ErrorState title="Puzzle shard rejected" detail={resource.reason} onRetry={props.onRetry ?? (() => undefined)} />)
+    return shell(<ErrorState title="Puzzles could not be loaded" detail={resource.reason} {...(props.onRetry ? { onRetry: props.onRetry } : {})} />)
   }
   if (resource.status === 'error') {
-    return shell(<ErrorState title="Puzzles unavailable" detail={resource.reason} onRetry={props.onRetry ?? (() => undefined)} />)
+    return shell(<ErrorState title="Puzzles unavailable" detail={resource.reason} {...(props.onRetry ? { onRetry: props.onRetry } : {})} />)
   }
   if (resource.status === 'offline' && resource.puzzles.length === 0) {
     return shell(<EmptyState title="Puzzles unavailable offline" detail={resource.reason} />)
   }
+  // The runtime schema requires this binding for every puzzle-bearing state;
+  // the only nullable case is the empty offline state returned above.
+  const release = resource.release!
 
   const resourceNotice = resource.status === 'stale'
-    ? `Using the last verified puzzle shard. ${resource.reason}`
+    ? `Using verified puzzle data marked stale on ${readableUtcDate(resource.staleAt)}. ${resource.reason}`
     : resource.status === 'offline'
       ? `Offline mode. ${resource.reason}`
       : undefined
   return (
     <TacticalPuzzleSession
+      key={release.collectionIdentity}
       puzzles={resource.puzzles}
+      release={release}
       orientation={props.orientation}
       {...(props.reducedMotion !== undefined ? { reducedMotion: props.reducedMotion } : {})}
       {...(props.onSetOrientation ? { onSetOrientation: props.onSetOrientation } : {})}

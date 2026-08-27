@@ -11,7 +11,13 @@ Each input has a separate approval boundary:
   under CC0-1.0.
 - `broadcasts.source.json` approves the exact 78 official monthly broadcast
   archives from 2020-01 through 2026-06 under CC BY-SA 4.0. Derived statistics
-  retain attribution, a change notice, and share-alike terms.
+  retain attribution, a change notice, and share-alike terms. Its historical
+  approval pins publisher digests but not response metadata. Compact-v3 plan
+  generation therefore remains blocked until a pending observation hashes all
+  78 local archives, a pending manifest proposal binds byte lengths and HTTP
+  identity to that receipt, and a named reviewer separately approves the exact
+  proposal. The observer and proposal commands never edit or self-approve this
+  manifest.
 - `stockfish-18.source.json` approves checksum-verified Stockfish 18 for
   build-time analysis under GPL-3.0-only. The executable and NNUE networks are
   not shipped.
@@ -35,6 +41,22 @@ Each input has a separate approval boundary:
 Generated records retain their source revisions, checksums, licenses, filters,
 and pull or analysis timestamps. A changed URL, revision, checksum, license,
 scope, or parser requires a new approval decision.
+
+Additional fail-closed review records are checked in separately from source
+approval:
+
+- `compact-v31-benchmark.authorization.json` records the workspace owner's
+  2026-08-27 permission to benchmark only the exact pending proposal SHA-256
+  `c598...57d5` and observation SHA-256 `043b...d56c`. It explicitly does not
+  authorize Q2 ingestion, benchmark-result promotion, or release use.
+- `compact-v31-benchmark.limits.json` pins the provisional log-structured
+  resource envelope: one archive at a time, at least 8 GiB available memory,
+  at most 6 GiB worker RSS, no source staging, and at least 10 GiB free disk
+  after declared delta, merge, and final-state bounds.
+- `opening-family-editorial.proposal.json` is a deterministic review worksheet
+  for all 149 mechanically proposed families and all 3,790 primary taxonomy
+  rows. Every decision is `pending` and `promotionEligible` is false. It is not
+  evidence of human chess, taxonomy, trademark, or localization review.
 
 Schema-v2 evidence is built with `npm run data:evidence-graph`. Its SQLite
 store is restart-safe at the archive boundary and retains month, source

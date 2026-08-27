@@ -33,6 +33,25 @@ export interface BroadcastArchive {
   filename: string
   url: string
   sha256: string
+  /**
+   * Optional immutable transport identity. The historical approved manifest
+   * predates these fields; compact-v3 plans require all three on every
+   * archive and bind them to a reviewed metadata observation.
+   */
+  bytes?: number
+  etagObserved?: string
+  lastModifiedObserved?: string
+}
+
+export interface BroadcastMetadataObservationRefV1 {
+  schemaVersion: 1
+  kind: 'linerecall-broadcast-metadata-observation-ref'
+  receiptSha256: string
+  sourceManifestSha256: string
+  sourceSnapshotSha256: string
+  observedAt: string
+  archiveCount: number
+  localArchivesVerified: true
 }
 
 export interface BroadcastManifestV1 {
@@ -53,6 +72,7 @@ export interface BroadcastManifestV1 {
     basis: string
     reviewRequiredWhen: string
   }
+  metadataObservation?: BroadcastMetadataObservationRefV1
   archives: BroadcastArchive[]
 }
 
@@ -274,6 +294,7 @@ export function assertBroadcastManifest(
     throw new Error('Broadcast manifest must contain at least one archive')
   }
   const months = new Set<string>()
+  let archivesWithTransportMetadata = 0
   for (const [index, archiveValue] of value.archives.entries()) {
     assertObject(archiveValue, `archive ${index}`)
     if (
@@ -295,6 +316,29 @@ export function assertBroadcastManifest(
     if (index > 0 && value.archives[index - 1]?.month >= archiveValue.month) {
       throw new Error('Broadcast archives must be in canonical ascending month order')
     }
+    const transportFields = ['bytes', 'etagObserved', 'lastModifiedObserved'] as const
+    const transportFieldCount = transportFields.filter((field) => archiveValue[field] !== undefined).length
+    if (transportFieldCount !== 0 && transportFieldCount !== transportFields.length) {
+      throw new Error(`Archive ${index} transport metadata must be complete or absent`)
+    }
+    if (transportFieldCount === transportFields.length) {
+      if (
+        !Number.isSafeInteger(archiveValue.bytes) ||
+        (archiveValue.bytes as number) < 1 ||
+        (archiveValue.bytes as number) > 8 * 1024 * 1024 * 1024 ||
+        typeof archiveValue.etagObserved !== 'string' ||
+        archiveValue.etagObserved.length < 1 ||
+        archiveValue.etagObserved.length > 512 ||
+        /[\u0000-\u001f\u007f]/u.test(archiveValue.etagObserved) ||
+        typeof archiveValue.lastModifiedObserved !== 'string' ||
+        archiveValue.lastModifiedObserved.length < 1 ||
+        archiveValue.lastModifiedObserved.length > 512 ||
+        /[\u0000-\u001f\u007f]/u.test(archiveValue.lastModifiedObserved)
+      ) {
+        throw new Error(`Archive ${index} transport metadata is invalid`)
+      }
+      archivesWithTransportMetadata += 1
+    }
   }
   let expectedMonth = value.startMonth
   let expectedCount = 0
@@ -310,6 +354,33 @@ export function assertBroadcastManifest(
   }
   if (value.archives.length !== expectedCount) {
     throw new Error('Broadcast manifest contains archives outside its declared month range')
+  }
+  if (value.metadataObservation === undefined) {
+    if (archivesWithTransportMetadata !== 0) {
+      throw new Error('Broadcast transport metadata requires an observation reference')
+    }
+  } else {
+    assertObject(value.metadataObservation, 'broadcast manifest metadataObservation')
+    if (
+      value.metadataObservation.schemaVersion !== 1 ||
+      value.metadataObservation.kind !== 'linerecall-broadcast-metadata-observation-ref' ||
+      typeof value.metadataObservation.receiptSha256 !== 'string' ||
+      !/^[a-f0-9]{64}$/u.test(value.metadataObservation.receiptSha256) ||
+      typeof value.metadataObservation.sourceManifestSha256 !== 'string' ||
+      !/^[a-f0-9]{64}$/u.test(value.metadataObservation.sourceManifestSha256) ||
+      typeof value.metadataObservation.sourceSnapshotSha256 !== 'string' ||
+      !/^[a-f0-9]{64}$/u.test(value.metadataObservation.sourceSnapshotSha256) ||
+      typeof value.metadataObservation.observedAt !== 'string' ||
+      !Number.isFinite(Date.parse(value.metadataObservation.observedAt)) ||
+      !Number.isSafeInteger(value.metadataObservation.archiveCount) ||
+      value.metadataObservation.archiveCount !== value.archives.length ||
+      value.metadataObservation.localArchivesVerified !== true
+    ) {
+      throw new Error('Broadcast metadata observation reference is invalid')
+    }
+    if (archivesWithTransportMetadata !== value.archives.length) {
+      throw new Error('Broadcast metadata observation requires transport metadata for every archive')
+    }
   }
 }
 

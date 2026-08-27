@@ -32,6 +32,7 @@ import embeddedSnapshot from '../../src/generated/embedded-snapshot.json' with {
 import type { DataManifest, OpeningPartition, VerifiedLine } from '../../src/domain/opening-data.ts'
 import type { OpeningFamilyCatalogV1 } from '../../src/domain/opening-family.ts'
 import { createCard, createEmptyProgress, scheduleReview } from '../../src/domain/progress.ts'
+import { MemoryFamilyTrainingJournalRepository } from '../../src/domain/family-training-journal.ts'
 import { MemoryProgressRepository } from '../../src/infrastructure/progress-repository.ts'
 import { createSyntheticFamilyPromotion } from '../fixtures/synthetic-family-promotion.ts'
 
@@ -64,6 +65,45 @@ afterEach(() => {
 })
 
 describe('accessible chess input', () => {
+  test('keeps visible edge coordinates and accessible square names canonical in both orientations', () => {
+    const { container, rerender } = render(
+      <ChessBoard fen={new Chess().fen()} orientation="white" onMove={vi.fn()} />,
+    )
+    const coordinateSnapshot = (): {
+      firstRow: string[]
+      lastRow: string[]
+      ranks: string[]
+      files: string[]
+    } => {
+      const rows = [...container.querySelectorAll<HTMLElement>('.board-row')]
+      const names = (row: HTMLElement | undefined): string[] => row
+        ? [...row.querySelectorAll<HTMLElement>('[role="gridcell"]')]
+            .map((square) => square.getAttribute('aria-label')?.split(',')[0] ?? '')
+        : []
+      return {
+        firstRow: names(rows[0]),
+        lastRow: names(rows.at(-1)),
+        ranks: [...container.querySelectorAll<HTMLElement>('.rank-label')].map(({ textContent }) => textContent ?? ''),
+        files: [...container.querySelectorAll<HTMLElement>('.file-label')].map(({ textContent }) => textContent ?? ''),
+      }
+    }
+
+    expect(coordinateSnapshot()).toEqual({
+      firstRow: ['a8', 'b8', 'c8', 'd8', 'e8', 'f8', 'g8', 'h8'],
+      lastRow: ['a1', 'b1', 'c1', 'd1', 'e1', 'f1', 'g1', 'h1'],
+      ranks: ['8', '7', '6', '5', '4', '3', '2', '1'],
+      files: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'],
+    })
+
+    rerender(<ChessBoard fen={new Chess().fen()} orientation="black" onMove={vi.fn()} />)
+    expect(coordinateSnapshot()).toEqual({
+      firstRow: ['h1', 'g1', 'f1', 'e1', 'd1', 'c1', 'b1', 'a1'],
+      lastRow: ['h8', 'g8', 'f8', 'e8', 'd8', 'c8', 'b8', 'a8'],
+      ranks: ['1', '2', '3', '4', '5', '6', '7', '8'],
+      files: ['h', 'g', 'f', 'e', 'd', 'c', 'b', 'a'],
+    })
+  })
+
   test('supports keyboard, click-click, the move picker, statuses, and promotion', async () => {
     const user = userEvent.setup()
     const onMove = vi.fn()
@@ -147,7 +187,7 @@ describe('opening browser and evidence', () => {
       />,
     )
     expect(screen.getByText(drillLine.name, { selector: 'h2' })).toBeTruthy()
-    const search = screen.getByRole('searchbox', { name: /Search by opening name/u })
+    const search = screen.getByRole('searchbox', { name: /Opening name or ECO code/u })
     await user.type(search, 'C20')
     await user.click(screen.getByRole('button', { name: 'Search openings' }))
     expect(await screen.findByText(/Search results/u)).toBeTruthy()
@@ -156,14 +196,14 @@ describe('opening browser and evidence', () => {
     await user.click(screen.getAllByRole('button', { name: /C20/u })[0]!)
     expect(onSearch).toHaveBeenCalled()
 
-    await user.click(screen.getByRole('radio', { name: 'Moves' }))
-    const moves = screen.getByRole('searchbox', { name: /Paste a SAN/u })
+    await user.click(screen.getByRole('radio', { name: 'Enter moves' }))
+    const moves = screen.getByRole('searchbox', { name: /SAN or UCI moves/u })
     await user.type(moves, 'e4 e5')
     await user.click(screen.getByRole('button', { name: 'Search openings' }))
     expect(await screen.findByText(/Search results/u)).toBeTruthy()
 
-    await user.click(screen.getByRole('radio', { name: 'PGN' }))
-    await user.type(screen.getByRole('textbox', { name: /Paste a Standard/u }), '<script>')
+    await user.click(screen.getByRole('radio', { name: 'Paste PGN' }))
+    await user.type(screen.getByRole('textbox', { name: /Standard-chess PGN/u }), '<script>')
     await user.click(screen.getByRole('button', { name: 'Search openings' }))
     expect(await screen.findByRole('alert')).toHaveTextContent(/malformed|does not contain/u)
     expect(announce).not.toHaveBeenLastCalledWith(expect.stringMatching(/^Search error:/u))
@@ -242,7 +282,7 @@ describe('drill, progress, provenance, and top-level state', () => {
         onAnnouncement={vi.fn()}
       />,
     )
-    expect(screen.getByText('Session only')).toBeTruthy()
+    expect(screen.getByText('session only')).toBeTruthy()
     await user.click(screen.getByRole('button', { name: 'Export progress JSON' }))
     expect(URL.createObjectURL).toHaveBeenCalled()
     expect(URL.revokeObjectURL).not.toHaveBeenCalled()
@@ -306,26 +346,27 @@ describe('drill, progress, provenance, and top-level state', () => {
     const openingCells = within(openingRow).getAllByRole('cell')
     expect(openingCells[0]).toHaveTextContent(`${Math.round(100 / openingCards)}%`)
     expect(openingCells[1]).toHaveTextContent(/^1$/u)
-    expect(openingCells[2]).toHaveTextContent(`${openingCards - 1}`)
+    expect(openingCells[2]).toHaveTextContent(/^0$/u)
     expect(openingCells[3]).toHaveTextContent(`${openingCards}`)
     expect(openingCells[4]).toHaveTextContent('3 days')
-    expect(openingCells[5]).toHaveTextContent('2026-07-11T00:00:00.000Z')
+    expect(openingCells[5]).toHaveTextContent('Jul 11, 2026')
 
-    const variationTable = screen.getByRole('table', { name: /trained-side variations in started openings/u })
+    const variationTable = screen.getByRole('table', { name: /opening sides with review history/u })
     const trainedSide = drillLine.trainedSide === 'white' ? 'White' : 'Black'
     const variationRow = within(variationTable).getByRole('row', { name: new RegExp(`Train ${trainedSide}`, 'u') })
     const variationCells = within(variationRow).getAllByRole('cell')
     expect(variationCells[0]).toHaveTextContent(`${Math.round(100 / drillLine.nodes.length)}%`)
     expect(variationCells[1]).toHaveTextContent(/^1$/u)
-    expect(variationCells[2]).toHaveTextContent(`${drillLine.nodes.length - 1}`)
+    expect(variationCells[2]).toHaveTextContent(/^0$/u)
     expect(variationCells[3]).toHaveTextContent(`${drillLine.nodes.length}`)
     expect(variationCells[4]).toHaveTextContent('2 days')
-    expect(variationCells[5]).toHaveTextContent('2026-07-11T00:00:00.000Z')
-    expect(screen.getByText(/streaks count consecutive local calendar days/iu)).toBeTruthy()
+    expect(variationCells[5]).toHaveTextContent('Jul 11, 2026')
+    expect(screen.getByText(/Your streak counts consecutive local calendar days/iu)).toBeTruthy()
   })
 
   test('top-level app exposes loading, retry, navigation, theme, and persistence fallback', async () => {
     const user = userEvent.setup()
+    const scrollTo = vi.spyOn(window, 'scrollTo').mockImplementation(() => undefined)
     let attempts = 0
     const loadAudit = vi.fn(async () => audit)
     const dataSource: OpeningDataSource = {
@@ -341,15 +382,20 @@ describe('drill, progress, provenance, and top-level state', () => {
     expect(screen.getByRole('status')).toHaveTextContent(/Verifying/u)
     expect(await screen.findByText('Opening database unavailable')).toBeTruthy()
     await user.click(screen.getByRole('button', { name: 'Retry' }))
-    expect(await screen.findByRole('heading', { name: 'Ready when you are.' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: 'Your opening practice' })).toBeTruthy()
+    expect(screen.getByText(/named lines.*Study only/u)).toBeVisible()
+    expect(screen.queryByText(/named lines.*Practice (white|black)/u)).not.toBeInTheDocument()
     expect(document.documentElement.lang).toBe('en-US')
     expect(document.documentElement.dir).toBe('ltr')
-    expect(document.title).toBe('LineRecall — Audited Chess Opening Trainer')
+    expect(document.title).toBe('LineRecall — Chess Opening Trainer')
     expect(await screen.findByText(/Session-only progress is active/u)).toBeTruthy()
     await user.click(screen.getByRole('button', { name: 'Progress' }))
     expect(screen.getByRole('heading', { name: 'Your progress' })).toBeTruthy()
-    expect(screen.getAllByText(/Session-only progress is active/u)).toHaveLength(1)
+    expect(screen.queryByText(/Session-only progress is active/u)).not.toBeInTheDocument()
+    expect(screen.getByText(/Progress storage details and transfer controls are shown below/u)).toBeTruthy()
+    expect(screen.getByText('session only')).toBeTruthy()
     await waitFor(() => expect(screen.getByRole('main')).toHaveFocus())
+    expect(scrollTo).toHaveBeenLastCalledWith({ top: 0, left: 0, behavior: 'auto' })
     const themeToggle = screen.getByRole('button', { name: /Switch to light mode/u })
     expect(themeToggle).toHaveTextContent('Light mode')
     await user.click(themeToggle)
@@ -371,10 +417,10 @@ describe('drill, progress, provenance, and top-level state', () => {
       loadAudit: vi.fn(async () => audit),
     }
     const { container } = render(<App dataSource={dataSource} />)
-    expect(await screen.findByRole('heading', { level: 1, name: 'Ready when you are.' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { level: 1, name: 'Your opening practice' })).toBeTruthy()
 
     const destinations = [
-      { button: 'Today', view: 'today', heading: 'Ready when you are.' },
+      { button: 'Today', view: 'today', heading: 'Your opening practice' },
       { button: 'Repertoire', view: 'repertoire', heading: 'Repertoire' },
       { button: 'Puzzles', view: 'puzzles', heading: 'Puzzles' },
       { button: 'Explore', view: 'explore', heading: 'Explore openings' },
@@ -391,6 +437,94 @@ describe('drill, progress, provenance, and top-level state', () => {
     }
   })
 
+  test('routes the honest unavailable puzzle state to openings and data status', async () => {
+    const user = userEvent.setup()
+    const dataSource: OpeningDataSource = {
+      initialize: vi.fn(async () => core),
+      loadPartition: vi.fn(async (eco) => eco === 'A00' ? a00 : c20),
+      loadAudit: vi.fn(async () => audit),
+    }
+    render(<App dataSource={dataSource} />)
+    expect(await screen.findByRole('heading', { name: 'Your opening practice' })).toBeVisible()
+
+    await user.click(screen.getByRole('button', { name: 'Puzzles' }))
+    await user.click(await screen.findByRole('button', { name: 'Browse openings' }))
+    expect(await screen.findByRole('heading', { name: 'Repertoire' })).toBeVisible()
+
+    await user.click(screen.getByRole('button', { name: 'Puzzles' }))
+    await user.click(await screen.findByRole('button', { name: 'See puzzle data status' }))
+    expect(await screen.findByRole('heading', { name: 'Data & Licenses' })).toBeVisible()
+  })
+
+  test('keeps the shared brand and theme controls while content-heavy routes restore the first viewport', async () => {
+    const user = userEvent.setup()
+    const scrollTo = vi.spyOn(window, 'scrollTo').mockImplementation(() => undefined)
+    try {
+      const dataSource: OpeningDataSource = {
+        initialize: vi.fn(async () => core),
+        loadPartition: vi.fn(async (eco) => eco === 'A00' ? a00 : c20),
+        loadAudit: vi.fn(async () => audit),
+      }
+      const { container } = render(<App dataSource={dataSource} />)
+      expect(await screen.findByRole('heading', { level: 1, name: 'Your opening practice' })).toBeVisible()
+
+      const destinations = [
+        { button: 'Repertoire', heading: 'Repertoire' },
+        { button: 'Explore', heading: 'Explore openings' },
+        { button: 'Data & licenses', heading: 'Data & Licenses' },
+      ] as const
+
+      for (const destination of destinations) {
+        await user.click(screen.getByRole('button', { name: destination.button }))
+        expect(await screen.findByRole('heading', { level: 1, name: destination.heading })).toBeVisible()
+        await waitFor(() => expect(screen.getByRole('main')).toHaveFocus())
+
+        const home = screen.getByRole('button', { name: 'LineRecall home' })
+        const header = home.closest('.app-header')
+        if (!(header instanceof HTMLElement)) throw new Error('Shared application header is missing')
+        expect(home).toBeVisible()
+        expect(within(header).getByRole('button', { name: /Switch to (?:light|dark) mode/u })).toBeVisible()
+        expect(container.querySelectorAll('#main-content h1')).toHaveLength(1)
+        expect(scrollTo).toHaveBeenLastCalledWith({ top: 0, left: 0, behavior: 'auto' })
+      }
+
+      expect(scrollTo).toHaveBeenCalledTimes(destinations.length)
+    } finally {
+      scrollTo.mockRestore()
+    }
+  })
+
+  test('offers puzzle retry only when the app has a real reload callback', async () => {
+    const user = userEvent.setup()
+    const dataSource: OpeningDataSource = {
+      initialize: vi.fn(async () => core),
+      loadPartition: vi.fn(async (eco) => eco === 'A00' ? a00 : c20),
+      loadAudit: vi.fn(async () => audit),
+    }
+    const resource = { status: 'error' as const, reason: 'The puzzle service did not respond.' }
+    const withoutReload = render(<App dataSource={dataSource} tacticalPuzzleResource={resource} />)
+    expect(await screen.findByRole('heading', { name: 'Your opening practice' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Puzzles' }))
+    const unavailable = await screen.findByRole('alert')
+    expect(unavailable).toHaveTextContent('The puzzle service did not respond.')
+    expect(within(unavailable).queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
+    withoutReload.unmount()
+    window.history.replaceState(null, '', '#/today')
+
+    const retry = vi.fn()
+    render(
+      <App
+        dataSource={dataSource}
+        tacticalPuzzleResource={resource}
+        onRetryTacticalPuzzles={retry}
+      />,
+    )
+    expect(await screen.findByRole('heading', { name: 'Your opening practice' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Puzzles' }))
+    await user.click(within(await screen.findByRole('alert')).getByRole('button', { name: 'Retry' }))
+    expect(retry).toHaveBeenCalledOnce()
+  })
+
   test('routes an Explore taxonomy row to its one canonical opening family', async () => {
     const user = userEvent.setup()
     const matchingFamilies = core.reviewFamilyCatalog.families.filter((family) =>
@@ -404,7 +538,7 @@ describe('drill, progress, provenance, and top-level state', () => {
     }
 
     render(<App dataSource={dataSource} />)
-    expect(await screen.findByRole('heading', { name: 'Ready when you are.' })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Your opening practice' })).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Explore' }))
     await user.click(screen.getByRole('tab', { name: /Volume C:/u }))
     await user.click(within(screen.getByRole('listbox', { name: 'ECO opening codes' })).getByRole('option', { name: /^C20/u }))
@@ -428,11 +562,12 @@ describe('drill, progress, provenance, and top-level state', () => {
       loadAudit: vi.fn(async () => audit),
     }
     const first = render(<App dataSource={dataSource} />)
-    expect(await screen.findByRole('heading', { name: 'Ready when you are.' })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Your opening practice' })).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Repertoire' }))
     expect(await screen.findByRole('heading', { name: 'Repertoire' })).toBeVisible()
+    await user.type(screen.getByRole('searchbox', { name: 'Find an opening' }), 'Caro')
     expect(screen.getAllByRole('button', { name: /Caro/u })).toHaveLength(1)
-    expect(screen.queryByRole('heading', { name: 'Deep graph practice is not enabled' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Guided practice is not ready' })).not.toBeInTheDocument()
     first.unmount()
     window.history.replaceState(null, '', '#/today')
 
@@ -447,12 +582,12 @@ describe('drill, progress, provenance, and top-level state', () => {
         familyGraphResources={{ 'caro-kann': promotion.resources }}
       />,
     )
-    expect(await screen.findByRole('heading', { name: 'Ready when you are.' })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Your opening practice' })).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Repertoire' }))
     await user.click(screen.getByRole('button', { name: /Caro/u }))
-    await user.click(await screen.findByRole('button', { name: 'Start full family' }))
-    expect(await screen.findByRole('heading', { name: 'Practice every audited branch' })).toBeVisible()
-    await user.click(screen.getByRole('button', { name: 'Start full repertoire' }))
+    await user.click(await screen.findByRole('button', { name: 'Practice all variations' }))
+    expect(await screen.findByRole('heading', { name: 'Opening practice' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Start full opening' })).not.toBeInTheDocument()
     await user.selectOptions(screen.getByRole('combobox', { name: 'Legal move picker' }), 'g1f3')
     await user.click(screen.getByRole('button', { name: 'Play move' }))
     const rootCardId = promotion.graphs[0]!.nodes
@@ -466,6 +601,210 @@ describe('drill, progress, provenance, and top-level state', () => {
       })
     })
     expect(await screen.findByText(/good review saved for this due card/iu)).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Progress' }))
+    const variationTable = await screen.findByRole('table', { name: /opening side with review history/u })
+    expect(within(variationTable).getByText('Caro–Kann')).toBeVisible()
+    expect(within(variationTable).getByText('1 day')).toBeVisible()
+    expect(within(variationTable).queryByText('Unknown imported opening')).not.toBeInTheDocument()
+  })
+
+  test('continues the most recently studied ready family from Today with one action', async () => {
+    const user = userEvent.setup()
+    const family = core.reviewFamilyCatalog.families.find(({ id }) => id === 'caro-kann')
+    if (!family) throw new Error('Required family is missing')
+    const promotion = await createSyntheticFamilyPromotion(family, { packCount: 1 })
+    const graph = promotion.graphs[0]!
+    const root = graph.nodes.find(({ id }) => id === graph.pack.rootNodeId)
+    if (!root?.cardId) throw new Error('Synthetic family root card is missing')
+    const saved = createEmptyProgress(new Date('2026-08-27T12:00:00.000Z'))
+    saved.cards[root.cardId] = {
+      ...createCard(root.cardId, graph.pack.id, root.id, new Date('2026-08-26T12:00:00.000Z')),
+      dueAt: '2099-01-01T00:00:00.000Z',
+      lastReviewedAt: '2026-08-26T12:00:00.000Z',
+      reviewCount: 1,
+    }
+    const dataSource: OpeningDataSource = {
+      initialize: vi.fn(async () => core),
+      loadPartition: vi.fn(async (eco) => eco === 'A00' ? a00 : c20),
+      loadAudit: vi.fn(async () => audit),
+    }
+    render(
+      <App
+        dataSource={dataSource}
+        repositorySelector={async () => ({ repository: new MemoryProgressRepository(saved), warning: null })}
+        familyGraphResources={{ [family.id]: promotion.resources }}
+      />,
+    )
+
+    expect(await screen.findByRole('heading', { name: 'Your opening practice' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Continue Caro–Kann' }))
+    expect(await screen.findByRole('heading', { name: 'Opening practice' })).toBeVisible()
+    expect(window.location.hash).toBe(`#/train/${family.id}/white`)
+  })
+
+  test('does not present a manifest-only family as trainable when no graph loader exists', async () => {
+    const family = core.reviewFamilyCatalog.families.find(({ id }) => id === 'caro-kann')
+    if (!family) throw new Error('Required family is missing')
+    const promotion = await createSyntheticFamilyPromotion(family, { packCount: 1 })
+    const dataSource: OpeningDataSource = {
+      initialize: vi.fn(async () => core),
+      loadPartition: vi.fn(async (eco) => eco === 'A00' ? a00 : c20),
+      loadAudit: vi.fn(async () => audit),
+    }
+    render(
+      <App
+        dataSource={dataSource}
+        familyGraphResources={{ [family.id]: { manifest: promotion.manifest } }}
+      />,
+    )
+
+    expect(await screen.findByRole('button', { name: 'Open Caro–Kann' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Continue Caro–Kann' })).not.toBeInTheDocument()
+  })
+
+  test('selects due family work in Review mode from the cold-start summary', async () => {
+    const user = userEvent.setup()
+    const family = core.reviewFamilyCatalog.families.find(({ id }) => id === 'caro-kann')
+    if (!family) throw new Error('Required family is missing')
+    const promotion = await createSyntheticFamilyPromotion(family, { packCount: 1 })
+    const graph = promotion.graphs[0]!
+    const root = graph.nodes.find(({ id }) => id === graph.pack.rootNodeId)
+    if (!root?.cardId) throw new Error('Synthetic family root card is missing')
+    const saved = createEmptyProgress(new Date('2026-08-20T00:00:00.000Z'))
+    saved.cards[root.cardId] = scheduleReview(
+      createCard(root.cardId, graph.pack.id, root.id, new Date('2026-08-18T00:00:00.000Z')),
+      'good',
+      new Date('2026-08-18T00:00:00.000Z'),
+    ).card
+    const dataSource: OpeningDataSource = {
+      initialize: vi.fn(async () => core),
+      loadPartition: vi.fn(async (eco) => eco === 'A00' ? a00 : c20),
+      loadAudit: vi.fn(async () => audit),
+    }
+    render(
+      <App
+        dataSource={dataSource}
+        repositorySelector={async () => ({ repository: new MemoryProgressRepository(saved), warning: null })}
+        familyGraphResources={{ [family.id]: promotion.resources }}
+      />,
+    )
+
+    const review = await screen.findByRole('button', { name: 'Review 1 move' })
+    expect(screen.getByRole('heading', { level: 2, name: family.canonicalName })).toBeVisible()
+    await user.click(review)
+    expect(await screen.findByText(/Review white/iu)).toBeVisible()
+    expect(window.location.hash).toBe(`#/train/${family.id}/white`)
+  })
+
+  test('shows the global due total while the primary action names only its selected family work', async () => {
+    const caro = core.reviewFamilyCatalog.families.find(({ id }) => id === 'caro-kann')
+    const sicilian = core.reviewFamilyCatalog.families.find(({ id }) => id === 'sicilian-defence')
+    if (!caro || !sicilian) throw new Error('Required family fixtures are missing')
+    const [caroPromotion, sicilianPromotion] = await Promise.all([
+      createSyntheticFamilyPromotion(caro, { packCount: 1 }),
+      createSyntheticFamilyPromotion(sicilian, { packCount: 1 }),
+    ])
+    const caroGraph = caroPromotion.graphs[0]!
+    const sicilianGraph = sicilianPromotion.graphs[0]!
+    const caroCard = caroGraph.nodes.find(({ cardId }) => cardId !== undefined)
+    const sicilianCards = sicilianGraph.nodes.filter(({ cardId }) => cardId !== undefined).slice(0, 2)
+    if (!caroCard?.cardId || sicilianCards.length !== 2 || sicilianCards.some(({ cardId }) => !cardId)) {
+      throw new Error('Synthetic families need the requested learner cards')
+    }
+    const saved = createEmptyProgress(new Date('2026-08-20T00:00:00.000Z'))
+    saved.cards[caroCard.cardId] = {
+      ...createCard(caroCard.cardId, caroGraph.pack.id, caroCard.id, new Date('2026-08-18T00:00:00.000Z')),
+      dueAt: '2000-01-01T00:00:00.000Z',
+      lastReviewedAt: '2026-08-18T00:00:00.000Z',
+      reviewCount: 1,
+    }
+    for (const [index, node] of sicilianCards.entries()) {
+      saved.cards[node.cardId!] = {
+        ...createCard(node.cardId!, sicilianGraph.pack.id, node.id, new Date('2026-08-19T00:00:00.000Z')),
+        dueAt: '2000-01-01T00:00:00.000Z',
+        lastReviewedAt: `2026-08-19T0${index}:00:00.000Z`,
+        reviewCount: 1,
+      }
+    }
+    const dataSource: OpeningDataSource = {
+      initialize: vi.fn(async () => core),
+      loadPartition: vi.fn(async (eco) => eco === 'A00' ? a00 : c20),
+      loadAudit: vi.fn(async () => audit),
+    }
+
+    render(
+      <App
+        dataSource={dataSource}
+        repositorySelector={async () => ({ repository: new MemoryProgressRepository(saved), warning: null })}
+        familyGraphResources={{
+          [caro.id]: caroPromotion.resources,
+          [sicilian.id]: sicilianPromotion.resources,
+        }}
+      />,
+    )
+
+    expect(await screen.findByText('3 moves are ready to review.')).toBeVisible()
+    expect(screen.getByRole('heading', { level: 2, name: sicilian.canonicalName })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Review 2 moves' })).toBeVisible()
+  })
+
+  test('hydrates family completion and the unfinished target before a family is visited', async () => {
+    const user = userEvent.setup()
+    const caro = core.reviewFamilyCatalog.families.find(({ id }) => id === 'caro-kann')
+    const sicilian = core.reviewFamilyCatalog.families.find(({ id }) => id === 'sicilian-defence')
+    if (!caro || !sicilian) throw new Error('Required family fixtures are missing')
+    const [caroPromotion, sicilianPromotion] = await Promise.all([
+      createSyntheticFamilyPromotion(caro, { packCount: 1 }),
+      createSyntheticFamilyPromotion(sicilian, { packCount: 1 }),
+    ])
+    const journal = new MemoryFamilyTrainingJournalRepository()
+    const sicilianGraph = sicilianPromotion.graphs[0]!
+    const [completedPath, ...pendingPaths] = sicilianGraph.paths
+    if (!completedPath || pendingPaths.length === 0) throw new Error('Synthetic family needs completed and pending paths')
+    const coverageCycleId = `${sicilianGraph.pack.id}::coverage:4`
+    await journal.appendCoverageEvent({
+      schemaVersion: 1,
+      eventId: '00000000-0000-4000-8000-000000000041',
+      releaseId: sicilianGraph.releaseId,
+      familyId: sicilian.id,
+      packId: sicilianGraph.pack.id,
+      pathId: completedPath.id,
+      coverageCycleId,
+      completedAt: '2026-08-26T18:00:00.000Z',
+    })
+    await journal.appendCursor({
+      schemaVersion: 1,
+      releaseId: sicilianGraph.releaseId,
+      familyId: sicilian.id,
+      side: 'white',
+      coverageCycleId,
+      authoritativeDueCardIds: [],
+      reviewedCardIds: [],
+      completedPathIds: [completedPath.id],
+      pendingPathIds: pendingPaths.map(({ id }) => id),
+      batchIndex: 0,
+    })
+    const dataSource: OpeningDataSource = {
+      initialize: vi.fn(async () => core),
+      loadPartition: vi.fn(async (eco) => eco === 'A00' ? a00 : c20),
+      loadAudit: vi.fn(async () => audit),
+    }
+    render(
+      <App
+        dataSource={dataSource}
+        familyGraphResources={{
+          [caro.id]: caroPromotion.resources,
+          [sicilian.id]: sicilianPromotion.resources,
+        }}
+        familyTrainingJournal={journal}
+      />,
+    )
+
+    expect(await screen.findByRole('heading', { level: 2, name: sicilian.canonicalName })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Repertoire' }))
+    expect(await screen.findByRole('progressbar', {
+      name: `1 of ${sicilianGraph.paths.length} ${sicilian.canonicalName} variations practiced`,
+    })).toBeVisible()
   })
 
   test('loads every pack in a selected family from a validated family-capable source', async () => {
@@ -511,15 +850,15 @@ describe('drill, progress, provenance, and top-level state', () => {
     }
 
     render(<App dataSource={dataSource} />)
-    expect(await screen.findByRole('heading', { name: 'Ready when you are.' })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Your opening practice' })).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Repertoire' }))
     await user.click(screen.getByRole('button', { name: /Caro/u }))
     await waitFor(() => expect(loadRepertoirePack).toHaveBeenCalledTimes(2))
     expect(new Set(loadRepertoirePack.mock.calls.map(([ref]) => ref.packId))).toEqual(
       new Set(promotion.manifest.packRefs.map(({ packId }) => packId)),
     )
-    expect(await screen.findByText('2 audited packs ready')).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Start full family' })).toBeEnabled()
+    expect(await screen.findByText('Practice ready')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Practice all variations' })).toBeEnabled()
   })
 
   test('commits navigation independently of a hostile native View Transition implementation', async () => {
@@ -537,7 +876,7 @@ describe('drill, progress, provenance, and top-level state', () => {
     }
     try {
       render(<App dataSource={dataSource} />)
-      expect(await screen.findByRole('heading', { name: 'Ready when you are.' })).toBeTruthy()
+      expect(await screen.findByRole('heading', { name: 'Your opening practice' })).toBeTruthy()
       await user.click(screen.getByRole('button', { name: 'Progress' }))
       expect(await screen.findByRole('heading', { name: 'Your progress' })).toBeTruthy()
       expect(startViewTransition).not.toHaveBeenCalled()
@@ -559,7 +898,7 @@ describe('drill, progress, provenance, and top-level state', () => {
       loadAudit,
     }
     render(<App dataSource={dataSource} />)
-    expect(await screen.findByRole('heading', { name: 'Ready when you are.' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: 'Your opening practice' })).toBeTruthy()
     expect(loadAudit).not.toHaveBeenCalled()
 
     await user.click(screen.getByRole('button', { name: 'Data & licenses' }))
@@ -606,11 +945,11 @@ describe('drill, progress, provenance, and top-level state', () => {
 
     expect(await screen.findByText('Loading saved progress…')).toBeTruthy()
     expect(screen.getByRole('button', { name: /Switch to light mode/u })).toBeDisabled()
-    expect(screen.queryByRole('heading', { name: 'Ready when you are.' })).toBeNull()
+    expect(screen.queryByRole('heading', { name: 'Your opening practice' })).toBeNull()
     expect(save).not.toHaveBeenCalled()
 
     await act(async () => resolveLoad(saved))
-    expect(await screen.findByRole('heading', { name: 'Ready when you are.' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: 'Your opening practice' })).toBeTruthy()
     const theme = screen.getByRole('button', { name: /Switch to dark mode/u })
     expect(theme).toBeEnabled()
     expect(save).not.toHaveBeenCalled()

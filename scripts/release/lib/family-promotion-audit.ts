@@ -8,10 +8,11 @@ import {
   ContentAddressedRefV1Schema,
   OpeningFamilyCatalogV1Schema,
   OpeningFamilyManifestV1Schema,
-  TacticalPuzzleShardV1Schema,
+  TacticalPuzzleShardPayloadV1Schema,
   type ContentAddressedRefV1,
   type OpeningFamilyManifestV1,
 } from '../../../src/domain/opening-family.ts'
+import { validateApprovedOpeningFamilyEditorialLedger } from '../../../src/domain/opening-family-editorial.ts'
 import {
   EligibleSourceEdgeInventoryV1Schema,
   FamilyGraphProvenanceDocumentV1Schema,
@@ -85,6 +86,7 @@ export const FamilyPromotionAuditIndexV1Schema = z.object({
     maximumPracticeBranches: z.null(),
   }).strict(),
   catalog: FileReceiptSchema,
+  editorialLedger: FileReceiptSchema,
   familyGraphBuild: FileReceiptSchema,
   engineProofInventory: FileReceiptSchema,
   scidCrosscheckReport: FileReceiptSchema,
@@ -108,6 +110,7 @@ export const FamilyPromotionAuditIndexV1Schema = z.object({
 }).strict().superRefine((index, context) => {
   const allPaths = [
     index.catalog.path,
+    index.editorialLedger.path,
     index.familyGraphBuild.path,
     index.engineProofInventory.path,
     index.scidCrosscheckReport.path,
@@ -422,6 +425,37 @@ export async function auditFamilyPromotion(
   }
   gateResult(gates, 'family-catalog-and-manifests', findings.every(({ code }) => !code.includes('family') && !code.includes('taxonomy')), `${manifests.size} family manifests validated`)
 
+  let editorialLedgerApproved = false
+  try {
+    if (!catalog) throw new Error('Editorial validation requires a valid promoted family catalog')
+    const expectedFamilies = catalog.families.map((entry) => {
+      const manifest = manifests.get(entry.id)
+      if (!manifest) throw new Error(`Editorial validation is missing promoted manifest ${entry.id}`)
+      return {
+        id: entry.id,
+        canonicalName: entry.canonicalName,
+        aliases: entry.aliases,
+        ecoCodes: entry.ecoCodes,
+        taxonomyLineIds: manifest.taxonomyLineIds,
+      }
+    })
+    validateApprovedOpeningFamilyEditorialLedger(
+      await readIndexedJson(rootReal, index.editorialLedger),
+      expectedFamilies,
+    )
+    editorialLedgerApproved = true
+  } catch (error) {
+    findings.push(finding(error, 'family-editorial-ledger-invalid', index.editorialLedger.path))
+  }
+  gateResult(
+    gates,
+    'family-editorial-review',
+    editorialLedgerApproved,
+    editorialLedgerApproved
+      ? 'All 149 proposed families and 3,790 primary assignments have approved editorial decisions bound to the promoted catalog'
+      : 'The complete human family/editorial ledger is absent, pending, or differs from the promoted catalog',
+  )
+
   const packMemberships = new Map<string, Set<string>>()
   const eligibleInventorySourceSha256s = new Set<string>()
   const promotedGraphs = new Map<string, Awaited<ReturnType<typeof validateRepertoireGraphDocument>>>()
@@ -525,7 +559,7 @@ export async function auditFamilyPromotion(
     }
   }
   const puzzleIds = new Set<string>()
-  const promotedPuzzleShards = new Map<string, z.infer<typeof TacticalPuzzleShardV1Schema>>()
+  const promotedPuzzleShards = new Map<string, z.infer<typeof TacticalPuzzleShardPayloadV1Schema>>()
   for (const indexed of index.puzzleShards) {
     try {
       const matching = [...expectedPuzzleRefs.values()].find(({ reference }) => sameContentReference(reference, indexed.shard))
@@ -533,7 +567,10 @@ export async function auditFamilyPromotion(
       if (indexed.familyIds.length !== matching.familyIds.size || indexed.familyIds.some((id) => !matching.familyIds.has(id))) {
         throw new Error('Puzzle shard family ownership differs from the family manifests')
       }
-      const shard = TacticalPuzzleShardV1Schema.parse(await readIndexedJson(rootReal, indexed.shard))
+      // Persisted shards omit `id`; a legacy or caller-controlled internal ID
+      // fails this strict schema. Runtime identity is derived from the verified
+      // content reference after these exact bytes pass SHA-256 verification.
+      const shard = TacticalPuzzleShardPayloadV1Schema.parse(await readIndexedJson(rootReal, indexed.shard))
       if (shard.releaseId !== index.releaseId) throw new Error('Puzzle shard belongs to another release')
       if (shard.familyIds.length !== indexed.familyIds.length || shard.familyIds.some((id) => !indexed.familyIds.includes(id))) {
         throw new Error('Puzzle shard content family IDs differ from the promotion index')

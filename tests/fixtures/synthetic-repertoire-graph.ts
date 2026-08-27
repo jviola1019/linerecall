@@ -37,13 +37,9 @@ function moveParts(uci: string): { from: Square; to: Square; promotion?: PieceSy
     : { from: uci.slice(0, 2) as Square, to: uci.slice(2, 4) as Square, promotion }
 }
 
-/** Synthetic legal graph only. No values in this fixture represent observed evidence. */
-export async function createSyntheticTranspositionGraph(): Promise<RepertoireGraphDocument> {
+/** Synthetic legal graph only. No values in these fixtures represent observed evidence. */
+async function createSyntheticGraph(lines: readonly FixtureLine[]): Promise<RepertoireGraphDocument> {
   const packId = 'fixture_route_pack'
-  const lines: FixtureLine[] = [
-    { moves: ['g1f3', 'd7d5', 'g2g3', 'e7e6', 'f1g2'], family: 'Knight first', usage: 0.7 },
-    { moves: ['g2g3', 'd7d5', 'g1f3', 'e7e6', 'f1g2'], family: 'Fianchetto first', usage: 0.3 },
-  ]
   const root = new Chess()
   const rootEpd = normalizedEpd(root)
   const epds = new Set<string>([rootEpd])
@@ -158,4 +154,23 @@ export async function createSyntheticTranspositionGraph(): Promise<RepertoireGra
     edges,
     paths,
   }
+}
+
+export async function createSyntheticTranspositionGraph(): Promise<RepertoireGraphDocument> {
+  return createSyntheticGraph([
+    { moves: ['g1f3', 'd7d5', 'g2g3', 'e7e6', 'f1g2'], family: 'Knight first', usage: 0.7 },
+    { moves: ['g2g3', 'd7d5', 'g1f3', 'e7e6', 'f1g2'], family: 'Fianchetto first', usage: 0.3 },
+  ])
+}
+
+/**
+ * The two prefixes reach the same position after four plies, then choose
+ * different fifth-ply learner moves. Playing d3 while following the
+ * knight-first path transfers to the fianchetto path at a non-root node.
+ */
+export async function createSyntheticDivergentPrefixTranspositionGraph(): Promise<RepertoireGraphDocument> {
+  return createSyntheticGraph([
+    { moves: ['g1f3', 'd7d5', 'g2g3', 'e7e6', 'f1g2'], family: 'Knight first', usage: 0.7 },
+    { moves: ['g2g3', 'd7d5', 'g1f3', 'e7e6', 'd2d3'], family: 'Fianchetto then d3', usage: 0.3 },
+  ])
 }

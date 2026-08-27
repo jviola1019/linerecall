@@ -64,7 +64,7 @@ function applyUci(chess: Chess, uci: string): string {
     to: uci.slice(2, 4) as Square,
     ...(promotion ? { promotion } : {}),
   })
-  if (!move) throw new Error(`Illegal audited move ${uci}`)
+  if (!move) throw new Error(`Illegal opening move ${uci}`)
   return move.san
 }
 
@@ -148,7 +148,6 @@ function SearchPanel({
     <section className="search-panel" aria-labelledby="opening-search-title">
       <div className="section-heading-row">
         <div>
-          <p className="eyebrow">Audited repertoire</p>
           <h2 id="opening-search-title">Find an opening</h2>
         </div>
       </div>
@@ -168,7 +167,7 @@ function SearchPanel({
                 setError(null)
               }}
             />
-            <span>{option === 'text' ? 'Name / ECO' : option === 'moves' ? 'Moves' : 'PGN'}</span>
+            <span>{option === 'text' ? 'Search by name or ECO' : option === 'moves' ? 'Enter moves' : 'Paste PGN'}</span>
           </label>
         ))}
       </fieldset>
@@ -180,7 +179,7 @@ function SearchPanel({
         }}
       >
         <label htmlFor={inputId}>
-          {mode === 'text' ? 'Search by opening name, ECO, SAN, or UCI' : mode === 'moves' ? 'Paste a SAN or UCI move sequence' : 'Paste a Standard-chess PGN'}
+          {mode === 'text' ? 'Opening name or ECO code' : mode === 'moves' ? 'SAN or UCI moves' : 'Standard-chess PGN'}
         </label>
         {mode === 'pgn' ? (
           <textarea
@@ -210,7 +209,11 @@ function SearchPanel({
           />
         )}
         <p id={`${inputId}-help`} className="field-help">
-          {mode === 'pgn' ? 'Maximum 32 KB, 200 plies, and 64 headers. Press Control or Command + Enter to search. This search never changes the audited repertoire.' : 'Input is validated before it is parsed.'}
+          {mode === 'pgn'
+            ? 'Up to 32 KB and 200 plies. Press Control or Command + Enter to search.'
+            : mode === 'moves'
+              ? 'Enter up to 64 SAN or UCI moves.'
+              : 'Try Caro–Kann, B12, or e4 c6.'}
         </p>
         {error ? <p id={`${inputId}-error`} className="field-error" role="alert">{error}</p> : null}
         <button type="submit" disabled={value.trim() === ''}>Search openings</button>
@@ -218,7 +221,7 @@ function SearchPanel({
       {results !== null ? (
         <div className="search-results">
           <h2>Search results <span className="count-badge">{results.length}</span></h2>
-          {results.length === 0 ? <p>No audited opening matches found.</p> : (
+          {results.length === 0 ? <p>No openings found.</p> : (
             <ul className="result-list">
               {results.map((match) => (
                 <li key={match.sourceLineId}>
@@ -422,7 +425,7 @@ function LineDetail({
     <article className="line-detail" aria-labelledby="line-detail-title">
       <div className="line-title-row">
         <div>
-          <p className="eyebrow"><span className="eco-pill">{line.eco}</span> Backtested line</p>
+          <p className="eyebrow"><span className="eco-pill">{line.eco}</span> Historical backtest</p>
           <h2 id="line-detail-title">{line.name}</h2>
         </div>
         <span className={`eligibility-badge ${line.backtestEligible ? 'eligible' : 'insufficient'}`}>
@@ -473,7 +476,7 @@ function LineDetail({
               {selectedVariant.quarantineReasons.length > 0 ? (
                 <div className="inline-warning" role="note"><strong>Not released for practice:</strong> {selectedVariant.quarantineReasons.join(' ')}</div>
               ) : null}
-              <EvidenceTable bands={selectedVariant.terminalStats} caption={`${selectedVariant.trainedSide} trained-side terminal results`} />
+              <EvidenceTable bands={selectedVariant.terminalStats} caption={`${selectedVariant.trainedSide} results at the end of this line`} />
             </div>
           ) : null}
         </section>

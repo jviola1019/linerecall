@@ -59,7 +59,7 @@ test('opening and trained-side mastery include every unreviewed learner card as 
       eco: 'C20',
       mastery: 33,
       reviewed: 1,
-      due: 2,
+      due: 0,
       total: 3,
       last: '2026-07-11T12:00:00.000Z',
     },
@@ -71,12 +71,12 @@ test('opening and trained-side mastery include every unreviewed learner card as 
     due: variation.dueCards,
     total: variation.totalCards,
   })), [
-    { side: 'white', mastery: 50, reviewed: 1, due: 1, total: 2 },
-    { side: 'black', mastery: 0, reviewed: 0, due: 1, total: 1 },
+    { side: 'white', mastery: 50, reviewed: 1, due: 0, total: 2 },
+    { side: 'black', mastery: 0, reviewed: 0, due: 0, total: 1 },
   ])
   assert.deepEqual(
     { mastery: summary.mastery, reviewed: summary.reviewedCards, due: summary.dueCards, total: summary.totalCards },
-    { mastery: 33, reviewed: 1, due: 2, total: 3 },
+    { mastery: 33, reviewed: 1, due: 0, total: 3 },
   )
 })
 
@@ -194,8 +194,64 @@ test('known variants exclude structurally valid but non-semantic imported node I
     excluded: summary.excludedCards,
   }, {
     reviewed: 1,
-    due: 2,
+    due: 1,
     mastery: 10,
     excluded: 2,
   })
+})
+
+test('graph-pack cards resolve to their canonical opening family and exact learner nodes', () => {
+  const packId = 'caro_kann_black_core'
+  const reviewedNodeId = 'pos_1111111111111111'
+  const unreviewedNodeId = 'pos_2222222222222222'
+  const card = reviewedCard(
+    `${packId}::${reviewedNodeId}`,
+    packId,
+    reviewedNodeId,
+  )
+  const familyCatalog: ProgressVariantCatalogEntry[] = [{
+    id: packId,
+    openingId: 'caro-kann',
+    openingName: 'Caro–Kann',
+    sourceLineId: null,
+    eco: 'B10–B19',
+    name: 'Caro–Kann · Black pack 1',
+    trainedSide: 'black',
+    cardCount: 2,
+    nodeIds: [reviewedNodeId, unreviewedNodeId],
+  }]
+
+  const summary = summarizeProgress(
+    [card],
+    familyCatalog,
+    searchEntries,
+    new Date('2026-07-12T12:00:00.000Z'),
+  )
+
+  assert.deepEqual(summary.openings.map(({ id, sourceLineId: source, name, totalCards, reviewedCards }) => ({
+    id,
+    source,
+    name,
+    totalCards,
+    reviewedCards,
+  })), [{
+    id: 'caro-kann',
+    source: null,
+    name: 'Caro–Kann',
+    totalCards: 2,
+    reviewedCards: 1,
+  }])
+  assert.deepEqual(summary.variations.map(({ id, openingId, name, trainedSide, availableInCurrentSnapshot }) => ({
+    id,
+    openingId,
+    name,
+    trainedSide,
+    availableInCurrentSnapshot,
+  })), [{
+    id: packId,
+    openingId: 'caro-kann',
+    name: 'Caro–Kann · Black pack 1',
+    trainedSide: 'black',
+    availableInCurrentSnapshot: true,
+  }])
 })

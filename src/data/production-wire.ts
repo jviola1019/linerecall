@@ -2,6 +2,7 @@ import { z } from 'zod'
 import {
   ContentAddressedRefV1Schema,
   FamilyReleaseIdSchema,
+  TacticalPuzzlePromotionBindingV1Schema,
 } from '../domain/opening-family.ts'
 import { WireAppManifestSchema } from './wire.ts'
 
@@ -34,6 +35,7 @@ export const ProductionWireAppManifestV3Schema = z.object({
     terminal: z.literal('evidence-defined-through-ply-100'),
   }).strict(),
   familyPromotionIndexSha256: Sha256Schema,
+  puzzlePromotion: TacticalPuzzlePromotionBindingV1Schema,
   browseManifestSha256: Sha256Schema,
   browse: WireAppManifestSchema,
   familyCatalogRef: ContentAddressedRefV1Schema,
@@ -51,7 +53,34 @@ export const ProductionWireAppManifestV3Schema = z.object({
     estimatedBase64Bytes: z.number().int().positive().max(MAX_PRODUCTION_SNAPSHOT_BASE64_BYTES),
   }).strict(),
 }).strict().superRefine((manifest, context) => {
+  if (
+    manifest.puzzlePromotion.releaseId !== manifest.releaseId
+    || manifest.puzzlePromotion.familyPromotionIndexSha256 !== manifest.familyPromotionIndexSha256
+  ) {
+    context.addIssue({
+      code: 'custom',
+      path: ['puzzlePromotion'],
+      message: 'Puzzle promotion must belong to the exact promoted app release index',
+    })
+  }
   const entries = Object.entries(manifest.familyResources)
+  if (manifest.puzzlePromotion.shards.length !== manifest.totals.puzzleShards) {
+    context.addIssue({
+      code: 'custom',
+      path: ['totals', 'puzzleShards'],
+      message: 'Puzzle shard total does not match the promoted membership statement',
+    })
+  }
+  for (const [index, shard] of manifest.puzzlePromotion.shards.entries()) {
+    const reference = manifest.familyResources[shard.shardId]
+    if (!reference || reference.sha256 !== shard.shardSha256) {
+      context.addIssue({
+        code: 'custom',
+        path: ['puzzlePromotion', 'shards', index],
+        message: 'Promoted puzzle shard is absent from the exact runtime resource inventory',
+      })
+    }
+  }
   if (entries.length !== manifest.totals.familyResources) {
     context.addIssue({
       code: 'custom',

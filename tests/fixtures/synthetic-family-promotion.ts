@@ -75,7 +75,7 @@ export async function createSyntheticFamilyPromotion(
   const source = await createSyntheticTranspositionGraph()
   const ecoCode = family.ecoCodes[0]!
   const graphs = await Promise.all(Array.from({ length: packCount }, async (_, index) =>
-    repackGraph(source, `fixture_family_pack_${index + 1}`, ecoCode, 'Untrusted graph label')))
+    repackGraph(source, `fixture_${family.id}_pack_${index + 1}`, ecoCode, 'Untrusted graph label')))
   const releaseId = source.releaseId
   const packRefs = graphs.map((graph, index) => ({
     schemaVersion: 1 as const,

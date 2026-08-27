@@ -387,14 +387,18 @@ export const FamilyCoverageEventV1Schema = z.object({
   }
 })
 
-export const TacticalPuzzleShardV1Schema = z.object({
+const TacticalPuzzleShardFieldsV1 = {
   schemaVersion: z.literal(OPENING_FAMILY_SCHEMA_VERSION),
-  id: z.string().regex(/^blob_[a-f0-9]{16}$/u),
   releaseId: FamilyReleaseIdSchema,
   generatedAt: z.string().datetime({ offset: true }),
   familyIds: z.array(FamilyIdSchema).min(1).max(256),
   puzzles: z.array(PuzzleRecordV1Schema).max(10_000),
-}).strict().superRefine((shard, context) => {
+}
+
+function addTacticalPuzzleShardIssues(
+  shard: { familyIds: string[]; puzzles: Array<{ puzzleId: string }> },
+  context: z.RefinementCtx,
+): void {
   addUniqueIssues(shard.familyIds, context, ['familyIds'], 'Puzzle shard family IDs must be unique')
   addUniqueIssues(
     shard.puzzles.map(({ puzzleId }) => puzzleId),
@@ -402,6 +406,75 @@ export const TacticalPuzzleShardV1Schema = z.object({
     ['puzzles'],
     'Puzzle IDs must be unique within a shard',
   )
+}
+
+/** Serialized bytes intentionally omit their own content ID to avoid a
+ * cryptographic self-reference. The verified loader attaches ref.id only after
+ * hashing the exact compressed bytes. Legacy payloads containing `id` fail the
+ * strict schema. */
+export const TacticalPuzzleShardPayloadV1Schema = z.object(TacticalPuzzleShardFieldsV1)
+  .strict()
+  .superRefine(addTacticalPuzzleShardIssues)
+
+export const TacticalPuzzleShardV1Schema = z.object({
+  id: z.string().regex(/^blob_[a-f0-9]{16}$/u),
+  ...TacticalPuzzleShardFieldsV1,
+}).strict().superRefine((shard, context) => {
+  addTacticalPuzzleShardIssues(shard, context)
+})
+
+/**
+ * Compact trust statement embedded in the authenticated production root.
+ * The offline promotion audit proves each exact shard SHA-256 against the
+ * complete legality, association, source, and Stockfish proof inventory. The
+ * browser therefore needs shard membership, not the much larger proof corpus.
+ */
+export const TacticalPuzzlePromotionShardBindingV1Schema = z.object({
+  schemaVersion: z.literal(OPENING_FAMILY_SCHEMA_VERSION),
+  shardId: z.string().regex(/^blob_[a-f0-9]{16}$/u),
+  shardSha256: Sha256Schema,
+  familyIds: z.array(FamilyIdSchema).min(1).max(256),
+  puzzleCount: z.number().int().positive().max(10_000),
+}).strict().superRefine((binding, context) => {
+  if (binding.shardId !== `blob_${binding.shardSha256.slice(0, 16)}`) {
+    context.addIssue({
+      code: 'custom',
+      path: ['shardId'],
+      message: 'Promoted puzzle shard ID must match its audited SHA-256',
+    })
+  }
+  addUniqueIssues(binding.familyIds, context, ['familyIds'], 'Promoted puzzle family IDs must be unique')
+})
+
+export const TacticalPuzzlePromotionBindingV1Schema = z.object({
+  schemaVersion: z.literal(OPENING_FAMILY_SCHEMA_VERSION),
+  releaseId: FamilyReleaseIdSchema,
+  status: z.literal('pass'),
+  gate: z.literal('lichess-puzzle-promotion'),
+  familyPromotionIndexSha256: Sha256Schema,
+  promotionReceiptSha256: Sha256Schema,
+  proofInventorySha256: Sha256Schema,
+  sourceSha256: Sha256Schema,
+  evidenceBindingSha256: Sha256Schema,
+  engineCampaignSha256: Sha256Schema,
+  promotedAt: z.string().datetime({ offset: true }),
+  promotedPuzzleCount: z.number().int().positive().max(10_000_000),
+  shards: z.array(TacticalPuzzlePromotionShardBindingV1Schema).min(1).max(1_000),
+}).strict().superRefine((binding, context) => {
+  addUniqueIssues(
+    binding.shards.map(({ shardId }) => shardId),
+    context,
+    ['shards'],
+    'Promoted puzzle shard IDs must be unique',
+  )
+  const puzzleCount = binding.shards.reduce((total, shard) => total + shard.puzzleCount, 0)
+  if (!Number.isSafeInteger(puzzleCount) || puzzleCount !== binding.promotedPuzzleCount) {
+    context.addIssue({
+      code: 'custom',
+      path: ['promotedPuzzleCount'],
+      message: 'Promoted puzzle total must equal the exact shard membership total',
+    })
+  }
 })
 
 export type ContentAddressedRefV1 = z.infer<typeof ContentAddressedRefV1Schema>
@@ -414,6 +487,9 @@ export type OpeningFamilyCatalogV1 = z.infer<typeof OpeningFamilyCatalogV1Schema
 export type FamilyTrainingCursorV1 = z.infer<typeof FamilyTrainingCursorV1Schema>
 export type FamilyCoverageEventV1 = z.infer<typeof FamilyCoverageEventV1Schema>
 export type TacticalPuzzleShardV1 = z.infer<typeof TacticalPuzzleShardV1Schema>
+export type TacticalPuzzleShardPayloadV1 = z.infer<typeof TacticalPuzzleShardPayloadV1Schema>
+export type TacticalPuzzlePromotionShardBindingV1 = z.infer<typeof TacticalPuzzlePromotionShardBindingV1Schema>
+export type TacticalPuzzlePromotionBindingV1 = z.infer<typeof TacticalPuzzlePromotionBindingV1Schema>
 
 export interface FamilyBranchPathFactV1 {
   packId: string

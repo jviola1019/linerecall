@@ -168,15 +168,34 @@
 @media (max-width: 600px) {
   .board-region {
     max-width: 100%;
-    overflow-x: auto;
-    overscroll-behavior-inline: contain;
-    scrollbar-width: thin;
+    overflow-x: clip;
   }
   .chessboard-overlay-frame {
-    /* 356px leaves a 352px inner grid after the frame border: 44px per
-       semantic square at the 360px regression viewport. */
-    width: 22.25rem;
-    max-width: none;
+    /* Keep the spatial board inside the reflow viewport. The equivalent
+       move picker retains 44px controls when individual squares are smaller. */
+    width: min(22.25rem, calc(100vw - 0.75rem));
+    max-width: 100%;
+  }
+  /* The visible coordinates remain in the semantic edge squares. Give their
+     small mobile labels a clear corner by moving only the affected edge-piece
+     art away from that corner. The canonical square names and hit targets do
+     not move, and the selectors mirror both visual orientations. */
+  .board-square > .rank-label,
+  .board-square > .file-label {
+    font-size: clamp(0.5625rem, 2.5vw, 0.625rem);
+    line-height: 1;
+  }
+  .board-square > .file-label {
+    right: auto;
+    left: 3px;
+  }
+  .visual-piece-layer[data-orientation="white"] .visual-piece[data-square^="a"] .piece,
+  .visual-piece-layer[data-orientation="black"] .visual-piece[data-square^="h"] .piece,
+  .visual-piece-layer[data-orientation="white"] .visual-piece[data-square$="1"] .piece,
+  .visual-piece-layer[data-orientation="black"] .visual-piece[data-square$="8"] .piece {
+    right: auto;
+    left: 27%;
+    width: 69%;
   }
   .annotation-form { grid-template-columns: 1fr; }
   .annotation-actions { grid-column: 1; display: grid; }

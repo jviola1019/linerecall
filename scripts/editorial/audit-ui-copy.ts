@@ -24,6 +24,13 @@ const PolicySchema = z.object({
     id: z.string().regex(/^[a-z0-9-]+$/u),
     pattern: z.string().min(1).max(200),
   }).strict()).min(1),
+  learnerWorkflow: z.object({
+    pathPrefixes: z.array(z.string().min(1).max(200)).min(1),
+    prohibitedPatterns: z.array(z.object({
+      id: z.string().regex(/^[a-z0-9-]+$/u),
+      pattern: z.string().min(1).max(200),
+    }).strict()).min(1),
+  }).strict().optional(),
 }).strict()
 
 export type CopyKind = 'heading' | 'control' | 'body'
@@ -43,6 +50,7 @@ export interface CopyFinding {
 
 const visibleAttributes = new Set(['aria-label', 'placeholder', 'title'])
 const copyPropertyNames = new Set(['description', 'emptyLabel', 'label', 'message', 'summary', 'title'])
+const visibleCallNames = new Set(['announce', 'onAnnouncement'])
 const mojibakePattern = /(?:[ÃÂ�]|â€)/u
 
 function normalizedText(value: string): string {
@@ -63,6 +71,15 @@ function elementKind(ancestors: readonly t.Node[]): CopyKind {
 
 function sourceLine(node: t.Node): number {
   return node.loc?.start.line ?? 1
+}
+
+function calledFunctionName(node: t.CallExpression | t.OptionalCallExpression): string | null {
+  const { callee } = node
+  if (t.isIdentifier(callee)) return callee.name
+  if ((t.isMemberExpression(callee) || t.isOptionalMemberExpression(callee)) && t.isIdentifier(callee.property)) {
+    return callee.property.name
+  }
+  return null
 }
 
 function collectRenderedExpressionCopy(
@@ -142,6 +159,12 @@ export function collectCopyFromSource(path: string, sourceText: string): CopyEnt
         add(node, value, node.key.name === 'label' ? 'control' : node.key.name === 'title' ? 'heading' : 'body')
       }
     }
+    if ((t.isCallExpression(node) || t.isOptionalCallExpression(node)) && visibleCallNames.has(calledFunctionName(node) ?? '')) {
+      for (const argument of node.arguments) {
+        if (t.isSpreadElement(argument) || t.isArgumentPlaceholder(argument) || t.isJSXNamespacedName(argument)) continue
+        collectRenderedExpressionCopy(argument, (copyNode, value) => add(copyNode, value, 'body'))
+      }
+    }
     const keys = t.VISITOR_KEYS[node.type] ?? []
     for (const key of keys) {
       const child = (node as unknown as Record<string, unknown>)[key]
@@ -163,6 +186,10 @@ export function analyzeCopy(
   const policy = PolicySchema.parse(policyValue)
   const findings: CopyFinding[] = []
   const patterns = policy.prohibitedPatterns.map(({ id, pattern }) => ({ id, regex: new RegExp(pattern, 'iu') }))
+  const learnerWorkflowPatterns = policy.learnerWorkflow?.prohibitedPatterns.map(({ id, pattern }) => ({
+    id,
+    regex: new RegExp(pattern, 'iu'),
+  })) ?? []
   const duplicates = new Map<string, CopyEntry[]>()
   for (const entry of entries) {
     if (mojibakePattern.test(entry.text)) {
@@ -187,6 +214,18 @@ export function analyzeCopy(
     }
     for (const { id, regex } of patterns) {
       if (regex.test(entry.text)) findings.push({ rule: id, path: entry.path, line: entry.line, detail: 'Prohibited or unsupported interface phrase' })
+    }
+    if (policy.learnerWorkflow?.pathPrefixes.some((prefix) => entry.path.startsWith(prefix))) {
+      for (const { id, regex } of learnerWorkflowPatterns) {
+        if (regex.test(entry.text)) {
+          findings.push({
+            rule: id,
+            path: entry.path,
+            line: entry.line,
+            detail: 'Implementation terminology belongs in Data & Licenses, not a learner workflow',
+          })
+        }
+      }
     }
     if (entry.text.length >= policy.duplicateMinimumCharacters) {
       const key = entry.text.toLocaleLowerCase('en-US')

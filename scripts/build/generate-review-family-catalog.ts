@@ -4,6 +4,7 @@ import { resolve } from 'node:path'
 import embeddedSnapshot from '../../src/generated/embedded-snapshot.json' with { type: 'json' }
 import { deriveOpeningFamilySeeds } from '../data/opening-family-registry.ts'
 import { ReviewOpeningFamilyCatalogV1Schema } from '../../src/data/review-family-catalog.ts'
+import { createPendingOpeningFamilyEditorialLedger } from '../data/opening-family-editorial.ts'
 import { WireSearchSnapshotSchema } from '../../src/data/wire.ts'
 import { DataManifestSchema } from '../../src/domain/opening-data.ts'
 
@@ -50,4 +51,7 @@ const catalog = ReviewOpeningFamilyCatalogV1Schema.parse({
 
 const target = resolve('src/generated/review-family-catalog.json')
 await writeFile(target, `${JSON.stringify(catalog, null, 2)}\n`, 'utf8')
-process.stdout.write(`Wrote ${catalog.familyCount} opening families covering ${catalog.taxonomyLineCount} taxonomy rows to ${target}\n`)
+const editorialTarget = resolve('data/manifests/opening-family-editorial.proposal.json')
+const editorialProposal = createPendingOpeningFamilyEditorialLedger(catalog)
+await writeFile(editorialTarget, `${JSON.stringify(editorialProposal, null, 2)}\n`, 'utf8')
+process.stdout.write(`Wrote ${catalog.familyCount} opening families covering ${catalog.taxonomyLineCount} taxonomy rows to ${target}; the corresponding editorial ledger remains pending at ${editorialTarget}\n`)

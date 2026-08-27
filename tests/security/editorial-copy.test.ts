@@ -13,6 +13,12 @@ const policy = {
   prohibitedPatterns: [
     { id: 'unsupported-causality', pattern: '\\bthis move guarantees a win\\b' },
   ],
+  learnerWorkflow: {
+    pathPrefixes: ['src/app/components/'],
+    prohibitedPatterns: [
+      { id: 'implementation-coverage', pattern: '\\bcoverage cycle\\b' },
+    ],
+  },
 }
 
 test('copy inventory extracts headings, controls, and visible body text', () => {
@@ -38,6 +44,23 @@ test('copy inventory extracts headings, controls, and visible body text', () => 
   assert.equal(analyzeCopy(entries, policy).some(({ rule }) => rule === 'encoding-mojibake'), true)
 })
 
+test('copy inventory includes text sent to live-region announcement callbacks', () => {
+  const entries = collectCopyFromSource('src/app/components/Trainer.tsx', `
+    export function Trainer({ onAnnouncement }) {
+      const begin = () => {
+        onAnnouncement?.('Start a coverage cycle.')
+        announce('Saved cursor restored.')
+      }
+      return <button onClick={begin}>Begin</button>
+    }
+  `)
+  assert.deepEqual(entries.map(({ text }) => text), [
+    'Start a coverage cycle.',
+    'Saved cursor restored.',
+    'Begin',
+  ])
+})
+
 test('copy audit blocks encoding defects, inflated claims, excessive length, and repeated long prose', () => {
   const repeated = 'This sentence is deliberately long enough to trigger repetition review.'
   const findings = analyzeCopy([
@@ -51,4 +74,28 @@ test('copy audit blocks encoding defects, inflated claims, excessive length, and
   assert.deepEqual(new Set(findings.map(({ rule }) => rule)), new Set([
     'encoding-mojibake', 'unsupported-causality', 'heading-too-long', 'repetitive-long-copy',
   ]))
+})
+
+test('copy audit keeps implementation terminology out of learner workflows but permits audit documentation', () => {
+  const workflowEntry = {
+    path: 'src/app/components/Trainer.tsx',
+    line: 4,
+    kind: 'body' as const,
+    text: 'Start a new coverage cycle.',
+  }
+  const documentationEntry = {
+    ...workflowEntry,
+    path: 'src/app/components/DataLicenses.tsx',
+  }
+  assert.equal(analyzeCopy([workflowEntry], policy).some(({ rule }) => rule === 'implementation-coverage'), true)
+  assert.equal(analyzeCopy([documentationEntry], policy).some(({ rule }) => rule === 'implementation-coverage'), true)
+
+  const auditOnlyPolicy = {
+    ...policy,
+    learnerWorkflow: {
+      ...policy.learnerWorkflow,
+      pathPrefixes: ['src/app/components/Trainer.tsx'],
+    },
+  }
+  assert.equal(analyzeCopy([documentationEntry], auditOnlyPolicy).some(({ rule }) => rule === 'implementation-coverage'), false)
 })

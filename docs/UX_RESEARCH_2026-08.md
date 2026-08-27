@@ -1,6 +1,6 @@
 # LineRecall UI/UX research direction
 
-Reviewed: 2026-08-13
+Reviewed: 2026-08-27
 
 Status: implementation brief, not release evidence or a claim of WCAG/ADA
 conformance. The recommendations below are based on the current source tree,
@@ -20,6 +20,21 @@ Chess.com, Lichess, or another product. Those references can describe qualities
 such as calm hierarchy, progressive disclosure, or quick board interaction;
 they are not visual specifications or asset sources.
 
+The research resolves the opening-practice model as follows:
+
+- one canonical family is one repertoire subject; Caro–Kann, Sicilian Defence,
+  and Ruy Lopez must not fragment into duplicate cards;
+- the learner chooses a side and then a full-family, named-branch, or single-path
+  scope inside that family;
+- normal full-family practice finishes one evidence-approved path and starts a
+  different unfinished path from the same family without a grading stop;
+- progress reports both the exact current line (`move n of m`) and the
+  durable family total (`variations practiced / available variations`);
+- due moves remain scheduling targets while intervening moves are
+  visibly treated as context, so continuity does not inflate mastery; and
+- tactical puzzles remain a separate route, evidence resource, state machine,
+  and mastery record rather than a renamed one-move opening drill.
+
 ## Current-state review
 
 The most recent visual evidence reviewed was:
@@ -30,8 +45,11 @@ The most recent visual evidence reviewed was:
 
 These screenshots are explicitly synthetic review fixtures. The `ui-*.png`
 screenshots dated 2026-07-14 show an older serif-led design and must not be used
-as current visual baselines. There is not yet a fresh, current screenshot set
-for every primary route, theme, state, and breakpoint.
+as current visual baselines. The exact hardened review candidate now also has
+an automated 18-image route matrix in
+`audit/generated/final-route-screenshots/`: Today, Repertoire, Puzzles,
+Explore, Progress, and Data & Licenses at desktop dark, 360px dark, and 390px
+light layouts. Those captures are test evidence, not human visual approval.
 
 ### What is already working
 
@@ -47,54 +65,56 @@ for every primary route, theme, state, and breakpoint.
 - The visual direction avoids gradients, glass, glow, stock imagery, and a
   conversational assistant persona.
 
-### Problems to correct
+### Findings and current disposition
 
-1. **The mobile trainer has too much chrome before and after the board.** The
-   390 x 844 fixture contains a fixture banner, product header, storage banner,
-   family header, five session-management buttons, board, move picker, four
-   study actions, and global navigation. Production will not have the fixture
-   banner, but routine storage text and five equal-weight session actions still
-   compete with the position. The board should be the stable center; secondary
-   session actions belong in one compact overflow surface.
+1. **Mobile training chrome — corrected in the current source.** The earlier
+   390 x 844 fixture put five equal-weight session actions ahead of the board.
+   Pause now remains visible while Flip, Skip, Choose variation, and Stop live
+   in one keyboard-operable session disclosure. The browser gate keeps the
+   board, study dock, equivalent move picker, and bottom navigation from
+   overlapping.
 
-2. **The completion view is under-composed.** A large desktop workspace is left
-   empty around one bordered box. Completion should remain brief, but the path
-   summary, next-due forecast, and two allowed next actions can form a compact
-   centered completion region without looking like an unfinished screen.
+2. **Completion composition — corrected for the current scope.** The result is
+   now a compact centered region with the exact practiced/total count and only
+   the two valid next actions: start a new practice round or choose variations.
 
-3. **Progress is both box-heavy and table-heavy.** Four framed counters, two
-   framed mastery summaries, and a framed table create equal visual weight for
-   unlike information. Use one metric strip for orientation, then give history
-   and due work the dominant table/list surface.
+3. **Progress density — materially reduced.** First-run progress is compact;
+   family coverage and puzzle mastery remain separate; history keeps the table
+   surface it needs. A later design-system cleanup can further consolidate the
+   metric borders without changing information hierarchy.
 
-4. **Several generations of CSS coexist.** At review time, `styles.css` had
+4. **Several generations of CSS coexist — partially corrected.** At review time, `styles.css` had
    1,883 lines and 11 media blocks, while board and puzzle styles added 389
    lines and seven more media blocks. The same 900/600 breakpoints recur in
    separate legacy and family-training sections. This is a maintenance signal,
    not a defect by itself, but it explains visible differences in density,
-   radius, headings, and route composition. Shared board, shell, data-display,
-   and resource-state styles need explicit component boundaries.
+   radius, headings, and route composition. Board and training/puzzle styles
+   now have explicit modules and shared tokens, but removing the remaining
+   superseded shell rules is still maintenance work rather than a release claim.
 
-5. **The type scale is too fragmented.** Current CSS uses numerous nonstandard
+5. **Fragmented type weights — corrected.** Earlier CSS used nonstandard
    system-font weights (including 420, 520, 620, 650, 750, and 850) and labels
    as small as 0.6rem. System fonts do not expose the same intermediate weights
    on every platform, so synthesis can change the visual result. Important
-   metadata should not depend on 9.6–11px text.
+   metadata should not depend on 9.6–11px text. Current application CSS uses
+   400, 600, and 700 weights and keeps essential labels at 0.75rem or larger.
 
-6. **Control boundaries need a contrast correction.** A calculation using the
+6. **Control-boundary contrast — corrected in authored themes, pending manual
+   review.** A calculation using the
    WCAG relative-luminance formula found the current dark `--border-strong`
    (`#5d5a51`) at 2.15:1 against `--surface-raised` (`#282824`) and the light
    value (`#978f84`) at 2.71:1 against `#f0ece4`. When that border is the visual
    indicator of an input or control, WCAG 2.2 SC 1.4.11 requires 3:1 against
-   adjacent colors. Candidate values `#747168` (dark) and `#817a70` (light)
-   produce 3.03:1 and 3.60:1 respectively against those surfaces, but the full
-   component/state matrix still needs browser and manual verification.
+   adjacent colors. The implemented `--border-strong` values are `#77776b`
+   (dark) and `#777067` (light), measured at 3.37:1 and 4.04:1 against the
+   raised control surfaces. The full component/state matrix still needs named
+   manual review.
 
-7. **Current visual evidence is incomplete.** Three August fixture screenshots
-   do not replace the required current baselines for Today, Repertoire, family
-   detail, training, Puzzles, Explore, Progress, Data & Licenses, both themes,
-   mobile/desktop, error states, forced colors, RTL, and representative motion
-   frames.
+7. **Visual evidence — automated breadth improved, manual approval still
+   open.** The current route matrix, synthetic family/puzzle captures, resource
+   states, forced-colors run, reduced-motion run, mobile geometry checks, and
+   representative board-motion frame are generated. They do not replace human
+   visual approval, Arabic RTL review, or the named assistive-technology gates.
 
 ## Research sources and reuse boundaries
 
@@ -109,6 +129,20 @@ or paid asset is needed.
 | [USWDS table](https://designsystem.digital.gov/components/table/) and [card](https://designsystem.digital.gov/components/card/) | A scrollable table is appropriate for dense data; a stacked table can preserve readability at narrow widths. A card should summarize one subject and work as one member of a reorderable collection. | Use semantic patterns only. Family summaries fit cards/rows; empirical comparisons remain tables. |
 | [Primer typography](https://primer.style/product/getting-started/foundations/typography/) and [ActionList](https://primer.style/product/components/action-list/) | `rem` type and unitless line height support zoom; hierarchy should not rely primarily on color; a consistent single-column action list can carry title, description, and trailing facts. | [Primer React is MIT](https://github.com/primer/react). Do not copy GitHub trade dress, icons, or code unless separately pinned and attributed. A native LineRecall list is sufficient. |
 | [Chessground](https://github.com/lichess-org/chessground) | Its documented interaction inventory confirms useful chess-board behaviors: click and drag, invalid-drop recovery, arrows/circles, fluid sizing, and move/capture animation. | Chessground is GPL-3.0 and its README warns that a combined web work must be GPL. Do not copy or port its code, CSS, assets, or DOM. Use only the high-level behavior checklist with LineRecall's original implementation. Lichess application code is AGPL-3.0 and has the same no-copy boundary. |
+| [Lichess Practice](https://lichess.org/practice) and [Blind Mode tutorial](https://lichess.org/page/blind-mode-tutorial) | Practice groups related lessons under one subject and exposes overall progress. The accessibility tutorial documents board-first ordering, square-by-square keyboard navigation, announced legal moves, equivalent typed move input, immediate move/reply announcements, and automatic progression to the next puzzle. | Observe the information and accessibility model only. Do not copy Lichess presentation, application code, board assets, mascot, or wording. |
+| [Chess.com Practice help](https://support.chess.com/en/articles/8724749-what-is-practice-on-chess-com) | Opening practice starts from an opening and learner color, then keeps opening play distinct from related lesson material. | Behavioral comparison only. Chess.com trade dress, copy, assets, services, and proprietary implementation are outside the reuse boundary. |
+| [ChessTempo opening-trainer manual](https://chesstempo.com/manual/en/manual.html#_opening_training) | The documented trainer separates full-repertoire, selected-branch, review-in-order, and spaced-repetition scopes; tracks context moves separately from targets; carries transposition learning by position; and can continue after a line end unless paused. This validates the need for explicit LineRecall scopes, warm-up cards, exact position identity, and autonomous same-family continuation. | Product research only. Do not copy its interface, terminology wholesale, algorithms, code, data, or visualizations. LineRecall keeps its independently implemented SM-2 and evidence graph contracts. |
+
+The August 27 refresh also checked the current public product flows. Lichess's
+opening directory leads with a searchable name tree and rating/time-control
+filters rather than promotional copy. Its individual opening pages keep
+continuations, examples, and linked puzzles together. ChessTempo documents
+separate spaced-repetition and in-order review modes, plus unseen-line ordering
+that can move from a main line into its variations. Chess.com's current help
+page starts opening practice from an opening and learner color. LineRecall uses
+those behavior observations to reinforce its own compact family selector,
+Learn/Review split, and board-first flow; it does not reproduce any site's
+layout, wording, code, icons, or assets.
 
 The accessibility constraints are primary requirements, not aesthetic
 references:
@@ -308,6 +342,11 @@ instructional value.
   exact candidate and baseline changes.
 
 ## Implementation order and measurable checks
+
+Items 1–4 are materially implemented in the current source. Item 5 remains a
+bounded maintenance task. Item 6 now has automated route, state, motion, and
+responsive captures; named human visual and assistive-technology review remains
+open and prevents a release claim.
 
 1. Consolidate semantic color, type, spacing, radius, elevation, motion, and
    z-index tokens. Add a style rule that rejects raw application colors outside

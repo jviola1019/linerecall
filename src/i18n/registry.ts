@@ -14,8 +14,8 @@ import {
 
 export const EN_US_MESSAGES = parseMessageCatalog({
   'app.name': 'LineRecall',
-  'app.documentTitle': 'LineRecall — Audited Chess Opening Trainer',
-  'app.loading': 'Preparing the audited opening database…',
+  'app.documentTitle': 'LineRecall — Chess Opening Trainer',
+  'app.loading': 'Preparing the opening library…',
   'app.unavailable': 'LineRecall could not continue.',
   'navigation.today': 'Today',
   'navigation.repertoire': 'Repertoire',

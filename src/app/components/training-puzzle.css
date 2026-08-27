@@ -264,6 +264,55 @@
   min-width: 0;
 }
 
+.puzzle-unavailable-panel {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 1rem;
+  padding-block: 1rem;
+  border-block: 1px solid var(--border);
+}
+
+.puzzle-unavailable-panel .state-icon {
+  display: grid;
+  width: 2.75rem;
+  height: 2.75rem;
+  place-items: center;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--accent);
+  font-size: 1.25rem;
+}
+
+.puzzle-unavailable-panel h2,
+.puzzle-unavailable-panel p {
+  margin: 0;
+}
+
+.puzzle-unavailable-panel p {
+  margin-top: 0.2rem;
+  color: var(--muted);
+}
+
+.puzzle-unavailable-panel details {
+  margin-top: 0.55rem;
+  color: var(--muted);
+}
+
+.puzzle-unavailable-panel summary {
+  min-height: 44px;
+  width: fit-content;
+  cursor: pointer;
+  color: var(--text);
+  font-weight: 700;
+  line-height: 44px;
+}
+
+.puzzle-unavailable-panel .inline-controls {
+  justify-content: flex-end;
+}
+
 .puzzle-status-strip {
   display: flex;
   min-height: 44px;
@@ -311,6 +360,42 @@
 .puzzle-feedback-panel[data-tone="hint"] { border-left-style: dotted; border-left-color: var(--focus); }
 .puzzle-feedback-panel p { margin: 0; color: var(--text); }
 
+.puzzle-evidence-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  margin-block: 0.85rem;
+  padding: 1px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--border);
+  overflow: hidden;
+}
+
+.puzzle-evidence-facts > div {
+  min-width: 0;
+  padding: 0.7rem;
+  background: var(--surface-muted);
+}
+
+.puzzle-evidence-facts > div:last-child:nth-child(odd) { grid-column: 1 / -1; }
+
+.puzzle-evidence-facts dt {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.puzzle-evidence-facts dd {
+  margin: 0.2rem 0 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-weight: 700;
+  line-height: 1.35;
+}
+
 .puzzle-audit-criteria {
   margin-top: 0.9rem;
   padding-top: 0.7rem;
@@ -350,7 +435,7 @@
   min-height: 48px;
 }
 
-@media (max-width: 760px) {
+@media (max-width: 900px) {
   .practice-scope-grid { grid-template-columns: 1fr; }
 
   .family-practice-guide { grid-template-columns: 1fr; }
@@ -397,15 +482,52 @@
   .engine-forecast-list summary span { text-align: left; }
 
   .puzzle-status-strip {
+    display: flex;
+    min-height: 44px;
+    gap: 0.4rem;
+    padding-block: 0.3rem;
+  }
+
+  .puzzle-unavailable-panel {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .puzzle-unavailable-panel .inline-controls {
+    grid-column: 1 / -1;
     display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto;
-    gap: 0.25rem 0.5rem;
+    grid-template-columns: 1fr;
+    width: 100%;
   }
 
   .puzzle-status-strip span:last-child {
-    grid-column: 2 / -1;
-    margin-left: 0;
+    margin-left: auto;
   }
+
+  .tactical-puzzle-header .eyebrow { display: none; }
+  .tactical-puzzle-header h1 { font-size: 1.75rem; line-height: 1; }
+  .tactical-puzzle-header > div:first-child > p:last-child { font-size: 0.82rem; }
+  /* This route owns mobile puzzle pacing. Keep the controls in document flow
+     so they cannot cover the board while the fixed primary navigation remains
+     below them. The route qualifier also wins over the shared shell's sticky
+     fallback regardless of CSS chunk ordering. */
+  .tactical-puzzle-workspace .tactical-thumb-dock { position: static; bottom: auto; }
+}
+
+@media (max-width: 900px) and (max-height: 820px) {
+  /* Width alone makes the board too tall for short phones once the route
+     header, status, action dock, and primary navigation are present. Reserve
+     that vertical chrome here so the board and dock remain adjacent and fully
+     visible at the 360 x 800 release viewport. */
+  .tactical-puzzle-workspace .chessboard-overlay-frame {
+    width: min(22.25rem, calc(100vw - 0.75rem), calc(100svh - 29.5rem));
+  }
+}
+
+@media (max-width: 600px) {
+  .puzzle-status-strip span:last-child { display: none; }
+  .puzzle-evidence-facts { grid-template-columns: 1fr; }
+  .puzzle-evidence-facts > div:last-child:nth-child(odd) { grid-column: auto; }
 }
 
 @media (forced-colors: active) {

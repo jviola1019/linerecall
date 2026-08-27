@@ -4,6 +4,27 @@ Status: ingestion, runtime-resource, replay, progress, and promotion-validation
 foundations exist in source. No current test pass is asserted here and no real
 release puzzle data has been produced.
 
+## Browser trust boundary
+
+Serialized puzzle shards do not contain an `id`. A content-addressed resource
+cannot safely contain an identifier derived from the hash of its own compressed
+bytes: that would require finding a cryptographic fixed point. The strict shard
+payload schema therefore rejects both legacy and hostile `id` fields. After the
+bounded reader verifies the exact compressed byte count and SHA-256, the family
+data source derives the in-memory shard ID from `ContentAddressedRef.id`.
+
+The authenticated production root carries a compact puzzle-promotion binding.
+It identifies the exact family-promotion index, puzzle receipt, proof inventory,
+source digest, Stockfish campaign, and each promoted shard SHA-256/family/count.
+The UI's asynchronous loader checks that statement against the verified family
+manifest and checksum-validated shard payloads. Only that loader can create a
+puzzle-bearing resource recognized as trusted; parsing a JSON object with
+plausible release hashes cannot create a ready, stale, or cached puzzle state.
+
+Runtime family collections are capped at 32 shards, 20,000 puzzles, 8 MiB
+compressed, and 32 MiB uncompressed. Production remains disabled when the
+authenticated promotion statement is absent.
+
 LineRecall treats the Lichess puzzle export as a separate CC0 source. The pinned
 source manifest is `data/manifests/lichess-puzzles.source.json`. The publisher
 does not provide a SHA-256, so the workspace owner separately approved the local
@@ -91,12 +112,27 @@ one-move repertoire recall activity is not used as a fallback.
 Only `ready`, or previously verified records carried by the permitted stale
 and offline states, can start a puzzle. Corrupt records are never retained in a
 fallback state. Every list is schema-validated as a whole, every record is
-validated individually, and a repeated puzzle ID is rejected.
+validated individually, and a repeated puzzle ID is rejected. Every
+puzzle-bearing resource is a nominal runtime value created by the verified
+asynchronous loader. Direct schema validation cannot manufacture one. Its
+metadata is derived from the authenticated promotion statement and exact shard
+references; it is not accepted from the caller. A stale or offline resource
+with records retains that same nominal identity. An empty offline state cannot
+claim release trust.
+
+Rate-limited resources expose the authoritative retry time. The Retry control
+stays unavailable until that time and the visible countdown is recomputed from
+the clock rather than repeating a stale server duration. A Retry control is
+rendered only when the containing application supplies a real reload callback.
+Replacing a promoted collection resets the active board session from its
+precomputed immutable collection identity. Rendering performs no collection
+serialization or hashing.
 
 The runtime applies a learner move and each forced opponent reply as separate
 board transitions. This preserves legal replay and lets the visual layer finish
-one 140–180 ms move before starting the next. Reduced-motion mode applies each
-state immediately. Setup moves, promotions, castling, en passant, multiple
+one 140–180 ms move before starting the next. Promotion uses a separate bounded
+sprite crossfade after the glide. Reduced-motion mode applies each state
+immediately. Setup moves, promotions, castling, en passant, multiple
 forced nodes, and alternative mate-in-one moves remain part of the release test
 matrix.
 

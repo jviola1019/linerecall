@@ -63,11 +63,11 @@ export function MoveComparison({ played, expected }: { played: MoveEvidence | nu
   return (
     <div className="table-scroll" tabIndex={0} role="region" aria-label="Played and book move comparison, horizontally scrollable">
       <table className="stats-table comparison-table">
-        <caption>Backtested trained-side results by rating band</caption>
+        <caption>Historical results for your side by rating band</caption>
         <thead>
           <tr>
             <th rowSpan={2} scope="col">Rating</th>
-            <th colSpan={2} scope="colgroup">Played: {played?.san ?? 'No audited evidence'}</th>
+            <th colSpan={2} scope="colgroup">Played: {played?.san ?? 'No verified evidence'}</th>
             <th colSpan={2} scope="colgroup">Book: {expected.san}</th>
           </tr>
           <tr>

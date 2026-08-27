@@ -45,7 +45,7 @@ test('default storage is visibly session-only and never probes browser durable s
   await completeOneAutomaticReview(page)
   await page.getByRole('button', { name: 'Progress' }).click()
   await expect(page.getByText(/Storage mode\s*:/iu)).toContainText(/session[-\u2010-\u2015 ]only/iu)
-  await expect(page.getByText('Cards reviewed').locator('..').getByRole('strong')).not.toHaveText('0')
+  await expect(page.getByText('Moves reviewed').locator('..').getByRole('strong')).not.toHaveText('0')
   await expect(page.getByRole('button', { name: 'Export progress JSON' })).toBeVisible()
 
   await page.getByRole('button', { name: 'Switch to light mode' }).click()
@@ -58,7 +58,7 @@ test('default storage is visibly session-only and never probes browser durable s
   await page.getByRole('button', { name: 'Progress' }).click()
   await expect(page.getByRole('heading', { name: 'Your progress', level: 1 })).toBeVisible({ timeout: 20_000 })
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
-  await expect(page.getByText('Cards reviewed').locator('..').getByRole('strong')).toHaveText('0')
+  await expect(page.getByText('Moves reviewed').locator('..').getByRole('strong')).toHaveText('0')
   expect(await page.evaluate(() =>
     (window as Window & { __linerecallStorageProbes?: { indexedDb: number; localStorage: number } })
       .__linerecallStorageProbes
@@ -83,7 +83,7 @@ test('validated JSON export and explicit replacement restore progress after reop
   await page.goto(APP_PATH, { waitUntil: 'domcontentloaded' })
   await waitForReadyApp(page)
   await page.getByRole('button', { name: 'Progress' }).click()
-  await expect(page.getByText('Cards reviewed').locator('..').getByRole('strong')).toHaveText('0')
+  await expect(page.getByText('Moves reviewed').locator('..').getByRole('strong')).toHaveText('0')
 
   const input = page.getByLabel('Choose progress JSON')
   await input.setInputFiles(exported)
@@ -93,14 +93,14 @@ test('validated JSON export and explicit replacement restore progress after reop
   await confirmation.getByRole('button', { name: 'Replace current progress' }).click()
   await expect(confirmation).toHaveCount(0)
   await expect(input).toBeFocused()
-  await expect(page.getByText('Cards reviewed').locator('..').getByRole('strong')).not.toHaveText('0')
+  await expect(page.getByText('Moves reviewed').locator('..').getByRole('strong')).not.toHaveText('0')
 })
 
 test('malformed progress never replaces the current in-memory session', async ({ page }) => {
   await loadReadyApp(page)
   await completeOneAutomaticReview(page)
   await page.getByRole('button', { name: 'Progress' }).click()
-  const reviewed = page.getByText('Cards reviewed').locator('..').getByRole('strong')
+  const reviewed = page.getByText('Moves reviewed').locator('..').getByRole('strong')
   const before = await reviewed.textContent()
 
   await page.getByLabel('Choose progress JSON').setInputFiles({

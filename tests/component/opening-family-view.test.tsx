@@ -79,14 +79,23 @@ function detailProps(family: ReviewOpeningFamilyEntryV1) {
   }
 }
 
+function courseSectionButtons(): HTMLButtonElement[] {
+  const summary = screen.getByText('More course details')
+  const details = summary.closest('details')
+  if (!details) throw new Error('Course parts are missing')
+  details.open = true
+  fireEvent(details, new Event('toggle'))
+  return within(screen.getByRole('group', { name: 'Course parts' })).getAllByRole('button')
+}
+
 describe('canonical opening-family repertoire', () => {
   test('renders every canonical family once and keeps regression families singular', () => {
     render(<OpeningFamilyView {...catalogProps()} />)
 
     const list = screen.getByRole('list', { name: 'Opening families' })
     const search = screen.getByRole('searchbox', { name: 'Find an opening' })
-    expect(screen.getByText(`${catalog.families.length} opening families match.`)).toBeVisible()
-    expect(within(list).getAllByRole('listitem')).toHaveLength(36)
+    expect(screen.getByText(`${catalog.families.length} openings shown.`)).toBeVisible()
+    expect(within(list).getAllByRole('listitem')).toHaveLength(24)
 
     for (const [query, canonicalName] of [
       ['Caro', 'Caro–Kann'],
@@ -100,14 +109,31 @@ describe('canonical opening-family repertoire', () => {
     }
 
     fireEvent.change(search, { target: { value: '' } })
-    while (screen.queryByRole('button', { name: 'Show more families' })) {
-      fireEvent.click(screen.getByRole('button', { name: 'Show more families' }))
+    while (screen.queryByRole('button', { name: 'Show more openings' })) {
+      fireEvent.click(screen.getByRole('button', { name: 'Show more openings' }))
     }
     const allCards = [...list.querySelectorAll<HTMLButtonElement>('.family-card')]
     const names = allCards.map((button) => button.querySelector('strong')?.textContent)
     expect(allCards).toHaveLength(catalog.familyCount)
     expect(new Set(names).size).toBe(catalog.familyCount)
   }, 30_000)
+
+  test('labels unpromoted one-side taxonomy families as reference-only', () => {
+    const referenceOnly = catalog.families.find(({ availableSides }) => availableSides.length <= 1)
+    if (!referenceOnly) throw new Error('A reference-only taxonomy family is required for this regression')
+    render(<OpeningFamilyView {...catalogProps()} />)
+
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Find an opening' }), {
+      target: { value: referenceOnly.canonicalName },
+    })
+    const card = within(screen.getByRole('list', { name: 'Opening families' }))
+      .getAllByRole('button')
+      .find((candidate) => candidate.textContent?.includes(referenceOnly.canonicalName))
+    if (!card) throw new Error('Reference-only family card was not rendered')
+    expect(card).toHaveTextContent(`${referenceOnly.taxonomyLineIds.length} reference lines`)
+    expect(card).toHaveTextContent('Study only')
+    expect(card).not.toHaveTextContent(/Train (?:White|Black|unavailable)/u)
+  })
 
   test('keeps both learner sides inside one family detail and changes side without duplicating the page', async () => {
     const user = userEvent.setup()
@@ -122,7 +148,7 @@ describe('canonical opening-family repertoire', () => {
       />,
     )
     expect(screen.getAllByRole('heading', { level: 1, name: family.canonicalName })).toHaveLength(1)
-    expect(within(screen.getByRole('group', { name: 'Learner side' })).getAllByRole('button')).toHaveLength(2)
+    expect(within(screen.getByRole('group', { name: 'Practice side' })).getAllByRole('button')).toHaveLength(2)
     expect(screen.getByRole('button', { name: 'White' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByRole('button', { name: 'Black' })).toHaveAttribute('aria-pressed', 'false')
 
@@ -137,8 +163,8 @@ describe('canonical opening-family repertoire', () => {
     )
     expect(screen.getByRole('button', { name: 'Black' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getAllByRole('heading', { level: 1, name: family.canonicalName })).toHaveLength(1)
-    expect(screen.getByRole('button', { name: 'Training graph pending audit' })).toBeDisabled()
-    expect(screen.getByText(/No shallow legacy rows are substituted/u)).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Practice unavailable' })).toBeDisabled()
+    expect(screen.getByText(/Practice is not available for this side yet/u)).toBeVisible()
   })
 
   test('aggregates catalog completion totals across every manifest-owned pack', async () => {
@@ -154,13 +180,15 @@ describe('canonical opening-family repertoire', () => {
       />,
     )
 
-    expect(screen.getByText('3 of 4 audited paths completed')).toBeVisible()
-    const promoted = screen.getByText('Promoted graphs').closest('div')
+    expect(screen.getByText('3 of 4 variations practiced')).toBeVisible()
+    const promoted = screen.getByText('Ready to train').closest('div')
     expect(promoted).not.toBeNull()
     expect(within(promoted!).getByText('1')).toBeVisible()
   })
 
   test('collapses duplicate variation labels without deleting distinct audited paths', async () => {
+    const user = userEvent.setup()
+    const onStartBranchTraining = vi.fn()
     const family = catalog.families.find(({ id }) => id === 'caro-kann')
     if (!family) throw new Error('Caro–Kann regression family is missing')
     const promotion = await createSyntheticFamilyPromotion(family, {
@@ -173,20 +201,29 @@ describe('canonical opening-family repertoire', () => {
         {...detailProps(family)}
         graphResources={{ [family.id]: promotion.resources }}
         completionCountByFamily={{ [family.id]: 1 }}
+        onStartBranchTraining={onStartBranchTraining}
       />,
     )
 
     const syllabus = screen.getByRole('list', { name: `${family.canonicalName} variation syllabus` })
     expect(within(syllabus).getAllByRole('listitem')).toHaveLength(1)
     expect(within(syllabus).getByText('Shared variation')).toBeVisible()
-    expect(within(syllabus).getByText('4 routes')).toBeVisible()
-    expect(screen.getByText(/4 distinct paths across 2 packs/u)).toBeVisible()
+    expect(within(syllabus).getByText(/4 routes · 3 learner moves/u)).toBeVisible()
+    expect(screen.getByText('Showing 1–1 of 1 named variations.')).toBeVisible()
     expect(screen.queryByText(/Untrusted graph label/u)).not.toBeInTheDocument()
-    expect(within(screen.getByRole('group', { name: 'Repertoire pack' })).getAllByRole('button')).toHaveLength(2)
-    expect(screen.getByText('1', { selector: '.family-detail-facts dd' })).toBeVisible()
-    expect(screen.getByRole('heading', { name: 'One run, every audited path' })).toBeVisible()
-    expect(screen.getByText(/N ≥ 500/u)).toBeVisible()
-    expect(screen.getByText(/grade screen between moves/u)).toBeVisible()
+    const courseDetails = screen.getByText('More course details').closest('details')
+    expect(courseDetails).not.toBeNull()
+    expect(courseDetails).not.toHaveAttribute('open')
+    const branchPractice = within(syllabus).getByRole('button', { name: 'Practice Shared variation' })
+    expect(branchPractice).toHaveClass('family-branch-practice')
+    await user.click(branchPractice)
+    expect(onStartBranchTraining).toHaveBeenCalledWith(family.id, 'white', expect.any(String))
+    expect(courseSectionButtons()).toHaveLength(2)
+    expect(screen.getByRole('heading', { name: '1 of 4 variations practiced' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Practice every variation' })).toBeVisible()
+    fireEvent.click(screen.getByText('What is included'))
+    expect(screen.getByText(/enough game evidence/u)).toBeVisible()
+    expect(screen.getByText(/no grade screen between normal moves/u)).toBeVisible()
   })
 
   test('exposes and trains every signed pack on the selected side', async () => {
@@ -203,7 +240,7 @@ describe('canonical opening-family repertoire', () => {
       />,
     )
 
-    const packTabs = within(screen.getByRole('group', { name: 'Repertoire pack' })).getAllByRole('button')
+    const packTabs = courseSectionButtons()
     expect(packTabs).toHaveLength(2)
     expect(packTabs[0]).toHaveAttribute('aria-pressed', 'true')
     await user.click(packTabs[1]!)
@@ -211,7 +248,7 @@ describe('canonical opening-family repertoire', () => {
     expect(packTabs[1]).toHaveAttribute('aria-pressed', 'true')
     expect(await screen.findByRole(
       'heading',
-      { name: 'Practice every audited branch' },
+      { name: 'Practice this opening' },
       { timeout: 5_000 },
     )).toBeVisible()
     expect(screen.queryByText(/Untrusted graph label/u)).not.toBeInTheDocument()
@@ -239,14 +276,14 @@ describe('canonical opening-family repertoire', () => {
       />,
     )
 
-    await user.click(await screen.findByRole('button', { name: 'Start full repertoire' }))
-    expect(await screen.findByRole('heading', { name: 'Continuous graph practice' })).toBeVisible()
+    await user.click(await screen.findByRole('button', { name: 'Start full opening' }))
+    expect(await screen.findByRole('heading', { name: 'Opening practice' })).toBeVisible()
 
-    const packTabs = within(screen.getByRole('group', { name: 'Repertoire pack' })).getAllByRole('button')
+    const packTabs = courseSectionButtons()
     await user.click(packTabs[1]!)
-    expect(await screen.findByRole('heading', { name: 'Practice every audited branch' })).toBeVisible()
-    await user.click(screen.getByRole('button', { name: 'Start full repertoire' }))
-    expect(await screen.findByRole('heading', { name: 'Continuous graph practice' })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Practice this opening' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Start full opening' }))
+    expect(await screen.findByRole('heading', { name: 'Opening practice' })).toBeVisible()
     expect(screen.queryByText(/Due cards must belong to selected graph pack/u)).not.toBeInTheDocument()
   })
 
@@ -277,8 +314,8 @@ describe('canonical opening-family repertoire', () => {
       />,
     )
     await user.click(await screen.findByRole('button', { name: 'Practice selected variation' }))
-    expect(screen.getByText(/Path 1 of 1/u)).toBeVisible()
-    expect(screen.getByText('0 of 2 Manifest variation paths completed.')).toBeVisible()
+    expect(screen.getByText(/Variation 1 of 1/u)).toBeVisible()
+    expect(screen.getByText('0 of 2 routes practiced in Manifest variation.')).toBeVisible()
 
     const play = async (uci: string): Promise<void> => {
       const picker = await screen.findByRole('combobox', { name: 'Legal move picker' })
@@ -287,22 +324,22 @@ describe('canonical opening-family repertoire', () => {
       await user.click(screen.getByRole('button', { name: 'Play move' }))
     }
     await play('g1f3')
-    await waitFor(() => expect(screen.getByText(/move 3 of 6/u)).toBeVisible())
+    await waitFor(() => expect(screen.getByText(/1 of 3 moves recalled this run · decision 2 next/u)).toBeVisible())
     await play('g2g3')
-    await waitFor(() => expect(screen.getByText(/move 5 of 6/u)).toBeVisible())
+    await waitFor(() => expect(screen.getByText(/2 of 3 moves recalled this run · decision 3 next/u)).toBeVisible())
     await play('f1g2')
-    const packButtons = within(screen.getByRole('group', { name: 'Repertoire pack' })).getAllByRole('button')
+    const packButtons = courseSectionButtons()
     await waitFor(() => expect(packButtons[1]).toHaveAttribute('aria-pressed', 'true'))
-    expect(await screen.findByRole('heading', { name: 'Continuous graph practice' })).toBeVisible()
-    expect(screen.getByText('1 of 2 Manifest variation paths completed.')).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Opening practice' })).toBeVisible()
+    expect(screen.getByText('1 of 2 routes practiced in Manifest variation.')).toBeVisible()
     await play('g1f3')
-    await waitFor(() => expect(screen.getByText(/move 3 of 6/u)).toBeVisible())
+    await waitFor(() => expect(screen.getByText(/1 of 3 moves recalled this run · decision 2 next/u)).toBeVisible())
     await play('g2g3')
-    await waitFor(() => expect(screen.getByText(/move 5 of 6/u)).toBeVisible())
+    await waitFor(() => expect(screen.getByText(/2 of 3 moves recalled this run · decision 3 next/u)).toBeVisible())
     await play('f1g2')
 
-    expect(await screen.findByRole('heading', { name: 'Every selected path is complete.' })).toBeVisible()
-    expect(screen.getByText('2 of 2 Manifest variation paths completed.')).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Every selected variation is complete.' })).toBeVisible()
+    expect(screen.getByText('2 of 2 routes practiced in Manifest variation.')).toBeVisible()
     expect(packButtons[1]).toHaveAttribute('aria-pressed', 'true')
   }, 30_000)
 
@@ -398,10 +435,10 @@ describe('canonical opening-family repertoire', () => {
       onPathCompleted,
     }
     const firstRender = render(<OpeningFamilyView {...props} />)
-    const packButtons = within(screen.getByRole('group', { name: 'Repertoire pack' })).getAllByRole('button')
+    const packButtons = courseSectionButtons()
     await waitFor(() => expect(packButtons[1]).toHaveAttribute('aria-pressed', 'true'))
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Continuous graph practice' })).toBeVisible())
-    expect(screen.getByText('1 of 2 Manifest variation paths completed.')).toBeVisible()
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Opening practice' })).toBeVisible())
+    expect(screen.getByText('1 of 2 routes practiced in Manifest variation.')).toBeVisible()
     await waitFor(async () => {
       const generation = latestFamilyCoverageGeneration(await repository.listCycleEvents({
         releaseId: manifest.releaseId,
@@ -420,9 +457,9 @@ describe('canonical opening-family repertoire', () => {
     firstRender.unmount()
 
     render(<OpeningFamilyView {...props} />)
-    const restoredPackButtons = within(screen.getByRole('group', { name: 'Repertoire pack' })).getAllByRole('button')
+    const restoredPackButtons = courseSectionButtons()
     await waitFor(() => expect(restoredPackButtons[1]).toHaveAttribute('aria-pressed', 'true'))
-    expect(await screen.findByText('1 of 2 Manifest variation paths completed.')).toBeVisible()
+    expect(await screen.findByText('1 of 2 routes practiced in Manifest variation.')).toBeVisible()
 
     const play = async (uci: string): Promise<void> => {
       const picker = await screen.findByRole('combobox', { name: 'Legal move picker' })
@@ -431,11 +468,11 @@ describe('canonical opening-family repertoire', () => {
       await user.click(screen.getByRole('button', { name: 'Play move' }))
     }
     await play('g1f3')
-    await waitFor(() => expect(screen.getByText(/move 3 of 6/u)).toBeVisible())
+    await waitFor(() => expect(screen.getByText(/1 of 3 moves recalled this run · decision 2 next/u)).toBeVisible())
     await play('g2g3')
-    await waitFor(() => expect(screen.getByText(/move 5 of 6/u)).toBeVisible())
+    await waitFor(() => expect(screen.getByText(/2 of 3 moves recalled this run · decision 3 next/u)).toBeVisible())
     await play('f1g2')
-    expect(await screen.findByText('2 of 2 Manifest variation paths completed.')).toBeVisible()
+    expect(await screen.findByText('2 of 2 routes practiced in Manifest variation.')).toBeVisible()
     await waitFor(async () => {
       expect(await repository.listCoverageEvents({
         releaseId: manifest.releaseId,
@@ -444,7 +481,7 @@ describe('canonical opening-family repertoire', () => {
     })
     cleanup()
     render(<OpeningFamilyView {...props} />)
-    expect(await screen.findByText('2 of 2 Manifest variation paths completed.')).toBeVisible()
+    expect(await screen.findByText('2 of 2 routes practiced in Manifest variation.')).toBeVisible()
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(await repository.listCoverageEvents({
       releaseId: manifest.releaseId,
@@ -470,8 +507,8 @@ describe('canonical opening-family repertoire', () => {
       />,
     )
 
-    await user.click(await screen.findByRole('button', { name: 'Start full repertoire' }))
-    expect(await screen.findByRole('heading', { name: 'Continuous graph practice' })).toBeVisible()
+    await user.click(await screen.findByRole('button', { name: 'Start full opening' }))
+    expect(await screen.findByRole('heading', { name: 'Opening practice' })).toBeVisible()
     await waitFor(async () => {
       const generation = latestFamilyCoverageGeneration(await repository.listCycleEvents({
         releaseId: promotion.manifest.releaseId,
@@ -485,9 +522,9 @@ describe('canonical opening-family repertoire', () => {
     const desktopControls = document.querySelector('.desktop-session-controls')
     expect(desktopControls).not.toBeNull()
     await user.click(within(desktopControls as HTMLElement).getByRole('button', { name: 'Choose variation' }))
-    expect(await screen.findByRole('heading', { name: 'Practice every audited branch' })).toBeVisible()
-    await user.click(screen.getByRole('button', { name: 'Start full repertoire' }))
-    expect(await screen.findByRole('heading', { name: 'Continuous graph practice' })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Practice this opening' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Start full opening' }))
+    expect(await screen.findByRole('heading', { name: 'Opening practice' })).toBeVisible()
     expect(screen.queryByText(/already binds this pack/u)).not.toBeInTheDocument()
 
     await waitFor(async () => {
@@ -519,7 +556,7 @@ describe('canonical opening-family repertoire', () => {
         familyTrainingJournal={repository}
       />,
     )
-    await user.click(await screen.findByRole('button', { name: 'Start full repertoire' }))
+    await user.click(await screen.findByRole('button', { name: 'Start full opening' }))
     await waitFor(async () => expect((latestFamilyCoverageGeneration(await repository.listCycleEvents({
       releaseId: promotion.manifest.releaseId,
       familyId: family.id,
@@ -530,7 +567,7 @@ describe('canonical opening-family repertoire', () => {
     ).getByRole('button', { name: 'Choose variation' })
     await user.click(chooseVariation())
     await user.click(await screen.findByRole('button', { name: 'Practice selected variation' }))
-    expect(await screen.findByRole('heading', { name: 'Continuous graph practice' })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Opening practice' })).toBeVisible()
     await waitFor(async () => {
       const latest = latestFamilyCoverageGeneration(await repository.listCycleEvents({
         releaseId: promotion.manifest.releaseId,
@@ -542,8 +579,8 @@ describe('canonical opening-family repertoire', () => {
     })
 
     await user.click(chooseVariation())
-    await user.click(await screen.findByRole('button', { name: 'Practice selected path' }))
-    expect(await screen.findByRole('heading', { name: 'Continuous graph practice' })).toBeVisible()
+    await user.click(await screen.findByRole('button', { name: 'Practice selected line' }))
+    expect(await screen.findByRole('heading', { name: 'Opening practice' })).toBeVisible()
     await new Promise((resolve) => setTimeout(resolve, 20))
     const afterSinglePath = latestFamilyCoverageGeneration(await repository.listCycleEvents({
       releaseId: promotion.manifest.releaseId,
@@ -584,7 +621,7 @@ describe('canonical opening-family repertoire', () => {
       />,
     )
 
-    expect(await screen.findByRole('heading', { name: 'Continuous graph practice' })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Opening practice' })).toBeVisible()
     await waitFor(async () => {
       const generation = latestFamilyCoverageGeneration(await repository.listCycleEvents({
         releaseId: promotion.manifest.releaseId,
@@ -678,10 +715,10 @@ describe('canonical opening-family repertoire', () => {
       />,
     )
 
-    const packTabs = within(screen.getByRole('group', { name: 'Repertoire pack' })).getAllByRole('button')
+    const packTabs = courseSectionButtons()
     await waitFor(() => expect(packTabs[1]).toHaveAttribute('aria-pressed', 'true'))
-    expect(screen.getByText('2 of 4 variations completed in this coverage run.')).toBeVisible()
-    expect(await screen.findByRole('heading', { name: 'Continuous graph practice' })).toBeVisible()
+    expect(screen.getByText('2 of 4 variations practiced this round.')).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Opening practice' })).toBeVisible()
     await waitFor(async () => {
       const events = await repository.listCycleEvents({
         releaseId: completedGraph.releaseId,
@@ -765,12 +802,12 @@ describe('canonical opening-family repertoire', () => {
         familyTrainingJournal={repository}
       />,
     )
-    expect(await screen.findByText('4 of 4 variations completed in this coverage run.')).toBeVisible()
-    expect(await screen.findByRole('heading', { name: 'Every selected path is complete.' })).toBeVisible()
+    expect(await screen.findByText('4 of 4 variations practiced this round.')).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Every selected variation is complete.' })).toBeVisible()
 
-    await user.click(screen.getByRole('button', { name: 'Start a new coverage cycle' }))
-    expect(await screen.findByRole('heading', { name: 'Continuous graph practice' })).toBeVisible()
-    expect(screen.getByText('0 of 4 variations completed in this coverage run.')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Start a new practice round' }))
+    expect(await screen.findByRole('heading', { name: 'Opening practice' })).toBeVisible()
+    expect(screen.getByText('0 of 4 variations practiced this round.')).toBeVisible()
     await waitFor(async () => {
       const events = await repository.listCycleEvents({
         releaseId: promotion.manifest.releaseId,
@@ -809,7 +846,7 @@ describe('canonical opening-family repertoire', () => {
         onPathCompleted={onPathCompleted}
       />,
     )
-    await user.click(await screen.findByRole('button', { name: 'Start full repertoire' }))
+    await user.click(await screen.findByRole('button', { name: 'Start full opening' }))
     const play = async (uci: string): Promise<void> => {
       const picker = await screen.findByRole('combobox', { name: 'Legal move picker' })
       await waitFor(() => expect(picker).toBeEnabled())
@@ -818,29 +855,65 @@ describe('canonical opening-family repertoire', () => {
     }
 
     await play('g1f3')
-    await waitFor(() => expect(screen.getByText(/move 3 of 6/u)).toBeVisible())
+    await waitFor(() => expect(screen.getByText(/1 of 3 moves recalled this run · decision 2 next/u)).toBeVisible())
     await play('g2g3')
-    await waitFor(() => expect(screen.getByText(/move 5 of 6/u)).toBeVisible())
+    await waitFor(() => expect(screen.getByText(/2 of 3 moves recalled this run · decision 3 next/u)).toBeVisible())
     await play('f1g2')
-    await waitFor(() => expect(screen.getByText(/Path 2 of 2/u)).toBeVisible())
+    await waitFor(() => expect(screen.getByText(/Variation 2 of 2/u)).toBeVisible())
     await play('g2g3')
-    await waitFor(() => expect(screen.getByText(/move 3 of 6/u)).toBeVisible())
+    await waitFor(() => expect(screen.getByText(/1 of 3 moves recalled this run · decision 2 next/u)).toBeVisible())
     await play('g1f3')
-    await waitFor(() => expect(screen.getByText(/move 5 of 6/u)).toBeVisible())
+    await waitFor(() => expect(screen.getByText(/2 of 3 moves recalled this run · decision 3 next/u)).toBeVisible())
     await play('f1g2')
 
     const alert = await screen.findByRole('alert')
-    expect(alert).toHaveTextContent('Path completion was not saved')
-    const packTabs = within(screen.getByRole('group', { name: 'Repertoire pack' })).getAllByRole('button')
+    expect(alert).toHaveTextContent('This completed variation is not saved yet')
+    const packTabs = courseSectionButtons()
     expect(packTabs[0]).toHaveAttribute('aria-pressed', 'true')
     expect(packTabs[1]).toHaveAttribute('aria-pressed', 'false')
 
     rejectSecondCompletion = false
-    await user.click(within(alert).getByRole('button', { name: 'Retry saving completion' }))
+    await user.click(within(alert).getByRole('button', { name: 'Retry this variation' }))
     await waitFor(() => expect(packTabs[1]).toHaveAttribute('aria-pressed', 'true'))
-    expect(await screen.findByRole('heading', { name: 'Continuous graph practice' })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Opening practice' })).toBeVisible()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   }, 20_000)
+
+  test('ignores a completion that resolves after navigation instead of mutating the new family view', async () => {
+    const user = userEvent.setup()
+    const family = catalog.families.find(({ id }) => id === 'caro-kann')
+    if (!family) throw new Error('Required family is missing')
+    const promotion = await createSyntheticFamilyPromotion(family, { packCount: 2 })
+    let releaseSecondCompletion!: () => void
+    const secondCompletionPending = new Promise<void>((resolve) => { releaseSecondCompletion = resolve })
+    const onPathCompleted = vi.fn(async (_familyId: string, completion: { pathId: string }) => {
+      if (completion.pathId === promotion.graphs[0]!.paths[1]!.id) await secondCompletionPending
+    })
+    const props = {
+      ...detailProps(family),
+      reducedMotion: true,
+      graphResources: { [family.id]: promotion.resources },
+      onPathCompleted,
+    }
+    const view = render(<OpeningFamilyView {...props} mode="training" />)
+    await user.click(await screen.findByRole('button', { name: 'Start full opening' }))
+    const play = async (uci: string): Promise<void> => {
+      const picker = await screen.findByRole('combobox', { name: 'Legal move picker' })
+      await waitFor(() => expect(picker).toBeEnabled())
+      await user.selectOptions(picker, uci)
+      await user.click(screen.getByRole('button', { name: 'Play move' }))
+    }
+    for (const move of ['g1f3', 'g2g3', 'f1g2', 'g2g3', 'g1f3', 'f1g2']) await play(move)
+    await waitFor(() => expect(onPathCompleted).toHaveBeenCalledTimes(2))
+
+    view.rerender(<OpeningFamilyView {...props} mode="detail" />)
+    await act(async () => { releaseSecondCompletion(); await secondCompletionPending })
+    view.rerender(<OpeningFamilyView {...props} mode="training" />)
+
+    const packTabs = courseSectionButtons()
+    expect(packTabs[0]).toHaveAttribute('aria-pressed', 'true')
+    expect(packTabs[1]).toHaveAttribute('aria-pressed', 'false')
+  }, 30_000)
 
   test('puts search, family results, and an actionable family card before audit-only notices at mobile width', () => {
     Object.defineProperty(window, 'innerWidth', { value: 360, configurable: true })
@@ -884,7 +957,7 @@ describe('family hash routing and tactical-route isolation', () => {
       />,
     )
     expect(await screen.findByRole('heading', { level: 1, name: 'Caro–Kann' })).toBeVisible()
-    expect(await screen.findByRole('heading', { name: 'Practice every audited branch' })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Practice this opening' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Repertoire' })).toHaveAttribute('aria-current', 'page')
     expect(window.location.hash).toBe('#/train/caro-kann/white')
   })
@@ -892,7 +965,7 @@ describe('family hash routing and tactical-route isolation', () => {
   test('restores family catalog and detail through browser Back and Forward', async () => {
     const user = userEvent.setup()
     render(<App dataSource={appDataSource()} />)
-    expect(await screen.findByRole('heading', { level: 1, name: 'Ready when you are.' })).toBeVisible()
+    expect(await screen.findByRole('heading', { level: 1, name: 'Your opening practice' })).toBeVisible()
 
     await user.click(screen.getByRole('button', { name: 'Repertoire' }))
     expect(await screen.findByRole('heading', { level: 1, name: 'Repertoire' })).toBeVisible()
@@ -914,7 +987,7 @@ describe('family hash routing and tactical-route isolation', () => {
     render(<App dataSource={appDataSource()} />)
 
     expect(await screen.findByRole('heading', { level: 1, name: 'Puzzles' })).toBeVisible()
-    expect(screen.getByRole('heading', { name: 'Tactical puzzles are not released yet' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Verified puzzles aren’t included in this build yet.' })).toBeVisible()
     expect(screen.queryByText(/Find the repertoire move/u)).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Repertoire' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Puzzles' })).toHaveAttribute('aria-current', 'page')
