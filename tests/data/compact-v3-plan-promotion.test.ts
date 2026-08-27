@@ -97,7 +97,10 @@ test('explicit review decision promotes a pending plan bundle without making it 
   try {
     await writeApprovedCompactV3PlanBundle(output, bundle)
     assert.equal(JSON.parse(await readFile(join(output, 'approved-plan-review.json'), 'utf8')).releaseEligible, false)
-    await assert.rejects(() => writeApprovedCompactV3PlanBundle(output, bundle), /EEXIST|EPERM|already exists/iu)
+    await assert.rejects(
+      () => writeApprovedCompactV3PlanBundle(output, bundle),
+      /EEXIST|ENOTEMPTY|EPERM|already exists/iu,
+    )
   } finally {
     await rm(parent, { recursive: true, force: true })
   }
