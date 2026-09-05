@@ -1,11 +1,16 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
-import { measureCriticalServerCoverage } from '../../scripts/release/lib/istanbul-critical.ts'
+import { CRITICAL_SERVER_PATHS, measureCriticalServerCoverage } from '../../scripts/release/lib/istanbul-critical.ts'
 
 function file(branches: number[], functions: number[]) {
   return { b: { 0: branches }, f: Object.fromEntries(functions.map((value, index) => [String(index), value])) }
 }
+
+test('public family and tactical record validators remain inside the critical coverage gate', () => {
+  assert.ok(CRITICAL_SERVER_PATHS.includes('server/src/family-training-contracts.ts'))
+  assert.ok(CRITICAL_SERVER_PATHS.includes('server/src/puzzle-record.ts'))
+})
 
 test('critical server coverage requires every named module and both 90 percent thresholds', () => {
   const measured = measureCriticalServerCoverage({

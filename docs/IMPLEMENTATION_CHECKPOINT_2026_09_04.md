@@ -45,6 +45,12 @@ remain disabled; no paid service is required by this checkpoint.
 - Public-runner CI checks synthetic family and puzzle playthroughs in Chromium,
   alongside real PostgreSQL/Redis integration checks. Neither replaces
   production-data validation, connected staging, or assistive-technology review.
+- September 5 follow-up: real PostgreSQL 18 testing exposed missing schema
+  access for the share resolver owner. Migration `007` grants scoped read
+  access and fixes the resolver search path; CI verifies tenant isolation,
+  pooled reuse, exact-token lookup, and Redis coordination. The server
+  per-file gate now covers 25 modules, including family journal and tactical
+  record validators (100% and 95% branch coverage respectively in local tests).
 
 ## Local benchmark preparation
 
