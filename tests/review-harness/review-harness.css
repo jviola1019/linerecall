@@ -21,7 +21,8 @@ html {
   background: #7a2f18;
   color: #fff;
   font: 700 0.75rem/1.3 system-ui, sans-serif;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
   text-align: center;
 }
 

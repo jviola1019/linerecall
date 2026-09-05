@@ -228,7 +228,9 @@ export function ChessBoard({
     }
   }, [orientation])
 
-  useEffect(() => {
+  // Commit a FEN reset before paint. A following animation-frame move must
+  // start from that reset, not from the previous position's deferred effect.
+  useLayoutEffect(() => {
     const generation = ++animationGenerationRef.current
     const timers = new Set<ReturnType<typeof setTimeout>>()
     const frames = new Set<number>()

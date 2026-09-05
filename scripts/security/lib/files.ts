@@ -53,26 +53,34 @@ export async function readRegularFileBound(
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0) {
     throw new Error('Maximum byte length is invalid')
   }
-  await rejectLinkedPath(path)
-  const initial = await lstat(path)
-  if (!initial.isFile()) throw new Error(`Not a regular file: ${path}`)
-  const canonical = await realpath(path)
-  const expectedPath = resolve(path)
-  const samePath = process.platform === 'win32'
-    ? canonical.toLowerCase() === expectedPath.toLowerCase()
-    : canonical === expectedPath
-  if (!samePath) throw new Error(`Refusing linked file path: ${path}`)
+  // Open before inspecting path metadata. No bytes are read until the open
+  // descriptor is verified against the unlinked path. O_NONBLOCK prevents a
+  // substituted FIFO from hanging the POSIX reader before the regular-file check.
   const flags = process.platform === 'win32'
     ? 'r'
-    : constants.O_RDONLY | constants.O_NOFOLLOW
-  const handle = await open(path, flags)
+    : constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+  const handle = await open(path, flags).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException)?.code === 'ELOOP') {
+      throw new Error(`Refusing symbolic-link file path: ${path}`, { cause: error })
+    }
+    throw error
+  })
   try {
     const before = await handle.stat()
+    if (!before.isFile()) throw new Error(`Not a regular file: ${path}`)
+    if (before.size > maximumBytes) throw new Error(`File exceeds its ${maximumBytes}-byte hard cap: ${path}`)
+    await rejectLinkedPath(path)
+    const initial = await lstat(path)
+    const canonical = await realpath(path)
+    const expectedPath = resolve(path)
+    const samePath = process.platform === 'win32'
+      ? canonical.toLowerCase() === expectedPath.toLowerCase()
+      : canonical === expectedPath
+    if (!samePath) throw new Error(`Refusing linked file path: ${path}`)
     if (
-      !before.isFile() || before.dev !== initial.dev || before.ino !== initial.ino ||
+      !initial.isFile() || before.dev !== initial.dev || before.ino !== initial.ino ||
       before.size !== initial.size || before.mtimeMs !== initial.mtimeMs || before.ctimeMs !== initial.ctimeMs
     ) throw new Error(`File identity changed before reading: ${path}`)
-    if (before.size > maximumBytes) throw new Error(`File exceeds its ${maximumBytes}-byte hard cap: ${path}`)
     const chunks: Buffer[] = []
     const chunk = Buffer.alloc(Math.min(64 * 1024, Math.max(1, maximumBytes + 1)))
     let totalBytes = 0

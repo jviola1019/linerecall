@@ -2002,8 +2002,9 @@ kbd { padding: 0.12rem 0.3rem; border: 1px solid var(--border-strong); border-ra
 
 @media (max-width: 900px) {
   .app-header { background: var(--surface); }
-  .primary-nav { padding-top: var(--space-1); background: var(--surface); box-shadow: 0 -1px 0 var(--border); }
-  .primary-nav button { min-height: 56px; border-radius: var(--radius-sm); }
+  .primary-nav { grid-template-columns: repeat(5, minmax(0, 1fr)); padding-top: var(--space-1); background: var(--surface); box-shadow: 0 -1px 0 var(--border); }
+  .primary-nav button { min-height: 56px; padding-inline: 0; border-radius: var(--radius-sm); font-size: 0.75rem; line-height: 1.2; }
+  .primary-nav button > span { min-width: 0; overflow-wrap: anywhere; }
   .primary-nav button[aria-current="page"] { border-color: transparent; background: var(--surface-raised); }
   .primary-nav button::after { border-radius: 999px; }
   .today-heading { align-items: end; }

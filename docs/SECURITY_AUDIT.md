@@ -72,6 +72,14 @@ which still require a current exact-source campaign:
   reduce pathname replacement risk. Windows ACL ownership and directory-fsync
   durability still require an operator-reviewed private workspace; same-user
   hostile processes remain outside this offline job's threat model.
+- Bound security reads open once, check the descriptor and its path identity,
+  then read and recheck that same descriptor before returning bytes. There is
+  no path-based check followed by a second pathname read. On POSIX, `O_NOFOLLOW`
+  rejects a final symlink and `O_NONBLOCK` prevents a substituted FIFO from
+  waiting for a writer. Ancestor links, byte-limit violations, changed metadata,
+  and replaced paths remain rejection cases. This follows the descriptor-based
+  approach in [CodeQL's filesystem-race guidance](https://codeql.github.com/codeql-query-help/javascript/js-file-system-race/).
+  It does not replace private-directory permissions or Windows ACL review.
 - Re-hash terminal exact states after closing readers. Family construction must
   replay every checkpoint chain and validate exact table layouts before
   reading evidence.

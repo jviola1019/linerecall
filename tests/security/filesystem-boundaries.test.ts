@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, open, rename, rm, symlink, writeFile, type FileHandle } from 'node:fs/promises'
+import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -68,9 +69,102 @@ test('collectFiles rejects a linked ancestor of an explicitly selected root', as
     await makeDirectoryLink(outside, linkedAncestor)
     await assert.rejects(() => collectFiles([join(linkedAncestor, 'nested')]), /symbolic|linked|reparse/i)
     assert.equal(await fileExists(join(linkedAncestor, 'nested', 'outside.txt')), false)
+    await assert.rejects(() => readRegularFileBound(join(linkedAncestor, 'nested', 'outside.txt')), /symbolic|linked|reparse/i)
   } finally {
     await rm(root, { recursive: true, force: true })
     await rm(outside, { recursive: true, force: true })
+  }
+})
+
+test('bound file reads enforce regular-file and byte limits on the opened handle', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'linerecall-bound-read-'))
+  try {
+    const path = join(root, 'bytes.txt')
+    await writeFile(path, 'sample')
+    assert.equal((await readRegularFileBound(path, 6)).toString(), 'sample')
+    await assert.rejects(() => readRegularFileBound(path, 5), /hard cap/)
+    for (const limit of [-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      await assert.rejects(() => readRegularFileBound(path, limit), /Maximum byte length/)
+    }
+    await assert.rejects(() => readRegularFileBound(root))
+    await assert.rejects(() => readRegularFileBound(join(root, 'missing.txt')), { code: 'ENOENT' })
+    await writeFile(path, '')
+    assert.equal((await readRegularFileBound(path, 0)).byteLength, 0)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+// Windows prohibits replacing this open file. Linux CI exercises the path race;
+// the separate in-place mutation case below also runs on Windows.
+test('bound file reads reject a same-size path replacement during a descriptor read', { skip: process.platform === 'win32' }, async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'linerecall-bound-replacement-'))
+  try {
+    const path = join(root, 'bytes.txt')
+    const replacement = join(root, 'replacement.txt')
+    await writeFile(path, Buffer.alloc(128 * 1024, 'a'))
+    await writeFile(replacement, Buffer.alloc(128 * 1024, 'b'))
+    const probe = await open(path, 'r')
+    const prototype = Object.getPrototypeOf(probe)
+    const originalRead = probe.read
+    await probe.close()
+    let replaced = false
+    const hook = t.mock.method(prototype, 'read', async function (this: FileHandle, ...args: Parameters<FileHandle['read']>) {
+      const result = await Reflect.apply(originalRead, this, args)
+      if (!replaced) {
+        replaced = true
+        await rename(replacement, path)
+      }
+      return result
+    })
+    try {
+      await assert.rejects(() => readRegularFileBound(path), /File (path )?changed while read/)
+      assert.equal(replaced, true)
+    } finally {
+      hook.mock.restore()
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('bound file reads reject in-place mutation during a descriptor read', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'linerecall-bound-mutation-'))
+  try {
+    const path = join(root, 'bytes.txt')
+    await writeFile(path, Buffer.alloc(128 * 1024, 'a'))
+    const probe = await open(path, 'r')
+    const prototype = Object.getPrototypeOf(probe)
+    const originalRead = probe.read
+    await probe.close()
+    let mutated = false
+    const hook = t.mock.method(prototype, 'read', async function (this: FileHandle, ...args: Parameters<FileHandle['read']>) {
+      const result = await Reflect.apply(originalRead, this, args)
+      if (!mutated) {
+        mutated = true
+        await writeFile(path, Buffer.alloc(128 * 1024 + 1, 'b'))
+      }
+      return result
+    })
+    try {
+      await assert.rejects(() => readRegularFileBound(path), /File changed while read/)
+      assert.equal(mutated, true)
+    } finally {
+      hook.mock.restore()
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('bound file reads reject a FIFO without waiting for a writer', { skip: process.platform === 'win32', timeout: 5_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'linerecall-bound-fifo-'))
+  try {
+    const path = join(root, 'pipe')
+    execFileSync('mkfifo', [path])
+    await assert.rejects(() => readRegularFileBound(path), /Not a regular file/)
+  } finally {
+    await rm(root, { recursive: true, force: true })
   }
 })
 

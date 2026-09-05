@@ -8,10 +8,11 @@
  */
 import { createHash } from 'node:crypto'
 import { Chess } from 'chess.js'
-import { readFile, stat } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import { open } from 'node:fs/promises'
-import { dirname, isAbsolute, relative, resolve } from 'node:path'
+import { dirname, relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { readRegularFileBound } from '../security/lib/files.ts'
 import { EpdSchema } from '../../src/domain/opening-data.ts'
 import { TaxonomySourceManifestSchema } from '../../src/data/taxonomy-schema.ts'
 import { FamilyIdSchema, FamilyPackIdSchema, FamilyReleaseIdSchema } from '../../src/domain/opening-family.ts'
@@ -73,18 +74,14 @@ function canonicalEpd(chess: Chess): string {
 function hashEpd(epd: string): string { return digest(epd) }
 function sideAt(epd: string): Side { return epd.split(' ')[1] === 'w' ? 'white' : 'black' }
 function safeInputPath(root: string, requested: string): string {
-  if (isAbsolute(requested)) throw new Error('Handoff input paths must be relative to the receipt root')
-  const absolute = resolve(root, requested)
-  const rel = relative(root, absolute)
-  if (rel === '..' || rel.startsWith('../') || isAbsolute(rel)) throw new Error('Handoff input escapes the receipt root')
-  return absolute
+  // Use the shared canonical receipt path rules on both Windows and POSIX.
+  return safeOutputPath(root, requested)
 }
 
 async function identityReceipt(root: string, requested: string): Promise<ImmutableJsonReceiptV1> {
   const path = safeInputPath(root, requested)
-  const details = await stat(path)
-  if (!details.isFile() || details.size <= 0 || details.size > MAX_CONTROL_BYTES) throw new Error(`Invalid handoff control file: ${requested}`)
-  const bytes = await readFile(path)
+  const bytes = await readRegularFileBound(path, MAX_CONTROL_BYTES)
+  if (bytes.byteLength === 0) throw new Error(`Invalid handoff control file: ${requested}`)
   const receipt = { path: relative(root, path).replaceAll('\\', '/'), bytes: bytes.byteLength, sha256: digest(bytes), uncompressedBytes: bytes.byteLength, encoding: 'identity' as const }
   return ImmutableJsonReceiptV1Schema.parse(receipt)
 }

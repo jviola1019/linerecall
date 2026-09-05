@@ -33,6 +33,17 @@ test.describe('review-only unified-family fixture', () => {
     if (!actionBox || !navigationBox) throw new Error('Family action and mobile navigation must render')
     expect(actionBox.y + actionBox.height).toBeLessThanOrEqual(navigationBox.y)
     await assertNoPageOverflow(page, 'direct family practice at 320px')
+    const navLabels = await page.getByRole('navigation', { name: 'Primary navigation' }).locator('button > span').evaluateAll((labels) =>
+      labels.map((label) => {
+        const box = label.getBoundingClientRect()
+        const button = label.parentElement!.getBoundingClientRect()
+        return { left: box.left, right: box.right, parentLeft: button.left, parentRight: button.right, scroll: label.scrollWidth, width: label.clientWidth }
+      }))
+    for (const label of navLabels) {
+      expect(label.left).toBeGreaterThanOrEqual(label.parentLeft)
+      expect(label.right).toBeLessThanOrEqual(label.parentRight)
+      expect(label.scroll).toBeLessThanOrEqual(label.width + 1)
+    }
     await attachReviewScreenshot(page, testInfo, 'review-family-catalog-320.png', {
       path: 'audit/generated/review-family-catalog-320.png',
     })

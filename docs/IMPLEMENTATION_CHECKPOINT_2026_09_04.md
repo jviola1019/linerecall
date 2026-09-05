@@ -51,6 +51,17 @@ remain disabled; no paid service is required by this checkpoint.
   pooled reuse, exact-token lookup, and Redis coordination. The server
   per-file gate now covers 25 modules, including family journal and tactical
   record validators (100% and 95% branch coverage respectively in local tests).
+- The September 5 CodeQL scan found two high-severity filesystem-race alerts
+  in audit input reads. The follow-up removes the path-check/reopen pattern,
+  uses one validated descriptor, and adds replacement, linked-ancestor,
+  byte-limit, and POSIX FIFO regression tests. A new remote scan must confirm
+  the fix; the earlier failed scan is not an approval.
+- Linux browser evidence also caught an overflowing synthetic warning and
+  crowded mobile navigation labels at 320 px. Both now reflow without hiding
+  text. Board visual reconciliation runs before paint so a rapid reset is
+  committed before the next frame's move; a throttled repeated-reset test
+  checks both orientations. These fixtures still prove behavior, not real
+  opening or tactical quality.
 
 ## Local benchmark preparation
 

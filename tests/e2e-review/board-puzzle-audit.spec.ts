@@ -346,6 +346,36 @@ test.describe('review-only board and tactical audit', () => {
     await auditAxeIncludingModerate(page, testInfo, 'board-motion')
   })
 
+  test('animates consecutive rapid resets under CPU throttling', async ({ page, browserName }) => {
+    await page.goto(MOTION_PATH, { waitUntil: 'domcontentloaded' })
+    await expect(page.getByRole('heading', { name: 'Board transition review' })).toBeVisible()
+    const session = browserName === 'chromium' ? await page.context().newCDPSession(page) : null
+    if (session) await session.send('Emulation.setCPUThrottlingRate', { rate: 4 })
+    await page.evaluate(() => {
+      const layer = document.querySelector('.visual-piece-layer')
+      if (!layer) throw new Error('Visual piece layer is missing')
+      layer.addEventListener('transitionrun', (event) => {
+        const transition = event as TransitionEvent
+        const target = event.target
+        if (transition.propertyName === 'transform' && target instanceof HTMLElement && target.dataset.pieceId === 'wp-e2') {
+          document.body.dataset.rapidTransitionStarted = 'true'
+        }
+      })
+    })
+    try {
+      for (let iteration = 0; iteration < 8; iteration += 1) {
+        if (iteration === 4) await page.getByRole('button', { name: 'Flip board' }).click()
+        await page.evaluate(() => { document.body.dataset.rapidTransitionStarted = 'false' })
+        await page.getByRole('button', { name: 'Run rapid reset and move' }).click()
+        await expect.poll(() => page.evaluate(() => document.body.dataset.rapidTransitionStarted)).toBe('true')
+        await expect(page.locator('.visual-piece[data-piece-id="wp-e2"]')).toHaveAttribute('data-square', 'e4')
+        await expect(page.locator('.visual-piece-layer')).not.toHaveClass(/visual-piece-layer-static/u)
+      }
+    } finally {
+      if (session) await session.detach()
+    }
+  })
+
   test('rejects an illegal drag and preserves keyboard and non-spatial move input', async ({ page }, testInfo) => {
     await page.setViewportSize({ width: 1440, height: 1200 })
     await page.goto(MOTION_PATH, { waitUntil: 'domcontentloaded' })
