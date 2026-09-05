@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 2,
+  "id": "visual-human",
+  "status": "not_run",
+  "completedAt": null,
+  "reviewer": null,
+  "artifactSha256": null,
+  "sourceSnapshotSha256": null,
+  "summary": "Human visual regression, contrast, responsive, and motion review has not been completed.",
+  "evidence": [],
+  "limitations": [
+    "Automatically captured screenshots are not automatically approved baselines."
+  ],
+  "requiredReview": [
+    "All primary routes in both themes at required mobile, tablet, desktop, zoom, and forced-color states",
+    "Board movement, annotations, focus, overflow, RTL, reduced motion, loading, empty, and failure states"
+  ]
+}

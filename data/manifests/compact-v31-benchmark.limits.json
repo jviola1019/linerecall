@@ -1,0 +1,13 @@
+{
+  "minimumAvailableMemoryBytes": 8589934592,
+  "maximumWorkerResidentBytes": 6442450944,
+  "minimumFreeReserveBytes": 10737418240,
+  "archiveConcurrency": 1,
+  "maximumDeltaBytesPerArchive": 2147483648,
+  "maximumPartitionRunBytes": 2147483648,
+  "maximumMergeWorkspaceBytes": 17179869184,
+  "maximumReceiptBytes": 67108864,
+  "maximumRetainedDeltaBytes": 34359738368,
+  "maximumFinalStateBytes": 34359738368,
+  "inputStagingBytes": 0
+}

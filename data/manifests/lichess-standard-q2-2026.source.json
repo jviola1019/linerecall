@@ -1,0 +1,83 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "id": "lichess-standard-rated-q2-2026",
+    "name": "Lichess standard rated games, 2026 Q2",
+    "databaseUrl": "https://database.lichess.org/",
+    "downloadListUrl": "https://database.lichess.org/standard/list.txt",
+    "checksumsUrl": "https://database.lichess.org/standard/sha256sums.txt",
+    "cutoff": "2026-06-30",
+    "publishedGameTotal": 267333507
+  },
+  "license": {
+    "spdxId": "CC0-1.0",
+    "name": "Creative Commons Zero v1.0 Universal",
+    "termsUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "sourceStatementUrl": "https://database.lichess.org/",
+    "permissions": {
+      "download": true,
+      "transform": true,
+      "redistribute": true,
+      "attributionRequired": false,
+      "shareAlikeRequired": false
+    }
+  },
+  "approval": {
+    "status": "approved",
+    "approvedOn": "2026-07-14",
+    "scope": "Download, checksum-verify, stream, aggregate, and redistribute statistics derived from the three Standard rated archives for April through June 2026. Raw PGNs are never shipped.",
+    "basis": "The official Lichess open database page releases database exports under CC0. The approved product plan explicitly selected the complete 2026 Q2 Standard cohort.",
+    "reviewRequiredWhen": "Any month, URL, checksum, published total, filtering rule, license statement, or redistribution model changes."
+  },
+  "filtering": {
+    "variant": "Standard only",
+    "rated": true,
+    "finishedResults": ["1-0", "0-1", "1/2-1/2"],
+    "timeControlsIncluded": ["blitz", "rapid", "classical"],
+    "timeControlsExcluded": ["ultraBullet", "bullet", "correspondence", "unknown"],
+    "botsExcluded": true,
+    "numericRatingsRequired": true,
+    "ratingSystemLabel": "Lichess rating (Glicko-2)",
+    "deduplication": "immutable Lichess game ID, with deterministic normalized-game SHA-256 as a corruption guard",
+    "maximumPly": 30
+  },
+  "archives": [
+    {
+      "month": "2026-04",
+      "filename": "lichess_db_standard_rated_2026-04.pgn.zst",
+      "url": "https://database.lichess.org/standard/lichess_db_standard_rated_2026-04.pgn.zst",
+      "bytes": 29325351334,
+      "games": 89962564,
+      "sha256": "a6dc976bda3e6f543929e9448420482f2fe827b09e16c1005ca9a6ef66e7336d",
+      "etagObserved": "\"69f576b6-6d3ed59a6\"",
+      "lastModifiedObserved": "Sat, 02 May 2026 03:59:50 GMT"
+    },
+    {
+      "month": "2026-05",
+      "filename": "lichess_db_standard_rated_2026-05.pgn.zst",
+      "url": "https://database.lichess.org/standard/lichess_db_standard_rated_2026-05.pgn.zst",
+      "bytes": 29689176290,
+      "games": 90887615,
+      "sha256": "249b4c13e92442ba6694d7f0bdb5b4639047bf74caba1611722a132a012ab294",
+      "etagObserved": "\"6a20e71f-6e99ce0e2\"",
+      "lastModifiedObserved": "Thu, 04 Jun 2026 02:46:55 GMT"
+    },
+    {
+      "month": "2026-06",
+      "filename": "lichess_db_standard_rated_2026-06.pgn.zst",
+      "url": "https://database.lichess.org/standard/lichess_db_standard_rated_2026-06.pgn.zst",
+      "bytes": 28241946492,
+      "games": 86483328,
+      "sha256": "8fd81071f56511e7546cb77e38db5cf32f7e8a437fb906e26959cc064d8b1f79",
+      "etagObserved": "\"6a4abce2-69359e77c\"",
+      "lastModifiedObserved": "Sun, 05 Jul 2026 20:21:54 GMT"
+    }
+  ],
+  "integrity": {
+    "algorithm": "SHA-256",
+    "publisherChecksumsRequired": true,
+    "verifyByteLengthBeforeParse": true,
+    "verifyDigestBeforeParse": true,
+    "failClosed": true
+  }
+}

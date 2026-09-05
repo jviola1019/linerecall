@@ -1,0 +1,229 @@
+.chessboard-overlay-frame {
+  position: relative;
+  width: min(100%, 680px);
+  aspect-ratio: 1;
+  margin-inline: auto;
+}
+
+.chessboard-overlay-frame > .chessboard {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+.board-annotation-layer {
+  position: absolute;
+  z-index: 10;
+  inset: 2px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.board-annotation-layer[data-editing="true"] {
+  pointer-events: auto;
+  touch-action: none;
+  cursor: crosshair;
+  background: rgb(12 16 14 / 8%);
+}
+
+.board-annotation-layer[data-editing="true"]:focus-visible {
+  outline: 4px solid var(--focus);
+  outline-offset: -4px;
+}
+
+.board-annotation-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.movement-guide-badge circle {
+  fill: color-mix(in srgb, var(--surface) 88%, transparent);
+  stroke: currentColor;
+  stroke-width: 1.15;
+  vector-effect: non-scaling-stroke;
+}
+
+.movement-guide-badge text {
+  fill: currentColor;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 3.2px;
+  font-weight: 700;
+  text-anchor: middle;
+  dominant-baseline: central;
+  paint-order: stroke;
+  stroke: color-mix(in srgb, var(--surface) 82%, transparent);
+  stroke-width: 0.45px;
+}
+
+.movement-guide-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0.45rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.movement-guide-legend li {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.45rem;
+  border: 1px solid var(--border);
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.movement-guide-legend li > span {
+  display: grid;
+  width: 1.2rem;
+  height: 1.2rem;
+  place-items: center;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  color: var(--text);
+  font-weight: 700;
+}
+
+.movement-guide-legend li[data-guide="playable"],
+.movement-guide-legend li[data-guide="hint"] { border-style: dashed; }
+.movement-guide-legend li[data-guide="inaccuracy"],
+.movement-guide-legend li[data-guide="mistake"],
+.movement-guide-legend li[data-guide="unverified_deviation"] { border-style: dotted; }
+
+.board-square[data-move-status="solution"] {
+  outline: 6px solid var(--accent);
+  outline-offset: -6px;
+}
+
+.movement-guide-route.guide-solution { color: var(--accent); }
+
+.visual-piece-promoting .piece-promotion-from,
+.visual-piece-promoting .piece-promotion-to {
+  transition-duration: 160ms;
+}
+
+.annotation-shape {
+  fill: none;
+  stroke-width: 2.35;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.annotation-shape.annotation-study { stroke: #ffe66d; }
+.annotation-shape.annotation-alternative { stroke: #68c9ff; stroke-dasharray: 7 4; }
+.annotation-shape.annotation-warning { stroke: #ff7b72; stroke-width: 3; stroke-dasharray: 1.5 3.2; }
+.annotation-marker.annotation-study { fill: #ffe66d; }
+.annotation-marker.annotation-alternative { fill: #68c9ff; }
+.annotation-marker.annotation-warning { fill: #ff7b72; }
+
+.annotation-start-square,
+.annotation-cursor-square {
+  fill: none;
+  stroke: #fff;
+  stroke-width: 1.4;
+  vector-effect: non-scaling-stroke;
+}
+
+.annotation-start-square { stroke-dasharray: 3 2; }
+.annotation-cursor-square { stroke: var(--focus); stroke-dasharray: 1 1; }
+
+.annotation-panel {
+  min-width: 0;
+  padding: clamp(0.75rem, 1.8vw, 1rem);
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.annotation-panel-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.65rem;
+}
+
+.annotation-panel-heading h3 { margin-top: 0; }
+.annotation-panel-heading p { margin: 0; color: var(--muted); font-size: 0.82rem; }
+
+.annotation-form {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.35rem 0.55rem;
+  margin-top: 0.8rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--border);
+}
+
+.annotation-form label { color: var(--muted); font-size: 0.78rem; font-weight: 700; }
+.annotation-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 0.5rem; padding-top: 0.35rem; }
+.annotation-text-alternative { margin-top: 0.8rem; padding-top: 0.65rem; border-top: 1px solid var(--border); }
+.annotation-text-alternative h4 { margin: 0 0 0.35rem; }
+.annotation-text-alternative p { color: var(--muted); }
+.annotation-text-alternative ol { display: grid; gap: 0.35rem; padding-left: 1.5rem; }
+.annotation-text-alternative li { padding-left: 0.2rem; }
+.annotation-text-alternative li button { margin-left: 0.45rem; }
+
+@media (max-width: 1100px) {
+  .chessboard-overlay-frame { width: min(calc(100vw - 1.3rem), 680px); }
+}
+
+@media (max-width: 600px) {
+  .board-region {
+    max-width: 100%;
+    overflow-x: clip;
+  }
+  .chessboard-overlay-frame {
+    /* Keep the spatial board inside the reflow viewport. The equivalent
+       move picker retains 44px controls when individual squares are smaller. */
+    width: min(22.25rem, calc(100vw - 0.75rem));
+    max-width: 100%;
+  }
+  /* The visible coordinates remain in the semantic edge squares. Give their
+     small mobile labels a clear corner by moving only the affected edge-piece
+     art away from that corner. The canonical square names and hit targets do
+     not move, and the selectors mirror both visual orientations. */
+  .board-square > .rank-label,
+  .board-square > .file-label {
+    font-size: clamp(0.5625rem, 2.5vw, 0.625rem);
+    line-height: 1;
+  }
+  .board-square > .file-label {
+    right: auto;
+    left: 3px;
+  }
+  .visual-piece-layer[data-orientation="white"] .visual-piece[data-square^="a"] .piece,
+  .visual-piece-layer[data-orientation="black"] .visual-piece[data-square^="h"] .piece,
+  .visual-piece-layer[data-orientation="white"] .visual-piece[data-square$="1"] .piece,
+  .visual-piece-layer[data-orientation="black"] .visual-piece[data-square$="8"] .piece {
+    right: auto;
+    left: 27%;
+    width: 69%;
+  }
+  .annotation-form { grid-template-columns: 1fr; }
+  .annotation-actions { grid-column: 1; display: grid; }
+}
+
+@media (forced-colors: active) {
+  .annotation-shape,
+  .annotation-marker,
+  .annotation-start-square,
+  .annotation-cursor-square,
+  .movement-guide-badge circle,
+  .movement-guide-badge text {
+    filter: none;
+    stroke: CanvasText;
+    fill: CanvasText;
+  }
+
+  .annotation-shape { fill: none; }
+  .annotation-shape.annotation-alternative { stroke-dasharray: 7 4; }
+  .annotation-shape.annotation-warning { stroke-dasharray: 1.5 3.2; }
+  .annotation-start-square,
+  .annotation-cursor-square { fill: none; }
+  .movement-guide-badge circle { fill: Canvas; }
+}

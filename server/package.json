@@ -1,0 +1,46 @@
+{
+  "name": "@linerecall/server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "LineRecall connected API and sync service",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "start:dispatcher": "node dist/jobs/dispatcher.js",
+    "start:lichess-worker": "node --enable-source-maps dist/jobs/lichess-sync-worker.js",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test tests/**/*.test.ts",
+    "test:connected-dependencies": "tsx --test tests/postgres-redis.integration.test.ts",
+    "test:coverage": "c8 --all --src src --exclude \"tests/**\" --exclude \"**/*.test.ts\" --exclude src/index.ts --exclude src/jobs/dispatcher.ts --exclude src/jobs/lichess-sync-worker.ts --reports-dir coverage/critical --reporter=text --reporter=json --check-coverage --branches 90 --functions 90 --lines 80 --statements 80 tsx --test \"tests/**/*.test.ts\""
+  },
+  "dependencies": {
+    "@aws-sdk/client-batch": "3.1086.0",
+    "@aws-sdk/client-kms": "3.1086.0",
+    "@aws-sdk/client-s3": "3.1086.0",
+    "@aws-sdk/client-sesv2": "3.1086.0",
+    "@better-auth/passkey": "1.6.23",
+    "@fastify/helmet": "13.1.0",
+    "@fastify/rate-limit": "11.2.0",
+    "@opentelemetry/api": "1.9.0",
+    "better-auth": "1.6.23",
+    "chess.js": "1.4.0",
+    "fastify": "5.12.3",
+    "ioredis": "5.11.1",
+    "pg": "8.22.0",
+    "pg-boss": "12.26.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "25.0.3",
+    "@types/pg": "8.20.0",
+    "c8": "10.1.3",
+    "tsx": "4.23.0",
+    "typescript": "7.0.2"
+  }
+}

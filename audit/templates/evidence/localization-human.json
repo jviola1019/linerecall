@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 2,
+  "id": "localization-human",
+  "status": "not_run",
+  "completedAt": null,
+  "reviewer": null,
+  "artifactSha256": null,
+  "sourceSnapshotSha256": null,
+  "summary": "Qualified human linguistic and locale review has not been completed.",
+  "evidence": [],
+  "limitations": [
+    "Only en-US may remain enabled until each additional locale passes its own review."
+  ],
+  "requiredReview": [
+    "es, de, fr, pt-BR, pl, and ar catalogs",
+    "Arabic RTL layout, notation boundaries, and assistive-technology behavior"
+  ]
+}

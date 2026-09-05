@@ -1,0 +1,171 @@
+# Puzzle v3 pipeline
+
+Status: ingestion, runtime-resource, replay, progress, and promotion-validation
+foundations exist in source. No current test pass is asserted here and no real
+release puzzle data has been produced.
+
+## Browser trust boundary
+
+Serialized puzzle shards do not contain an `id`. A content-addressed resource
+cannot safely contain an identifier derived from the hash of its own compressed
+bytes: that would require finding a cryptographic fixed point. The strict shard
+payload schema therefore rejects both legacy and hostile `id` fields. After the
+bounded reader verifies the exact compressed byte count and SHA-256, the family
+data source derives the in-memory shard ID from `ContentAddressedRef.id`.
+
+The authenticated production root carries a compact puzzle-promotion binding.
+It identifies the exact family-promotion index, puzzle receipt, proof inventory,
+source digest, Stockfish campaign, and each promoted shard SHA-256/family/count.
+The UI's asynchronous loader checks that statement against the verified family
+manifest and checksum-validated shard payloads. Only that loader can create a
+puzzle-bearing resource recognized as trusted; parsing a JSON object with
+plausible release hashes cannot create a ready, stale, or cached puzzle state.
+
+Runtime family collections are capped at 32 shards, 20,000 puzzles, 8 MiB
+compressed, and 32 MiB uncompressed. Production remains disabled when the
+authenticated promotion statement is absent.
+
+LineRecall treats the Lichess puzzle export as a separate CC0 source. The pinned
+source manifest is `data/manifests/lichess-puzzles.source.json`. The publisher
+does not provide a SHA-256, so the workspace owner separately approved the local
+receipt in `data/manifests/lichess-puzzles.integrity.json`. Ingestion binds the
+receipt to the exact URL, byte length, ETag, Last-Modified value, source date,
+selection policy, license, computed digest, and approval identity. A changed
+field fails closed and requires a new receipt; the tool cannot approve its own
+digest.
+
+## Bounded processing contract
+
+`npm run data:puzzles -- ingest --release-id <approved-release-id>` validates
+all production prerequisites before reading the 302 MB archive, then consumes
+the Zstandard file as an async byte stream. The RFC-4180 parser supports escaped
+quotes and quoted line breaks across chunk boundaries. It retains at most a
+16 KiB record and 8 KiB field, permits at most ten fields, rejects control
+characters, and aborts malformed UTF-8. Puzzle IDs are deduplicated in a
+temporary SQLite index. Candidates are written through a bounded gzip stream
+to a partial file and linked into place only after completion; existing output
+is never replaced.
+
+The required prerequisites are complete compact-v3 broadcast and Q2 exact
+states, their final receipts, the approved source manifests, a release-matched
+family-association database, the pinned Stockfish manifest, a verified engine
+provision receipt, and a release-bound puzzle-engine campaign. Historical
+schema-v2 graph metadata is rejected. A missing or mismatched prerequisite
+blocks before the archive is streamed.
+
+The filter keeps only records with all of the following:
+
+- at least one valid opening tag;
+- a legal Standard-chess FEN and complete legal UCI replay;
+- one through five learner decisions;
+- at least 100 attempts, popularity at least 80, and rating deviation at most
+  100;
+- an HTTPS source-game URL on `lichess.org`.
+
+Move zero is replayed as the setup move. Odd solution indexes are learner moves;
+following even indexes are forced opponent replies. Each learner node records
+its exact FEN, normalized EPD, expected UCI/SAN move, forced reply, and whether
+the expected move is mate in one. Exact normalized-EPD association wins. A tag
+association is accepted only when the most-specific supplied tag resolves to one
+unique taxonomy line; the pipeline does not fall back from an ambiguous specific
+tag to a broader label.
+
+## Verification and promotion
+
+Candidates are explicitly `releaseEligible: false`. Their manifest reconciles
+every published row into candidate, duplicate, or named rejection totals and
+binds the exact corpus, family-association, puzzle-source, and engine-campaign
+identities. A candidate is not a verified puzzle.
+
+A promoted record must contain one
+matching Stockfish 18 proof per learner node with `Threads=1`, `Hash=128`,
+`MultiPV=5`, and 250,000 nodes, plus engine, NNUE, settings, analysis-date, and PV
+evidence. All proofs must pass and the puzzle must have an exact-position or
+unique-family association. Missing, reordered, failed, or unlinked evidence
+fails validation. The promotion library re-derives each tactical record from
+its verified envelope, requires exact proof-inventory equality, validates each
+shard against that inventory, and derives the promotion receipt from the
+validated source and output. The repository does not currently contain a real
+campaign orchestrator output, proof inventory, shard, or promotion receipt.
+
+The shipped domain replays setup and forced replies rather than changing FENs
+out of band. On a mate-in-one node, any legal mating move is accepted. Puzzle
+attempts use the versioned `PuzzleProgress` namespace and cannot update opening
+recall cards or mastery.
+
+## Runtime product boundary
+
+The Puzzles route is reserved for promoted tactical records. The former
+one-move repertoire recall activity is not used as a fallback.
+`TacticalPuzzleResource` has nine explicit states:
+
+- `disabled`
+- `loading`
+- `ready`
+- `empty`
+- `stale`
+- `offline`
+- `rate-limited`
+- `corrupt`
+- `error`
+
+Only `ready`, or previously verified records carried by the permitted stale
+and offline states, can start a puzzle. Corrupt records are never retained in a
+fallback state. Every list is schema-validated as a whole, every record is
+validated individually, and a repeated puzzle ID is rejected. Every
+puzzle-bearing resource is a nominal runtime value created by the verified
+asynchronous loader. Direct schema validation cannot manufacture one. Its
+metadata is derived from the authenticated promotion statement and exact shard
+references; it is not accepted from the caller. A stale or offline resource
+with records retains that same nominal identity. An empty offline state cannot
+claim release trust.
+
+Rate-limited resources expose the authoritative retry time. The Retry control
+stays unavailable until that time and the visible countdown is recomputed from
+the clock rather than repeating a stale server duration. A Retry control is
+rendered only when the containing application supplies a real reload callback.
+Replacing a promoted collection resets the active board session from its
+precomputed immutable collection identity. Rendering performs no collection
+serialization or hashing.
+
+The runtime applies a learner move and each forced opponent reply as separate
+board transitions. This preserves legal replay and lets the visual layer finish
+one 140–180 ms move before starting the next. Promotion uses a separate bounded
+sprite crossfade after the glide. Reduced-motion mode applies each state
+immediately. Setup moves, promotions, castling, en passant, multiple
+forced nodes, and alternative mate-in-one moves remain part of the release test
+matrix.
+
+`PuzzleAttemptEventV1` records solved or abandoned outcome, incorrect move
+count, hint use, elapsed time, and occurrence time. Application is idempotent
+by event ID. `PuzzleProgressV1` tracks attempts, solves, abandonment, clean
+solves, hints, incorrect moves, and elapsed time in its own repository. Opening
+cards, SM-2 intervals, family coverage, and opening mastery are not modified by
+puzzle events.
+
+## Commands
+
+```text
+npm run test:data:puzzles:v3
+npm run data:puzzles -- integrity --source <archive> --output <new-receipt>
+npm run data:puzzles -- ingest --release-id <approved-release-id>
+```
+
+The integrity command always emits a pending receipt and uses exclusive file
+creation. Do not replace the approved receipt without review.
+
+## Open hard gates
+
+The current workspace contains the approved 302,111,223-byte source archive and
+its local SHA-256 receipt. It does not contain the complete compact-v3 evidence
+states, production family-association database, real per-learner-node Stockfish
+campaign, candidate manifest, verified proof inventory, promoted tactical
+shards, puzzle-promotion receipt, or family-promotion index.
+
+Synthetic puzzle fixtures exercise parsing, association, replay, progress, and
+promotion contracts only. Their source hashes, sample fields, engine identities,
+and proof values are synthetic and never constitute corpus, engine, or release
+evidence. No test result is claimed by this document. The Puzzles screen must
+therefore remain in its explicit unavailable state rather than substitute
+legacy opening recall or fabricated tactics. These blockers prohibit a
+production artifact.

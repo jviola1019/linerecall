@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "kind": "linerecall-compact-v31-benchmark-input-bundle",
+  "releaseEligible": false,
+  "authorizationPath": "data/manifests/compact-v31-benchmark.authorization.json",
+  "authorizationSha256": "07e5c36c6ab6bb932a9547b963c6208cc81815ff642c85998fa8d078af5a7cb7",
+  "proposal": {
+    "path": "data/manifests/compact-v31/bootstrap/broadcast-proposal-c598a637c729be22a61583345b33589f462f1fb07294ef53678f0ecc85e857d5.json",
+    "bytes": 32962,
+    "sha256": "c598a637c729be22a61583345b33589f462f1fb07294ef53678f0ecc85e857d5"
+  },
+  "observation": {
+    "path": "data/manifests/compact-v31/bootstrap/broadcast-observation-043b06dfd1fdf6adee65b1e1d29e18a561c0a046c4d6a5dd124aeb138465d56c.json",
+    "bytes": 83182,
+    "sha256": "043b06dfd1fdf6adee65b1e1d29e18a561c0a046c4d6a5dd124aeb138465d56c"
+  },
+  "purpose": "Preserve the exact non-secret source-identity bytes authorized for the provisional local benchmark. This bundle does not authorize Q2 processing, promotion, or production release."
+}

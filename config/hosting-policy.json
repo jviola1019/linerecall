@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "aliasRoute": "/linerecall.html",
+  "immutableRoutePrefix": "/releases",
+  "httpsOnly": true,
+  "prohibitHtmlMutation": true,
+  "aliasCacheControl": "no-store, max-age=0, must-revalidate",
+  "immutableCacheControl": "public, max-age=31536000, immutable",
+  "requiredResponseHeaders": {
+    "Content-Type": "text/html; charset=utf-8",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Cross-Origin-Resource-Policy": "same-origin",
+    "Origin-Agent-Cluster": "?1",
+    "Permissions-Policy": "accelerometer=(), autoplay=(), camera=(), clipboard-read=(), clipboard-write=(), display-capture=(), encrypted-media=(), fullscreen=(), gamepad=(), geolocation=(), gyroscope=(), hid=(), idle-detection=(), magnetometer=(), microphone=(), midi=(), payment=(), picture-in-picture=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), usb=(), web-share=(), xr-spatial-tracking=()",
+    "Referrer-Policy": "no-referrer",
+    "Strict-Transport-Security": "max-age=31536000",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "X-Permitted-Cross-Domain-Policies": "none",
+    "X-XSS-Protection": "0"
+  }
+}

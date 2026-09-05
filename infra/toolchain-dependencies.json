@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "dependencies": [
+    {
+      "name": "OpenTofu",
+      "identifier": "opentofu",
+      "versionConstraint": ">= 1.8.0",
+      "license": "MPL-2.0",
+      "scope": "build-tool",
+      "declarationPath": "infra/versions.tf"
+    },
+    {
+      "name": "AWS provider for OpenTofu",
+      "identifier": "registry.opentofu.org/hashicorp/aws",
+      "versionConstraint": "~> 6.0",
+      "license": "MPL-2.0",
+      "scope": "build-tool",
+      "declarationPath": "infra/versions.tf",
+      "providerLockPath": "infra/.terraform.lock.hcl",
+      "providerLockStatus": "generate-and-review-before-apply"
+    },
+    {
+      "name": "OCI provider for OpenTofu",
+      "identifier": "registry.opentofu.org/oracle/oci",
+      "versionConstraint": "= 8.21.0",
+      "license": "MPL-2.0",
+      "scope": "build-tool",
+      "declarationPath": "infra/oci-zero-spend/versions.tf",
+      "providerLockPath": "infra/oci-zero-spend/.terraform.lock.hcl",
+      "providerLockStatus": "generated-and-reviewed-no-apply"
+    }
+  ],
+  "providerLockPath": "infra/.terraform.lock.hcl",
+  "providerLockStatus": "generate-and-review-before-apply"
+}

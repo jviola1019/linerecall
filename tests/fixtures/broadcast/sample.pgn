@@ -1,0 +1,66 @@
+[Event "Valid e4 game"]
+[White "Alpha"]
+[Black "Beta"]
+[Result "1-0"]
+[WhiteElo "1700"]
+[BlackElo "1799"]
+[Variant "Standard"]
+[UTCDate "2026.01.01"]
+[GameURL "https://lichess.org/broadcast/sample/round/game-one"]
+
+1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 1-0
+
+[Event "Duplicate URL"]
+[White "Alpha"]
+[Black "Beta"]
+[Result "1-0"]
+[WhiteElo "1700"]
+[BlackElo "1799"]
+[Variant "Standard"]
+[UTCDate "2026.01.01"]
+[GameURL "https://lichess.org/broadcast/sample/round/game-one?duplicate=true"]
+
+1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 1-0
+
+[Event "Transposition one"]
+[White "Gamma"]
+[Black "Delta"]
+[Result "1/2-1/2"]
+[WhiteElo "1800"]
+[BlackElo "1999"]
+[Variant "Standard"]
+[UTCDate "2026.01.02"]
+[Round "1"]
+
+1. d4 Nf6 2. Nf3 d5 1/2-1/2
+
+[Event "Transposition two"]
+[White "Epsilon"]
+[Black "Zeta"]
+[Result "0-1"]
+[WhiteElo "2000"]
+[BlackElo "2199"]
+[Variant "Standard"]
+[UTCDate "2026.01.03"]
+[Round "2"]
+
+1. Nf3 d5 2. d4 Nf6 0-1
+
+[Event "Wrong variant"]
+[White "Eta"]
+[Black "Theta"]
+[Result "1-0"]
+[WhiteElo "2400"]
+[BlackElo "2400"]
+[Variant "Atomic"]
+
+1. e4 d5 1-0
+
+[Event "Missing rating"]
+[White "Iota"]
+[Black "Kappa"]
+[Result "0-1"]
+[WhiteElo "2200"]
+[Variant "Standard"]
+
+1. c4 e5 0-1

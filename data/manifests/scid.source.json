@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "name": "Scid ECO classification oracle",
+  "repositoryCommit": "8ffd1e3a02b9f61b5616e38b18ce932b904e04ff",
+  "filePath": "scid.eco",
+  "url": "https://sourceforge.net/p/scid/code/ci/8ffd1e3a02b9f61b5616e38b18ce932b904e04ff/tree/scid.eco?format=raw",
+  "sourceUrl": "https://sourceforge.net/p/scid/code/ci/8ffd1e3a02b9f61b5616e38b18ce932b904e04ff/tree/",
+  "size": 1089733,
+  "sha256": "acd73837668a0791aa4d1b174fdfe8b19efa361ac2437b45735b397b0e20c4a7",
+  "approval": {
+    "status": "approved",
+    "approvedOn": "2026-07-11",
+    "scope": "Download and inspect the pinned scid.eco file as an independent offline classification oracle only.",
+    "basis": "GPL-2.0 permits audit use; Scid entries are not copied into or redistributed with the LineRecall snapshot.",
+    "reviewRequiredWhen": "The Scid commit, checksum, parser, license, sampling method, or redistribution policy changes."
+  },
+  "license": {
+    "spdx": "GPL-2.0-only",
+    "name": "GNU General Public License v2.0 only",
+    "url": "https://sourceforge.net/p/scid/code/ci/8ffd1e3a02b9f61b5616e38b18ce932b904e04ff/tree/COPYING?format=raw",
+    "distributionPolicy": "Audit oracle only. Do not copy scid.eco entries into the shipped opening snapshot."
+  }
+}

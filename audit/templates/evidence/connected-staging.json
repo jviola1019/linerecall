@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 2,
+  "id": "connected-staging",
+  "status": "not_run",
+  "completedAt": null,
+  "reviewer": null,
+  "artifactSha256": null,
+  "sourceSnapshotSha256": null,
+  "summary": "Real connected staging, recovery, and account lifecycle testing has not been completed.",
+  "evidence": [],
+  "limitations": [
+    "Accounts and cloud sync must remain disabled in the static build until this gate passes."
+  ],
+  "requiredChecks": [
+    "Exact candidate, connected-source snapshot, and production data release bindings",
+    "PostgreSQL 18 migration through distinct admin, application, authentication, and share-owner roles",
+    "Forced RLS under a non-owner NOBYPASSRLS role with pooled cross-tenant reuse",
+    "Magic-link delivery, single use, five-minute expiry, generic responses, and provider failure",
+    "Passkey enrollment, authentication, revocation, session rotation, and stable HTTPS RP ID",
+    "Append-only review, puzzle, and family-journal replay across at least two devices",
+    "Redis quota enforcement and fail-closed behavior during Redis loss",
+    "Object-store immutability, private deletion, worker recovery, cancellation, and dead letters",
+    "Lichess PKCE, provider 429 cooldown, token encryption, revocation, and disconnect",
+    "Account export and recent-authenticated deletion with post-deletion verification",
+    "Clean-target backup restoration with measured RPO, RTO, row counts, and integrity digests",
+    "Secret-free redacted evidence and complete staging teardown"
+  ]
+}

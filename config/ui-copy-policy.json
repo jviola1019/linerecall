@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "maximumHeadingCharacters": 72,
+  "maximumControlCharacters": 96,
+  "maximumBodyCharacters": 320,
+  "maximumBodyWords": 56,
+  "duplicateMinimumCharacters": 36,
+  "duplicateMaximumOccurrences": 2,
+  "prohibitedPatterns": [
+    { "id": "ai-coach", "pattern": "\\bAI (?:coach|assistant|mentor)\\b" },
+    { "id": "inflated-revolutionary", "pattern": "\\b(?:revolutionary|game[- ]changing|cutting[- ]edge|next[- ]generation)\\b" },
+    { "id": "inflated-unlock", "pattern": "\\bunlock (?:your|the) (?:potential|power|secrets?)\\b" },
+    { "id": "instant-mastery", "pattern": "\\bmaster (?:chess|openings?) (?:instantly|overnight)\\b" },
+    { "id": "unsupported-causality", "pattern": "\\bthis move (?:causes|guarantees|ensures) (?:a )?(?:win|victory)\\b" },
+    { "id": "legal-certification", "pattern": "\\b(?:ADA|WCAG|Section 508)[- ](?:certified|compliant)\\b" },
+    { "id": "unsupported-human-review", "pattern": "\\bhuman[- ]reviewed\\b" },
+    { "id": "assistant-filler", "pattern": "\\b(?:delve into|seamlessly|effortlessly|elevate your|journey)\\b" }
+  ],
+  "learnerWorkflow": {
+    "pathPrefixes": [
+      "src/app/App.tsx",
+      "src/app/components/GraphTrainingBoundary.tsx",
+      "src/app/components/OpeningBrowser.tsx",
+      "src/app/components/OpeningFamilyView.tsx",
+      "src/app/components/ProgressView.tsx",
+      "src/app/components/TacticalPuzzleView.tsx"
+    ],
+    "prohibitedPatterns": [
+      { "id": "implementation-coverage", "pattern": "\\bcoverage (?:cycle|run|generation)\\b" },
+      { "id": "implementation-cursor", "pattern": "\\b(?:saved )?cursor(?: update)?s?\\b" },
+      { "id": "implementation-shard", "pattern": "\\b(?:data|puzzle|tactical) shards?\\b" },
+      { "id": "implementation-release", "pattern": "\\brelease checks?\\b" },
+      { "id": "implementation-schema", "pattern": "\\bruntime schemas?\\b" },
+      { "id": "implementation-terminal", "pattern": "\\bevidence terminals?\\b" },
+      { "id": "implementation-ply", "pattern": "\\bply 100\\b" },
+      { "id": "implementation-graph", "pattern": "\\b(?:training|repertoire) graph\\b" }
+    ]
+  }
+}

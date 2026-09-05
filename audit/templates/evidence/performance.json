@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 2,
+  "id": "performance",
+  "status": "not_run",
+  "completedAt": null,
+  "reviewer": null,
+  "artifactSha256": null,
+  "summary": "Exact-candidate performance measurements have not been recorded.",
+  "evidence": [],
+  "limitations": [
+    "Development measurements or measurements from different bytes do not satisfy this gate."
+  ],
+  "requiredChecks": [
+    "Self-contained hardened artifact is no larger than 10 MiB",
+    "Usable shell is interactive within 2 seconds under the documented mobile CPU-throttling profile",
+    "Every measured ECO, family, and puzzle shard load is at most 500 ms under the documented cache and CPU conditions",
+    "Legal move feedback is below 100 ms at p95 across the documented training workload",
+    "Provider-backed 250-event sync is below 500 ms at p95 in connected staging",
+    "Cumulative layout shift is below 0.1 for each measured primary route and viewport"
+  ]
+}

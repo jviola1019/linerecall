@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://linerecall.invalid/schemas/evidence-record-v2.json",
+  "title": "LineRecall candidate-bound evidence record",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "id",
+    "status",
+    "completedAt",
+    "reviewer",
+    "artifactSha256",
+    "summary",
+    "evidence",
+    "limitations"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 2 },
+    "id": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["pass", "fail", "not_run"] },
+    "completedAt": {
+      "oneOf": [
+        { "type": "string", "format": "date-time" },
+        { "type": "null" }
+      ]
+    },
+    "reviewer": {
+      "oneOf": [
+        { "type": "string", "minLength": 1 },
+        { "type": "null" }
+      ]
+    },
+    "artifactSha256": {
+      "oneOf": [
+        { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        { "type": "null" }
+      ]
+    },
+    "sourceSnapshotSha256": {
+      "oneOf": [
+        { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        { "type": "null" }
+      ]
+    },
+    "summary": { "type": "string", "minLength": 1 },
+    "evidence": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/evidenceReceipt" },
+      "uniqueItems": true
+    },
+    "limitations": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "coverageGaps": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "requiredReview": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "requiredEnvironments": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "requiredChecks": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "requirementResults": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/requirementResult" }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["status"],
+        "properties": { "status": { "const": "pass" } }
+      },
+      "then": {
+        "properties": {
+          "completedAt": { "type": "string", "format": "date-time" },
+          "reviewer": { "type": "string", "minLength": 1 },
+          "artifactSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "evidence": { "minItems": 1 }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["status"],
+        "properties": { "status": { "const": "fail" } }
+      },
+      "then": {
+        "properties": {
+          "completedAt": { "type": "string", "format": "date-time" },
+          "reviewer": { "type": "string", "minLength": 1 },
+          "artifactSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "evidence": { "minItems": 1 }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["status"],
+        "properties": { "status": { "const": "not_run" } }
+      },
+      "then": {
+        "properties": {
+          "completedAt": { "type": "null" },
+          "reviewer": { "type": "null" },
+          "artifactSha256": { "type": "null" },
+          "evidence": { "maxItems": 0 },
+          "requirementResults": { "maxItems": 0 }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "evidenceReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {
+          "allOf": [
+            { "$ref": "#/$defs/workspacePath" },
+            { "pattern": "^audit/evidence/receipts/[a-f0-9]{64}/[^/\\\\]+$" }
+          ]
+        },
+        "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "sourcePath": { "$ref": "#/$defs/workspacePath" }
+      }
+    },
+    "requirementResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requirement", "status", "evidencePaths"],
+      "properties": {
+        "requirement": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["pass", "fail"] },
+        "evidencePaths": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/workspacePath" }
+        }
+      }
+    },
+    "workspacePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?![A-Za-z]:)(?![\\\\/])(?!.*(?:^|[\\\\/])\\.\\.(?:[\\\\/]|$)).+$"
+    }
+  },
+  "additionalProperties": false
+}

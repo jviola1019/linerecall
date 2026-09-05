@@ -1,0 +1,189 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://linerecall.invalid/schemas/release-audit-v2.json",
+  "title": "LineRecall release gate report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "generatedAt", "status", "shippable", "candidate", "artifact", "automated", "evidence", "bindings", "blockers", "limitations"],
+  "properties": {
+    "schemaVersion": { "const": 2 },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "status": { "enum": ["pass", "fail"] },
+    "shippable": { "type": "boolean" },
+    "candidate": { "$ref": "#/$defs/fileOrNull" },
+    "artifact": { "$ref": "#/$defs/fileOrNull" },
+    "automated": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/gate" }
+    },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/gate" }
+    },
+    "bindings": {
+      "oneOf": [
+        { "$ref": "#/$defs/bindings" },
+        { "type": "null" }
+      ]
+    },
+    "blockers": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "limitations": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["shippable"],
+        "properties": { "shippable": { "const": true } }
+      },
+      "then": {
+        "properties": {
+          "status": { "const": "pass" },
+          "candidate": { "$ref": "#/$defs/file" },
+          "artifact": { "$ref": "#/$defs/file" },
+          "automated": { "items": { "properties": { "status": { "const": "pass" } } } },
+          "evidence": {
+            "items": {
+              "required": ["evidencePath", "evidenceRecord", "evidenceReceipts"],
+              "properties": { "status": { "const": "pass" } }
+            }
+          },
+          "bindings": { "$ref": "#/$defs/bindings" },
+          "blockers": { "maxItems": 0 }
+        }
+      },
+      "else": {
+        "properties": {
+          "status": { "const": "fail" },
+          "artifact": { "type": "null" },
+          "blockers": { "minItems": 1 }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "workspacePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?![A-Za-z]:)(?![\\\\/])(?!.*(?:^|[\\\\/])\\.\\.(?:[\\\\/]|$)).+$"
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "bytes", "sha256"],
+      "properties": {
+        "path": { "$ref": "#/$defs/workspacePath" },
+        "bytes": { "type": "integer", "minimum": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "fileOrNull": {
+      "oneOf": [
+        { "$ref": "#/$defs/file" },
+        { "type": "null" }
+      ]
+    },
+    "evidenceReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "$ref": "#/$defs/workspacePath" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "sourcePath": { "$ref": "#/$defs/workspacePath" }
+      }
+    },
+    "sourceSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "treeSha256"],
+      "properties": {
+        "path": { "$ref": "#/$defs/workspacePath" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "treeSha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "status", "summary"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["pass", "fail", "not_run"] },
+        "summary": { "type": "string", "minLength": 1 },
+        "durationMs": { "type": "integer", "minimum": 0 },
+        "evidencePath": { "$ref": "#/$defs/workspacePath" },
+        "evidenceRecord": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "sha256"],
+          "properties": {
+            "path": { "$ref": "#/$defs/workspacePath" },
+            "sha256": { "$ref": "#/$defs/sha256" }
+          }
+        },
+        "evidenceReceipts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidenceReference" }
+        },
+        "sourceSnapshot": { "$ref": "#/$defs/sourceSnapshot" },
+        "logTail": { "type": "string" }
+      }
+    },
+    "releaseData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "bytes", "sha256", "releaseId"],
+      "properties": {
+        "path": { "$ref": "#/$defs/workspacePath" },
+        "bytes": { "type": "integer", "minimum": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "releaseId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$" }
+      }
+    },
+    "bindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gateConfig", "sourceSnapshot", "productionReadiness", "appSnapshotManifest", "releaseId", "automatedGateStatusSha256", "preSigningEvidenceBundleSha256", "evidenceBundleSha256", "signingAttestation"],
+      "properties": {
+        "gateConfig": { "$ref": "#/$defs/file" },
+        "sourceSnapshot": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "bytes", "sha256", "treeSha256"],
+          "properties": {
+            "path": { "$ref": "#/$defs/workspacePath" },
+            "bytes": { "type": "integer", "minimum": 1 },
+            "sha256": { "$ref": "#/$defs/sha256" },
+            "treeSha256": { "$ref": "#/$defs/sha256" }
+          }
+        },
+        "productionReadiness": { "$ref": "#/$defs/releaseData" },
+        "appSnapshotManifest": { "$ref": "#/$defs/releaseData" },
+        "releaseId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$" },
+        "automatedGateStatusSha256": { "$ref": "#/$defs/sha256" },
+        "preSigningEvidenceBundleSha256": { "$ref": "#/$defs/sha256" },
+        "evidenceBundleSha256": { "$ref": "#/$defs/sha256" },
+        "signingAttestation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "sha256", "payloadSha256", "keyId"],
+          "properties": {
+            "path": { "$ref": "#/$defs/workspacePath" },
+            "sha256": { "$ref": "#/$defs/sha256" },
+            "payloadSha256": { "$ref": "#/$defs/sha256" },
+            "keyId": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    }
+  }
+}

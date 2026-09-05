@@ -1,0 +1,142 @@
+name: Verify source
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linerecall-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Test and audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    services:
+      postgres:
+        image: postgres:18.0-bookworm@sha256:3f55f8895c4ed50603e2fbdfc72fffeeaba3173321fee5cb825bbbeb30d9d854
+        env:
+          POSTGRES_DB: linerecall_ci
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d linerecall_ci"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+      redis:
+        image: redis:8.2.3-bookworm@sha256:0908d9af26bf9b985e984a40a5eb82eed229b07a3317eee6843832c3cc3a9619
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      CI: 'true'
+    steps:
+      - name: Check out source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            hosted/package-lock.json
+            server/package-lock.json
+
+      - name: Install locked dependencies
+        run: |
+          npm ci
+          npm ci --prefix hosted
+          npm ci --prefix server
+
+      - name: Verify TypeScript and bounded data logic
+        run: |
+          npm run typecheck
+          npm run hosted:typecheck
+          npm run server:typecheck
+          npm run test:data
+          npm run test:domain
+
+      - name: Verify browser components and connected service
+        run: |
+          npm run test:security
+          npm test
+          npm run hosted:test
+          npm run server:test
+
+      - name: Verify real PostgreSQL 18 RLS and Redis coordination
+        env:
+          LINERECALL_CONNECTED_INTEGRATION: '1'
+          LINERECALL_INTEGRATION_ADMIN_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/linerecall_ci
+          LINERECALL_INTEGRATION_APP_DATABASE_URL: postgresql://linerecall_app:integration-app-only@127.0.0.1:5432/linerecall_ci
+          LINERECALL_INTEGRATION_REDIS_URL: redis://127.0.0.1:6379/0
+        run: npm run server:test:connected-dependencies
+
+      - name: Build connected client and server
+        run: |
+          npm run hosted:build
+          npm run server:build
+
+      - name: Run static, secret, dependency, and license audits
+        run: |
+          npm run security:source-snapshot
+          npm run security:static
+          npm run security:secrets
+          npm run security:dependencies
+          npm run security:licenses
+          npm run security:sbom
+          npm run hosted:audit
+          npm run server:audit
+          npm run editorial:copy
+          npm run localization:audit
+
+      - name: Measure critical coverage
+        run: |
+          npm run test:coverage:domain
+          npm run test:coverage
+          npm run release:coverage
+          npm run server:coverage
+          npm run server:critical-coverage
+
+      - name: Build review-only offline candidate
+        run: |
+          npm run build:review
+          npm run artifact:harden
+          npm run artifact:audit
+
+      - name: Verify synthetic family and puzzle browser behavior
+        run: |
+          npx playwright install --with-deps chromium
+          npm run test:e2e:review
+
+      - name: Produce fail-closed release report
+        if: always()
+        continue-on-error: true
+        run: npm run release:audit -- --report-only
+
+      - name: Upload audit evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: linerecall-audit-${{ github.run_id }}
+          path: |
+            audit/generated/
+            build/candidate/linerecall.html
+          if-no-files-found: error
+          retention-days: 1
