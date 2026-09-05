@@ -40,6 +40,18 @@ describe('PostgreSQL isolation migrations', () => {
     assert.doesNotMatch(source, /SELECT .*access_token_ciphertext/)
   })
 
+  it('grants the dedicated share owner schema usage without runtime membership or writes', async () => {
+    const sql = await readFile(new URL('../migrations/007_share_resolver_privileges.sql', import.meta.url), 'utf8')
+    assert.match(sql, /NOT rolcanlogin AND NOT rolsuper AND rolbypassrls/)
+    assert.match(sql, /pg_has_role\('linerecall_app', 'linerecall_share_owner', 'MEMBER'\)/)
+    assert.match(sql, /pg_has_role\('linerecall_auth', 'linerecall_share_owner', 'MEMBER'\)/)
+    assert.match(sql, /GRANT USAGE ON SCHEMA public TO linerecall_share_owner/)
+    assert.match(sql, /GRANT SELECT ON public\.share_links, public\.repertoire_revisions TO linerecall_share_owner/)
+    assert.match(sql, /REVOKE ALL ON ALL TABLES IN SCHEMA public FROM linerecall_share_owner/)
+    assert.match(sql, /SET search_path = pg_catalog;/)
+    assert.doesNotMatch(sql, /GRANT (?:ALL|CREATE|INSERT|UPDATE|DELETE)/)
+  })
+
   it('migrates tactical attempt evidence without inventing historical metrics', async () => {
     const sql = await readFile(new URL('../migrations/005_puzzle_attempt_evidence.sql', import.meta.url), 'utf8')
     for (const field of [

@@ -112,14 +112,22 @@ test('PostgreSQL 18 forced RLS and Redis limits survive real pooled dependencies
       '006_family_training_journal.sql',
       '002_roles.example.sql',
       '003_public_share_resolution.sql',
+      '007_share_resolver_privileges.sql',
     ]) await admin.query(await migration(name))
 
-    await admin.query(`
-      GRANT SELECT ON share_links, repertoire_revisions TO linerecall_share_owner;
-      ALTER FUNCTION resolve_unlisted_share(bytea, timestamptz) OWNER TO linerecall_share_owner;
-      REVOKE ALL ON FUNCTION resolve_unlisted_share(bytea, timestamptz) FROM PUBLIC;
-      GRANT EXECUTE ON FUNCTION resolve_unlisted_share(bytea, timestamptz) TO linerecall_app;
+    const sharePrivileges = await admin.query(`
+      SELECT
+        has_schema_privilege('linerecall_share_owner', 'public', 'USAGE') AS schema_usage,
+        has_schema_privilege('linerecall_share_owner', 'public', 'CREATE') AS schema_create,
+        has_table_privilege('linerecall_share_owner', 'share_links', 'SELECT') AS share_read,
+        has_table_privilege('linerecall_share_owner', 'share_links', 'INSERT, UPDATE, DELETE') AS share_write,
+        has_table_privilege('linerecall_share_owner', 'user_settings', 'SELECT') AS unrelated_read,
+        pg_has_role('linerecall_app', 'linerecall_share_owner', 'MEMBER') AS runtime_membership
     `)
+    assert.deepEqual(sharePrivileges.rows, [{
+      schema_usage: true, schema_create: false, share_read: true,
+      share_write: false, unrelated_read: false, runtime_membership: false,
+    }])
 
     const roles = await admin.query<{
       rolname: string
@@ -246,7 +254,8 @@ test('PostgreSQL 18 forced RLS and Redis limits survive real pooled dependencies
     )
     assert.equal(miss.rowCount, 0)
 
-    redis = new Redis(redisUrl, { enableOfflineQueue: false, maxRetriesPerRequest: 1 })
+    redis = new Redis(redisUrl, { enableOfflineQueue: false, maxRetriesPerRequest: 1, lazyConnect: true })
+    await redis.connect()
     await redis.flushdb()
     const limiter = new RedisRateLimiter(redis, 'linerecall:integration')
     const now = new Date('2026-08-27T00:00:00Z')
