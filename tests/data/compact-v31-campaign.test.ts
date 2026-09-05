@@ -19,7 +19,8 @@ test('unattended campaign launcher parses and requires explicit execution', asyn
     `[System.Management.Automation.Language.Parser]::ParseFile('${campaignPath.replaceAll("'", "''")}',[ref]$tokens,[ref]$errors)|Out-Null;`,
     'if($errors.Count){$errors|ForEach-Object{$_.Message};exit 1}',
   ].join('')
-  await execute('powershell', ['-NoProfile', '-NonInteractive', '-Command', command], { windowsHide: true })
+  const shell = process.platform === 'win32' ? 'powershell' : 'pwsh'
+  await execute(shell, ['-NoProfile', '-NonInteractive', '-Command', command], { windowsHide: true })
 })
 
 test('campaign launcher preserves authenticated resumability and never starts Q2', async () => {
