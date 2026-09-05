@@ -120,6 +120,8 @@ test('repository selection honors the no-browser-storage boundary', async () => 
   const selected = await selectProgressRepository()
   assert.equal(selected.repository.kind, 'memory')
   assert.match(selected.warning ?? '', /session-only/iu)
+  assert.match(selected.warning ?? '', /Export JSON/u)
+  assert.doesNotMatch(selected.warning ?? '', /Sign in|cloud sync/u)
   assert.equal('indexedDB' in selected.repository, false)
 })
 

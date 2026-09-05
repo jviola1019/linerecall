@@ -53,6 +53,7 @@ Run from the repository root:
 ```text
 npm ci
 npm run data:taxonomy
+npm run data:taxonomy-inventory
 npm run data:broadcasts -- download --manifest data/manifests/broadcasts.source.json --archive-dir .cache/linerecall/broadcasts
 npm run data:broadcasts -- aggregate --manifest data/manifests/broadcasts.source.json --targets data/generated/taxonomy/broadcast-targets.v1.json --archive-dir .cache/linerecall/broadcasts --output data/generated/broadcast-backtest.json
 npm run data:backtest-verify
@@ -132,7 +133,7 @@ run measured all 500 ECOs and reported B77 as the slowest median at 157.68 ms,
 with a 141.69 ms maximum hydration phase. Those measurements do not establish
 v3 shard or device performance.
 
-## 5. Build the candidate
+## 5. Build review and production candidates
 
 ```text
 npm run build:candidate
@@ -142,7 +143,21 @@ npm run hosting:audit
 npm run artifact:audit
 ```
 
-`build/candidate/linerecall.html` is an audit candidate, not a public release.
+That command produces a schema-v2 review candidate. It is never production
+evidence. Once all production-v3 handoff receipts exist, the production audit
+instead starts with:
+
+```text
+npm run build:production-candidate
+npm run artifact:harden
+npm run artifact:audit
+npm run release:candidate-binding
+```
+
+The binding check rehashes the final hardened HTML payload against the exact
+production app manifest, browse manifest, readiness receipt, and every embedded
+content-addressed blob. `build/candidate/linerecall.html` remains an audit
+candidate, not a public release.
 After exact-candidate browser, performance, persistence, security, and other
 reviewed reports are final, archive them into immutable content-addressed
 evidence receipts:
@@ -246,16 +261,33 @@ authorization.
 Generate all 78 release-ineligible plans from the exact retained proposal and
 observation, the checked-in authorization, and a frozen current source tree:
 
+The benchmark's `source-snapshot-sha256` is the versioned compact-v3.1
+ingestion-code closure (`scripts/data/ingestion-source-snapshot.ts`). It
+follows the reviewed executable parser, aggregation, runtime-schema, safety,
+lockfile, and TypeScript configuration closure, so parser/schema/dependency
+changes invalidate plans. Approval receipts, source manifests, limits, and
+output evidence remain separately content-addressed inputs. The full connected
+source snapshot still covers the application, UI, docs, authorization, and
+release-security surface for browser/release review; those unrelated edits do
+not stale an ingestion benchmark.
+
 ```text
 npm run data:evidence-v31-plans -- \
-  --proposal <broadcast-proposal-with-SHA-c598...57d5.json> \
-  --observation <broadcast-observation-with-SHA-043b...d56c.json> \
+  --proposal data/manifests/compact-v31/bootstrap/broadcast-proposal-c598a637c729be22a61583345b33589f462f1fb07294ef53678f0ecc85e857d5.json \
+  --observation data/manifests/compact-v31/bootstrap/broadcast-observation-043b06dfd1fdf6adee65b1e1d29e18a561c0a046c4d6a5dd124aeb138465d56c.json \
   --authorization data/manifests/compact-v31-benchmark.authorization.json \
   --limits data/manifests/compact-v31-benchmark.limits.json \
   --output-dir <new-empty-plan-directory> \
-  --source-snapshot-sha256 <current-treeSha256> \
+  --source-snapshot-sha256 <current-ingestion-pipeline-treeSha256> \
   --generated-at <ISO-8601-UTC-timestamp>
 ```
+
+Those two small source-identity records are tracked because the authorization
+binds their exact bytes. `data/manifests/compact-v31/bootstrap-inputs.receipt.json`
+binds their paths, lengths, and hashes to the benchmark authorization, so a
+clean checkout can reproduce the authorized plan bundle. They contain public
+Lichess archive identities and HTTP response metadata, not credentials or game
+movetext.
 
 The generator verifies all 78 local-verification bindings, the exact
 670,155,109 compressed-byte total, URL/checksum/ETag/Last-Modified identity,
@@ -334,6 +366,92 @@ npm run data:evidence-v31-compare -- \
   --output <new-repeatability-receipt.json> \
   --compared-at <ISO-8601-UTC-timestamp>
 ```
+
+For a clean-boot, unattended local campaign, use the checked-in launcher. Its
+default behavior performs preflight only; `-Execute` is required before either
+run starts. It never closes applications, deletes output, downloads a source,
+or bypasses the executor's per-archive hash and resource checks. Reusing the
+same work directory and run ID resumes only authenticated same-run checkpoints.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run-compact-v31-campaign.ps1 `
+  -PlansDirectory <frozen-78-plan-directory> `
+  -ArchivesDirectory .cache/broadcast/archives `
+  -CampaignRoot <dedicated-campaign-directory>
+
+# Only after both preflights pass:
+powershell -ExecutionPolicy Bypass -File scripts/run-compact-v31-campaign.ps1 `
+  -PlansDirectory <frozen-78-plan-directory> `
+  -ArchivesDirectory .cache/broadcast/archives `
+  -CampaignRoot <same-dedicated-campaign-directory> `
+  -Execute
+```
+
+The launcher stops after writing a release-ineligible repeatability receipt.
+It cannot start Q2. A named reviewer must bind that receipt and measured bounds
+in `data/manifests/compact-v31-production.authorization.json`; its checked-in
+state is deliberately `pending` with every execution flag false.
+
+### Compact-v3.1 production handoff boundary
+
+`compact-v31-production-contracts.ts` defines separate broadcast/Q2 production
+plans and receipts. `compact-v31-production-executor.ts` authenticates a full
+plan bundle and orchestrates the two passes through the
+`CompactV31ProductionArchiveAdapter` interface. The Q2 fixture proves canonical
+April–June order, both passes, exact 267,333,507-record reconciliation, and
+preflight-before-source behavior. This is executable orchestration, not corpus
+evidence.
+
+The concrete streamed PGN-to-delta adapter is intentionally still absent. It
+must implement `observeResources`, `executeArchive`, `merge`,
+`persistArchiveReceipt`, and `sourceEdgeInventory` by extracting the proven
+handle-bound parser/spill primitives from `compact-v31-executor.ts`; it may not
+coerce Q2 plans into the broadcast-only benchmark schema. Until that file and
+both authenticated corpus receipts exist, `npm run
+data:evidence-v31-production-audit` reports a blocker and no production total
+or family graph can be promoted.
+
+`compact-v31-production-chain-audit.ts` is the required family-handoff entry
+point. It opens, size-checks, hashes, parses, and joins the authorization,
+source manifest, repeatability proof, plan review, every plan, every archive
+receipt, candidate/exact delta chains, both merge receipts, corpus accounting,
+and the eligible-source-edge inventory. Broadcast byte length, ETag, and
+Last-Modified identity come only from the exact tracked proposal and observation
+receipts named by the production authorization; the historical approved source
+manifest does not contain those transport fields. Exact merged edge partitions
+and their `N>=100` eligible derivatives are canonical, sorted, bounded-line
+NDJSON. The audit streams both in lockstep and recomputes eligibility, counts,
+and non-overlapping edge ranges rather than accepting asserted inventory totals.
+A promotion wiring object remains
+`releaseEligible: false`; a Zod assertion by itself is never release evidence.
+
+The current approved Q2 source receipt authorizes filtering through ply 30.
+Compact-v3.1 proposes complete baseline evidence through ply 30 plus adaptive
+candidate evidence through ply 100. A named reviewer must approve that expanded
+replay scope in the separate, content-addressed
+`compact-v31-q2-adaptive-replay.authorization.json` receipt before production
+plan review or execution. The historical source receipt remains unchanged. The
+readiness audit deliberately reports
+`q2-adaptive-ply100-scope-not-approved`; code must not rewrite the historical
+approved receipt or infer approval from a production plan.
+
+Hashing exact delta files and a self-consistent exact merge is not proof that the
+latter was derived from the former, and a pooled sample count is not proof of a
+qualifying declared cohort/time-control cell. The deep auditor therefore performs
+an independent bounded k-way merge over the canonically sorted exact delta
+NDJSON. Each edge retains separately keyed rating-system, time-control, and
+rating-band W/D/L cells. The verifier holds only one row per archive plus one
+edge's cells, recomputes all counters, and byte-compares every exact merged row
+and receipt row count. A fixture that changes a self-consistent merged value is
+rejected. Readiness cannot consume a corpus receipt unless this traversal passes.
+
+The sole production-readiness builder requires identity receipts for both v3.1
+corpora. It deep-audits them, joins release ID and exact source-manifest bytes,
+and requires legacy family-promotion projections to match the independently
+verified records, accounting, and exact-merge hashes. The emitted readiness
+document stores each corpus receipt, exact merge, source-edge inventory, and
+eligible-edge count; the historical compact-v3 projection alone can no longer
+authorize a candidate.
 
 The comparison refuses different source/configuration bindings, noncanonical
 receipt bytes, reused run identities, changed receipt hashes, or any difference
@@ -794,6 +912,25 @@ The approved source digest does not make candidates release-ready. Promotion
 also requires the completed v3 graph association and Stockfish proof at every
 learner node. Neither exists for an official shipped puzzle subset, so no
 current puzzle count may be presented as production content.
+
+The offline Stockfish campaign runner consumes a deliberately bounded subset:
+the candidate manifest is rejected before its shard is opened when it declares
+more than 10,000 candidates or more than 64 MiB of compressed bytes. The
+decoded gzip limit is 256 MiB, and duplicate IDs, missing records, extra
+records, malformed lines, and truncated gzip all fail before Stockfish starts.
+The campaign receipt is mandatory (`--campaign`); its exact handle-bound bytes,
+release, source manifest, provision receipt, executable, NNUE set, and fixed
+1-thread/128-MiB/5-MultiPV/250,000-node configuration are reopened and
+verified against the candidate evidence. Proof-inventory shard IDs hash the
+deterministic gzip bytes that are shipped (not the uncompressed JSON), with at
+most 256 puzzles per shard and deterministic rollover for larger family sets.
+
+The family-promotion consumer independently limits each gzip resource to 64
+MiB stored and 256 MiB decoded, and accepts only gzip JSON resources whose
+receipt digest matches the exact bytes read. It revalidates every puzzle shard
+against the complete proof inventory, exact family ownership, legal replay,
+unique puzzle IDs, and the compressed content-addressed shard digest before a
+promotion receipt can pass.
 
 The tactical UI review harness uses strictly validated synthetic records to
 exercise resource states, special moves, forced replies, and separate progress.

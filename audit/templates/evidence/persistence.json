@@ -9,5 +9,11 @@
   "evidence": [],
   "limitations": [
     "An untested storage adapter cannot be enabled in production."
+  ],
+  "requiredChecks": [
+    "Downloaded artifact completes browsing, included family drills, included puzzles, statistics, and validated JSON export/import with networking disabled",
+    "In-memory outage queue preserves review, family-coverage, cursor, settings, and puzzle events across retry without duplication and offers export before navigation",
+    "Cloud, supported Artifact, memory, and JSON repository adapters cover migration, rejection, quota, conflict, replacement, deletion, and recovery behavior in their supported environments",
+    "No progress, credentials, authored content, or connection metadata is written to localStorage or IndexedDB"
   ]
 }

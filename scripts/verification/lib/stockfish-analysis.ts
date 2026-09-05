@@ -11,6 +11,7 @@ import {
 import type { UciAnalysis } from './uci-engine.ts';
 
 export interface StockfishAnalysisAdapter {
+  resetForPosition(timeoutMs?: number): Promise<void>;
   setMultiPv(value: 1 | 5): void;
   analyze(options: {
     fen: string;
@@ -182,6 +183,7 @@ async function independentlyAnalyzeMove(
   fen: string,
   moveUci: string,
 ): Promise<EnginePrincipalVariation> {
+  await engine.resetForPosition();
   engine.setMultiPv(1);
   try {
     const result = await engine.analyze({
@@ -206,6 +208,7 @@ export async function analyzeDecisionNode(
 ): Promise<AnalyzedDecisionNode> {
   validateDecisionNode(line, nodeIndex);
   const node = line.decisionNodes[nodeIndex] as VerificationLineInput['decisionNodes'][number];
+  await engine.resetForPosition();
   engine.setMultiPv(5);
   const root = await engine.analyze({ fen: node.fen, nodes: CONFIG.nodes });
   const best = root.variations.find((variation) => variation.multipv === 1) ?? root.variations[0];

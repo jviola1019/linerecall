@@ -512,6 +512,96 @@ export interface FamilyBranchRouteSummaryV1 {
 }
 
 /**
+ * A named-variation scope resolved from signed memberships. The group key is
+ * the complete branch hierarchy (not merely the leaf label), so identical
+ * labels under different parents remain separate. `id` is the stable smallest
+ * branch ID in the group; `branchIds` keeps old journal IDs resolvable after
+ * duplicate display labels are coalesced.
+ */
+export interface FamilyBranchGroupV1 {
+  key: string
+  id: string
+  label: string
+  branchIds: string[]
+  pathIdsByPack: Readonly<Record<string, string[]>>
+  pathKeys: string[]
+}
+
+export function resolveFamilyBranchGroups(input: {
+  manifest: unknown
+  side: 'white' | 'black'
+}): FamilyBranchGroupV1[] {
+  const manifest = OpeningFamilyManifestV1Schema.parse(input.manifest)
+  const sidePackIds = new Set(
+    manifest.packRefs.filter(({ side }) => side === input.side).map(({ packId }) => packId),
+  )
+  const branchesById = new Map(manifest.branches.map((branch) => [branch.id, branch]))
+  const hierarchyName = (branchId: string): string => {
+    const names: string[] = []
+    const visited = new Set<string>()
+    let currentId: string | undefined = branchId
+    while (currentId && !visited.has(currentId)) {
+      visited.add(currentId)
+      const branch = branchesById.get(currentId)
+      if (!branch) break
+      names.unshift(branch.canonicalName)
+      currentId = branch.parentId
+    }
+    return names.join(' / ')
+  }
+  const groups = new Map<string, {
+    label: string
+    branchIds: Set<string>
+    pathIdsByPack: Map<string, Set<string>>
+  }>()
+  for (const membership of manifest.pathMemberships) {
+    if (!sidePackIds.has(membership.packId)) continue
+    const branchIds = new Set([membership.primaryBranchId, ...membership.secondaryBranchIds])
+    for (const branchId of branchIds) {
+      const label = hierarchyName(branchId)
+      const key = normalizedIdentity(label)
+      const group = groups.get(key) ?? {
+        label,
+        branchIds: new Set<string>(),
+        pathIdsByPack: new Map<string, Set<string>>(),
+      }
+      group.branchIds.add(branchId)
+      const pathIds = group.pathIdsByPack.get(membership.packId) ?? new Set<string>()
+      pathIds.add(membership.pathId)
+      group.pathIdsByPack.set(membership.packId, pathIds)
+      groups.set(key, group)
+    }
+  }
+  return [...groups.entries()]
+    .map(([key, group]) => {
+      const branchIds = [...group.branchIds].sort((left, right) => left.localeCompare(right, 'en'))
+      const pathIdsByPack = Object.fromEntries(
+        [...group.pathIdsByPack.entries()].map(([packId, pathIds]) => [packId, [...pathIds]]),
+      )
+      const pathKeys = Object.entries(pathIdsByPack).flatMap(([packId, pathIds]) =>
+        pathIds.map((pathId) => `${packId}\0${pathId}`))
+      return {
+        key,
+        id: branchIds[0]!,
+        label: group.label,
+        branchIds,
+        pathIdsByPack,
+        pathKeys,
+      }
+    })
+    .sort((left, right) =>
+      right.pathKeys.length - left.pathKeys.length
+      || left.label.localeCompare(right.label, 'en')
+      || left.id.localeCompare(right.id, 'en'))
+}
+
+export function resolveFamilyBranchGroup(
+  input: { manifest: unknown; side: 'white' | 'black'; branchId: string },
+): FamilyBranchGroupV1 | undefined {
+  return resolveFamilyBranchGroups(input).find(({ branchIds }) => branchIds.includes(input.branchId))
+}
+
+/**
  * Verifies the manifest-to-graph ownership boundary synchronously after a
  * content-addressed loader has completed the graph's deeper semantic audit.
  * Runtime consumers must not infer ownership from graph labels.
@@ -604,12 +694,25 @@ export function summarizeFamilyBranchRoutes(input: {
     }
   }
 
+  const hierarchyName = (branchId: string): string => {
+    const names: string[] = []
+    const visited = new Set<string>()
+    let current = branchById.get(branchId)
+    while (current && !visited.has(current.id)) {
+      visited.add(current.id)
+      names.unshift(current.canonicalName)
+      current = current.parentId ? branchById.get(current.parentId) : undefined
+    }
+    return names.join(' / ')
+  }
+
   for (const membership of memberships) {
     const branch = branchById.get(membership.primaryBranchId)!
     const fact = pathFacts.get(`${membership.packId}\0${membership.pathId}`)!
-    const key = normalizedIdentity(branch.canonicalName)
+    const canonicalName = hierarchyName(branch.id)
+    const key = normalizedIdentity(canonicalName)
     const group = groups.get(key) ?? {
-      canonicalName: branch.canonicalName,
+      canonicalName,
       aliases: new Set<string>(),
       branchIds: new Set<string>(),
       pathIds: [],

@@ -29,7 +29,7 @@ The current generated catalog records:
 
 | Measurement | Review value |
 | --- | ---: |
-| Primary families | 149 |
+| Proposed primary families | 149 |
 | Assigned taxonomy rows | 3,790 |
 | Caro–Kann rows | 110 |
 | Sicilian Defence rows | 388 |
@@ -41,7 +41,8 @@ review catalog cannot supply an “all variations” total or qualify a family a
 Core.
 
 Candidate names are derived at build time from the pinned
-`Opening family: Variation` convention and a reviewed override registry.
+`Opening family: Variation` convention and a build-time override registry.
+The overrides remain proposals until the editorial ledger is approved.
 Overrides cover aliases, renamed systems, ambiguous headings, and the required
 Caro–Kann, Sicilian Defence, and Ruy Lopez ECO ownership ranges. Runtime code
 never splits display text to recover a family.
@@ -56,6 +57,62 @@ Build validation fails when:
   C60–C99; or
 - a checksum reference, release ID, or content-addressed path crosses release
   boundaries.
+
+## Editorial review controls
+
+`data/manifests/opening-family-editorial.proposal.json` is the complete
+machine-generated worksheet. Every one of its 149 decisions is deliberately
+`pending`; it covers all 3,790 taxonomy rows exactly once and is not eligible
+for promotion. Regenerating the review catalog also regenerates
+`audit/generated/opening-family-editorial.audit.json`. This unreviewed machine
+report stays out of source control. The audit reconciles the
+worksheet to the pinned taxonomy rows and prepares a deterministic human-review
+queue. It never chooses `keep`, `merge`, `split`, or `nest` and never supplies a
+reviewer identity.
+
+The current queue surfaces these review prompts:
+
+| Deterministic prompt | Families |
+| --- | ---: |
+| Accepted/Declined roots | 15 |
+| “with …” qualified roots | 9 |
+| lexical child candidates | 23 |
+| lexical umbrella candidates | 16 |
+| generic roots | 2 |
+| single-row ownership | 39 |
+| ownership of at least 100 taxonomy rows | 9 |
+| discontinuous ECO ownership | 25 |
+| cross-volume ECO ownership | 14 |
+| Defense/Defence orthography choice | 57 |
+| encoding artifacts | 0 |
+
+These counts overlap: a family can have more than one prompt. A prompt is not
+proof that the proposed grouping is wrong. For example, an Accepted opening
+may legitimately remain top-level, while a “with …” heading may be better
+nested. That is a chess-editorial judgment, not a string-processing decision.
+
+Every family audit entry contains its exact taxonomy-row count, ECO ownership,
+source roots, representative source rows, related lexical candidates, and a
+review checklist. Three source slots distinguish the pinned proposal source,
+an independent chess reference, and relationship or historical evidence. The
+current proposal supplies the pinned Lichess source but no independent source,
+so all 149 families remain explicitly incomplete on that requirement.
+
+A production editorial ledger therefore requires a named chess or taxonomy
+editor to:
+
+1. inspect every candidate's complete row ownership, not only the five examples
+   included for triage;
+2. decide keep, merge, split, or nest and record resulting family IDs;
+3. confirm canonical spelling, aliases, parent placement, and historical links;
+4. cite independent chess evidence and explain the decision;
+5. keep name-based relationships separate from exact-EPD transpositions; and
+6. record reviewer, role, timestamp, and rationale for every decision.
+
+The schema still rejects incomplete review, duplicate ownership, ambiguous
+aliases, missing parents, cycles, and decisions that name absent result
+families. Machine validation can establish those invariants; it cannot replace
+the named human review or legal/trademark assessment.
 
 ## Versioned contracts
 
@@ -91,7 +148,18 @@ loadPuzzleShard(shardRef)
 The embedded schema-v2 adapter fails closed for those operations. It does not
 convert a shallow legacy line into a family graph.
 
-## Compact-v3 construction handoff
+## Corpus-to-graph handoff
+
+Compact-v3.1 is the active ingestion design. Its immutable archive deltas and
+exact merges are checked independently before family eligibility is derived.
+The current exact projection cannot supply the graph builder's complete
+position reach, month, and trained-side cohort statistics. Its multi-cell
+eligibility inputs therefore fail closed. The missing fields and adapter work
+are listed in [Family graph construction](data/FAMILY_GRAPH_V3.md).
+
+The following SQLite construction path is the implemented v3 predecessor. It
+remains useful for bounded regression fixtures, but a v3.1 eligibility receipt
+cannot be passed to it as though the formats were interchangeable.
 
 Production family resources are not inferred from the review catalog. The v3
 builder starts at a reviewed legal EPD root and a strict family/side pack spec,
@@ -168,7 +236,9 @@ Training starts from one promoted family and one learner side:
    without a top-N branch cutoff.
 3. Traverse the selected path by legal graph edges.
 4. Infer Good for first-try book recall, Hard after a hint or accepted playable
-   alternative, and Again after an error or reveal.
+   alternative, and Again after an error or reveal. A reveal leaves the board
+   in place until the learner enters the correction. Due moves graded Again
+   return at the end; warm-ups do not create review events.
 5. Persist the first completion of the path once.
 6. Show a short, non-blocking completion cue and start the next unfinished
    path.
@@ -211,6 +281,15 @@ Ranking affects order, not visibility. A 1,000-path in-memory session guard
 partitions larger families into bounded batches while keeping the authoritative
 due-card set intact. A starvation guard ensures later and less common eligible
 paths are not permanently skipped.
+
+Ready Repertoire rows offer direct White and Black practice actions. Each
+action starts or resumes full-family coverage for that side. The row itself
+opens the syllabus. A current summary marked unknown, loading, error, or
+corrupt cannot be overridden by an older ready graph cached in memory.
+
+The training header reports moves played in the current line. Family coverage
+counts completed paths, while the review log derives recall and due dates.
+Finishing a corrected line never implies that its moves were recalled cleanly.
 
 An alternate audited move transfers the run only when its legal edge reaches a
 known graph node with a real continuation. The new path joins the active
@@ -284,6 +363,21 @@ Tactical progress is also separate. Puzzle solves, hints, errors, elapsed time,
 and abandonment cannot change opening recall mastery.
 
 ## Current release posture
+
+Readiness requires all 149 reviewed proposals, both side dispositions for each
+final canonical family, and a strict majority of final canonical families with
+validated training paths. The three required regression families must also
+pass. These requirements apply to every release ID. Synthetic fixtures cannot
+bypass them. Readiness re-derives the
+family root and edge inventories from the verified merged source partitions;
+matching a source hash in a separately written inventory is insufficient.
+
+Browser review screenshots have a companion receipt with the source digest,
+the complete served-build digest, screenshot digest, viewport, theme, motion
+preferences, route, and synthetic-review label. `npm run test:e2e:review`
+rejects a run if source or served bytes change during it. These receipts prove
+fixture behavior only. Full axe findings, including incomplete contrast
+checks, are retained for the required manual review.
 
 The source architecture is not evidence that production repertoire content
 exists. Promotion remains blocked by:

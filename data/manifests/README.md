@@ -9,6 +9,11 @@ Each input has a separate approval boundary:
 
 - `taxonomy.source.json` approves the pinned Lichess opening-name taxonomy
   under CC0-1.0.
+- `taxonomy.inventory.v1.json` embeds the exact five approved TSV byte streams
+  and the 3,790 rows re-derived from them. It binds every stable line ID, ECO,
+  name, PGN/UCI move sequence, source row/digest, and mechanical 149-family
+  proposal owner. Family promotion replays this derivation and rejects an
+  unknown, missing, duplicated, altered, or reassigned candidate row.
 - `broadcasts.source.json` approves the exact 78 official monthly broadcast
   archives from 2020-01 through 2026-06 under CC BY-SA 4.0. Derived statistics
   retain attribution, a change notice, and share-alike terms. Its historical
@@ -53,6 +58,21 @@ approval:
   resource envelope: one archive at a time, at least 8 GiB available memory,
   at most 6 GiB worker RSS, no source staging, and at least 10 GiB free disk
   after declared delta, merge, and final-state bounds.
+- `compact-v31/bootstrap-inputs.receipt.json` preserves and hashes the exact
+  public proposal and observation bytes named by the benchmark authorization,
+  so an authorized plan bundle is reproducible from a clean checkout.
+- `compact-v31-production.authorization.json` is a pending production decision,
+  not permission. Q2 execution, production replay, promotion, and release are
+  all false until two clean broadcast benchmarks compare byte-identically and
+  a named reviewer approves the measured bounds and exact corpus inputs. It
+  also names the exact broadcast proposal and observation receipts that supply
+  byte length and HTTP transport identity missing from the historical approved
+  broadcast manifest. Those benchmark inputs are not production approval by
+  themselves.
+- `compact-v31-q2-adaptive-replay.authorization.json` is the separate pending
+  decision for adaptive candidate replay from ply 31 through ply 100. It keeps
+  the historical ply-30 source receipt immutable and cannot authorize work until
+  a named reviewer approves the expanded filtering scope.
 - `opening-family-editorial.proposal.json` is a deterministic review worksheet
   for all 149 mechanically proposed families and all 3,790 primary taxonomy
   rows. Every decision is `pending` and `promotionEligible` is false. It is not

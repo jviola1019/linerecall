@@ -79,6 +79,13 @@ async function createSyntheticGraph(lines: readonly FixtureLine[]): Promise<Repe
     incoming.set(toNodeId, [...(incoming.get(toNodeId) ?? []), edgeId])
   }
 
+  const bestMoveByLearnerEpd = new Map<string, string>()
+  for (const edge of [...rawEdges.values()].sort((left, right) => left.uci.localeCompare(right.uci, 'en'))) {
+    if (edge.fromEpd.split(' ')[1] === 'w' && !bestMoveByLearnerEpd.has(edge.fromEpd)) {
+      bestMoveByLearnerEpd.set(edge.fromEpd, edge.uci)
+    }
+  }
+
   const edges: RepertoireEdge[] = [...rawEdges.values()].map((edge) => {
     const toNodeId = nodeIds.get(edge.toEpd)!
     const hasKnownContinuation = (outgoing.get(toNodeId)?.length ?? 0) > 0
@@ -94,6 +101,9 @@ async function createSyntheticGraph(lines: readonly FixtureLine[]): Promise<Repe
       acceptedBookTransposition: (incoming.get(toNodeId)?.length ?? 0) > 1 && hasKnownContinuation,
       evidence: createSyntheticRepertoireEvidence({
         uci: edge.uci,
+        ...(bestMoveByLearnerEpd.get(edge.fromEpd) === undefined
+          ? {}
+          : { bestUci: bestMoveByLearnerEpd.get(edge.fromEpd)! }),
         trainedSide: 'white',
         ...(edge.uci === 'g1f3' ? { moveN: 700, reachN: 1_000 } : { moveN: 600, reachN: 2_000 }),
       }),

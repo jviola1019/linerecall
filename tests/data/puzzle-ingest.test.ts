@@ -9,11 +9,11 @@ import {
   parsePuzzleCsvLine,
   parsePuzzleSourceLine,
   puzzleCandidateFromRow,
-  PUZZLE_ENGINE_SETTINGS_SHA256,
   PUZZLE_COLUMNS,
   replayPuzzleSolution,
   VerifiedPuzzleRecordSchema,
 } from '../../scripts/data/puzzle-contracts.ts'
+import { createSyntheticPuzzleEngineProof } from '../fixtures/synthetic-puzzle-engine-proof.ts'
 import { streamPuzzleCsvRecords } from '../../scripts/data/puzzle-csv-stream.ts'
 import {
   LichessPuzzleManifestSchema,
@@ -163,22 +163,14 @@ test('release eligibility requires a passing exact Stockfish proof for every lin
   })
   const pendingFields = (({ engineStatus: _engineStatus, releaseEligible: _releaseEligible, ...rest }) => rest)(candidate)
   const node = candidate.learnerNodes[0]!
-  const proof = {
+  const proof = createSyntheticPuzzleEngineProof({
     learnerIndex: node.learnerIndex,
     positionEpd: node.epd,
     expectedMoveUci: node.expectedMoveUci,
-    engineBestMoveUci: node.expectedMoveUci,
-    centipawnLoss: 0,
-    mateConsistent: true,
-    status: 'pass' as const,
-    engine: 'Stockfish 18' as const,
     engineSha256: '1'.repeat(64),
     nnueSha256: '2'.repeat(64),
-    settingsSha256: PUZZLE_ENGINE_SETTINGS_SHA256,
-    settings: { threads: 1 as const, hashMb: 128 as const, multiPv: 5 as const, nodes: 250_000 as const },
-    principalVariationUci: [node.expectedMoveUci],
     analyzedAt: '2026-07-16T12:00:00.000Z',
-  }
+  })
   assert.equal(VerifiedPuzzleRecordSchema.safeParse({
     ...pendingFields,
     engineStatus: 'verified',
@@ -191,7 +183,15 @@ test('release eligibility requires a passing exact Stockfish proof for every lin
     engineChecks: [],
     releaseEligible: true,
   }).success, false)
-  const failedProof = { ...proof, centipawnLoss: 100, status: 'fail' as const }
+  const failedProof = createSyntheticPuzzleEngineProof({
+    learnerIndex: node.learnerIndex,
+    positionEpd: node.epd,
+    expectedMoveUci: node.expectedMoveUci,
+    engineSha256: '1'.repeat(64),
+    nnueSha256: '2'.repeat(64),
+    analyzedAt: '2026-07-16T12:00:00.000Z',
+    centipawnLoss: 100,
+  })
   assert.equal(VerifiedPuzzleRecordSchema.safeParse({
     ...pendingFields,
     engineStatus: 'quarantined',
@@ -203,5 +203,32 @@ test('release eligibility requires a passing exact Stockfish proof for every lin
     engineStatus: 'verified',
     engineChecks: [failedProof],
     releaseEligible: false,
+  }).success, false)
+
+  const tooFewNodes = structuredClone(proof)
+  tooFewNodes.rootVariations[0]!.nodes = 249_999
+  assert.equal(VerifiedPuzzleRecordSchema.safeParse({
+    ...pendingFields, engineStatus: 'verified', engineChecks: [tooFewNodes], releaseEligible: true,
+  }).success, false)
+
+  const nonExactBound = structuredClone(proof) as unknown as {
+    rootVariations: Array<{ bound: string }>
+  }
+  nonExactBound.rootVariations[0]!.bound = 'lower'
+  assert.equal(VerifiedPuzzleRecordSchema.safeParse({
+    ...pendingFields, engineStatus: 'verified', engineChecks: [nonExactBound], releaseEligible: true,
+  }).success, false)
+
+  const illegalPv = structuredClone(proof)
+  illegalPv.rootVariations[0]!.movesUci = ['a1a8']
+  illegalPv.principalVariationUci = ['a1a8']
+  assert.equal(VerifiedPuzzleRecordSchema.safeParse({
+    ...pendingFields, engineStatus: 'verified', engineChecks: [illegalPv], releaseEligible: true,
+  }).success, false)
+
+  const callerConclusion = structuredClone(proof)
+  callerConclusion.centipawnLoss = 20
+  assert.equal(VerifiedPuzzleRecordSchema.safeParse({
+    ...pendingFields, engineStatus: 'verified', engineChecks: [callerConclusion], releaseEligible: true,
   }).success, false)
 })

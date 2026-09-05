@@ -7,6 +7,7 @@ import type {
   FamilyCoverageEventV1,
   FamilyTrainingCursorV1,
 } from '../../src/domain/opening-family.ts'
+import { resolveFamilyBranchGroups } from '../../src/domain/opening-family.ts'
 import type { FamilyCoverageGenerationV1 } from '../../src/domain/family-training-journal.ts'
 import reviewFamilyCatalog from '../../src/generated/review-family-catalog.json' with { type: 'json' }
 import { validateReviewOpeningFamilyCatalog } from '../../src/data/review-family-catalog.ts'
@@ -57,6 +58,73 @@ function completion(options: {
 }
 
 describe('family coverage scope reconstruction', () => {
+  test('resolves duplicate hierarchy labels into one stable all-route group', async () => {
+    const promotion = await createSyntheticFamilyPromotion(family, { packCount: 2 })
+    const groups = resolveFamilyBranchGroups({ manifest: promotion.manifest, side: 'white' })
+    assert.equal(groups.length, 1)
+    assert.equal(groups[0]!.id, [...groups[0]!.branchIds].sort((a, b) => a.localeCompare(b, 'en'))[0])
+    assert.equal(groups[0]!.branchIds.length, 4)
+    assert.equal(groups[0]!.pathKeys.length, 4)
+    assert.equal(Object.values(groups[0]!.pathIdsByPack).flat().length, 4)
+  })
+
+  test('rejects a complete bound pack when another side pack is still unbound', async () => {
+    const promotion = await createSyntheticFamilyPromotion(family, { packCount: 2 })
+    const first = promotion.graphs[0]!
+    const second = promotion.graphs[1]!
+    // A named group covers the first pack only; this is genuinely ambiguous
+    // with a full-family run that has not reached the second pack yet.
+    for (const membership of promotion.manifest.pathMemberships.filter(({ packId }) => packId === second.pack.id)) {
+      promotion.manifest.branches.find(({ id }) => id === membership.primaryBranchId)!.canonicalName = 'Other variation'
+    }
+    const generation: FamilyCoverageGenerationV1 = {
+      releaseId: promotion.manifest.releaseId,
+      familyId: family.id,
+      side: 'white',
+      generationId: '90000000-0000-4000-8000-000000000001',
+      generationOrdinal: 0,
+      packCycleIds: { [first.pack.id]: `${first.pack.id}::coverage:0` },
+    }
+    assert.throws(() => restoreFamilyCoverageScope({
+      manifest: promotion.manifest,
+      side: 'white',
+      generation,
+      packs: [first, second].map((graph) => ({
+        packId: graph.pack.id,
+        pathIds: graph.paths.map(({ id }) => id),
+      })),
+      cursors: [cursor({
+        releaseId: promotion.manifest.releaseId,
+        familyId: family.id,
+        packId: first.pack.id,
+        cycleOrdinal: 0,
+        pendingPathIds: first.paths.map(({ id }) => id),
+      })],
+      coverageEvents: [],
+    }), /ambiguous between full-family and named-branch/u)
+  })
+
+  test('keeps same leaf names under distinct parents separate and rejects invalid aliases', async () => {
+    const promotion = await createSyntheticFamilyPromotion(family, { packCount: 1 })
+    const manifest = structuredClone(promotion.manifest)
+    const first = manifest.branches[0]!
+    const second = manifest.branches[1]!
+    manifest.branches.push(
+      { schemaVersion: 1, id: 'parent-a', familyId: family.id, canonicalName: 'Parent A', aliases: [] },
+      { schemaVersion: 1, id: 'parent-b', familyId: family.id, canonicalName: 'Parent B', aliases: [] },
+    )
+    first.parentId = 'parent-a'
+    second.parentId = 'parent-b'
+    first.canonicalName = 'Shared leaf'
+    second.canonicalName = 'Shared leaf'
+    const groups = resolveFamilyBranchGroups({ manifest, side: 'white' })
+    assert.equal(groups.length, 2)
+    assert.deepEqual(new Set(groups.map(({ label }) => label)), new Set(['Parent A / Shared leaf', 'Parent B / Shared leaf']))
+    const invalid = structuredClone(manifest)
+    invalid.branches[0]!.aliases = [invalid.branches[0]!.canonicalName]
+    assert.throws(() => resolveFamilyBranchGroups({ manifest: invalid, side: 'white' }), /Canonical name and aliases/u)
+  })
+
   test('restores one cross-pack named branch and preserves exact completed path keys', async () => {
     const promotion = await createSyntheticFamilyPromotion(family, { packCount: 2 })
     const manifest = structuredClone(promotion.manifest)
@@ -168,7 +236,7 @@ describe('family coverage scope reconstruction', () => {
     }), /more than one named branch/u)
   })
 
-  test('fails closed when a saved pack selection is both full-family and a named branch', async () => {
+  test('restores a globally identical named group as full-family coverage', async () => {
     const promotion = await createSyntheticFamilyPromotion(family, { packCount: 1 })
     const manifest = structuredClone(promotion.manifest)
     const graph = promotion.graphs[0]!
@@ -184,7 +252,7 @@ describe('family coverage scope reconstruction', () => {
       generationOrdinal: 0,
       packCycleIds: { [graph.pack.id]: `${graph.pack.id}::coverage:0` },
     }
-    assert.throws(() => restoreFamilyCoverageScope({
+    assert.equal(restoreFamilyCoverageScope({
       manifest,
       side: 'white',
       generation,
@@ -197,7 +265,7 @@ describe('family coverage scope reconstruction', () => {
         pendingPathIds: graph.paths.map(({ id }) => id),
       })],
       coverageEvents: [],
-    }), /ambiguous between full-family and named-branch/u)
+    }).kind, 'full')
   })
 
   test('rejects corrupt generation, pack, cursor, and completion boundaries', async () => {

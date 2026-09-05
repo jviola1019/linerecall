@@ -11,6 +11,7 @@ import {
 } from '../../src/domain/repertoire.ts'
 import { EpdSchema, UciMoveSchema } from '../../src/domain/opening-data.ts'
 
+export const MAXIMUM_AUDITED_FAMILY_PACKS = 10_000
 export const FAMILY_ENGINE_CAMPAIGN_SCHEMA_VERSION = 1 as const
 export const FAMILY_ENGINE_SETTINGS = Object.freeze({
   threads: 1 as const,
@@ -82,7 +83,7 @@ export const FamilyEngineCampaignRequestV1Schema = z.object({
     multiPv: z.literal(5),
     nodes: z.literal(250_000),
   }).strict(),
-  candidatePacks: z.array(ImmutableJsonReceiptV1Schema).min(1).max(128),
+  candidatePacks: z.array(ImmutableJsonReceiptV1Schema).min(1).max(MAXIMUM_AUDITED_FAMILY_PACKS),
 }).strict().superRefine((request, context) => {
   const paths = request.candidatePacks.map(({ path }) => path)
   if (new Set(paths).size !== paths.length) {
@@ -105,6 +106,17 @@ export const FamilyEnginePrincipalVariationV1Schema = z.object({
   movesUci: z.array(UciMoveSchema).min(1).max(64),
 }).strict()
 
+const FamilyEngineCandidateObservationV1Schema = z.object({
+  searchMode: z.enum(['root-multipv', 'forced-search']),
+  variation: FamilyEnginePrincipalVariationV1Schema,
+}).strict()
+
+function scoreAsEvaluation(score: z.infer<typeof EngineScoreV1Schema>) {
+  return score.kind === 'centipawn'
+    ? { kind: 'centipawn' as const, value: score.value, unit: 'centipawn' as const, perspective: 'trained-side' as const }
+    : { kind: 'mate' as const, value: score.value, unit: 'signed-plies-to-mate' as const, perspective: 'trained-side' as const }
+}
+
 export const FamilyEngineNodeAnalysisV1Schema = z.object({
   positionId: PositionIdSchema,
   epd: EpdSchema,
@@ -115,6 +127,7 @@ export const FamilyEngineNodeAnalysisV1Schema = z.object({
   edgeChecks: z.array(z.object({
     toEpd: EpdSchema,
     cacheKey: Sha256Schema,
+    observation: FamilyEngineCandidateObservationV1Schema,
     check: RepertoireEngineCheckSchema,
   }).strict()).min(1).max(256),
 }).strict().superRefine((node, context) => {
@@ -130,6 +143,32 @@ export const FamilyEngineNodeAnalysisV1Schema = z.object({
   }
   if (new Set(node.edgeChecks.map(({ check }) => check.analyzedMoveUci)).size !== node.edgeChecks.length) {
     context.addIssue({ code: 'custom', path: ['edgeChecks'], message: 'Each candidate move must have one exact edge check' })
+  }
+  if (!best) return
+  for (const [index, edge] of node.edgeChecks.entries()) {
+    const { observation, check } = edge
+    const variation = observation.variation
+    const matchingRoot = node.topVariations.find(({ movesUci }) => movesUci[0] === check.analyzedMoveUci)
+    if (variation.movesUci[0] !== check.analyzedMoveUci) {
+      context.addIssue({ code: 'custom', path: ['edgeChecks', index, 'observation'], message: 'Observed candidate PV must begin with the analyzed move' })
+    }
+    if (observation.searchMode === 'root-multipv') {
+      if (edge.cacheKey !== node.rootCacheKey || matchingRoot === undefined
+        || JSON.stringify(variation) !== JSON.stringify(matchingRoot)) {
+        context.addIssue({ code: 'custom', path: ['edgeChecks', index, 'observation'], message: 'Root-MultiPV observation must be the exact matching root line and cache identity' })
+      }
+    } else if (variation.multipv !== 1 || edge.cacheKey === node.rootCacheKey || matchingRoot !== undefined) {
+      context.addIssue({ code: 'custom', path: ['edgeChecks', index, 'observation'], message: 'Forced-search observation must be an independent exact MultiPV-1 line for a move absent from the root lines' })
+    }
+    if (
+      check.bestMoveUci !== node.bestMoveUci
+      || JSON.stringify(check.bestEvaluation) !== JSON.stringify(scoreAsEvaluation(best.score))
+      || JSON.stringify(check.moveEvaluation) !== JSON.stringify(scoreAsEvaluation(variation.score))
+      || JSON.stringify(check.bestPrincipalVariationUci) !== JSON.stringify(best.movesUci)
+      || JSON.stringify(check.movePrincipalVariationUci) !== JSON.stringify(variation.movesUci)
+    ) {
+      context.addIssue({ code: 'custom', path: ['edgeChecks', index, 'check'], message: 'Engine check must be the exact deterministic projection of its recorded search observations' })
+    }
   }
 })
 
@@ -185,11 +224,13 @@ export const FamilyEngineCampaignProofInventoryV1Schema = z.object({
     learnerNodeCount: z.number().int().positive().max(100_000),
     candidateEdgeCount: z.number().int().positive().max(200_000),
     quarantinedEdgeCount: z.number().int().nonnegative().max(200_000),
-  }).strict()).min(1).max(128),
+  }).strict()).min(1).max(MAXIMUM_AUDITED_FAMILY_PACKS),
   coverage: z.object({
-    candidatePacks: z.number().int().positive().max(128),
+    candidatePacks: z.number().int().positive().max(MAXIMUM_AUDITED_FAMILY_PACKS),
     uniqueLearnerPositions: z.number().int().positive().max(100_000),
     learnerNodeMemberships: z.number().int().positive().max(12_800_000),
+    rootSearchesRepeated: z.number().int().positive().max(12_800_000),
+    rootRepeatabilityMismatches: z.literal(0),
     expectedEdgeProofs: z.number().int().positive().max(25_600_000),
     emittedEdgeProofs: z.number().int().positive().max(25_600_000),
     missingEdgeProofs: z.literal(0),
@@ -202,6 +243,9 @@ export const FamilyEngineCampaignProofInventoryV1Schema = z.object({
   }
   if (inventory.coverage.expectedEdgeProofs !== inventory.coverage.emittedEdgeProofs) {
     context.addIssue({ code: 'custom', path: ['coverage'], message: 'Every candidate learner edge must have one emitted proof' })
+  }
+  if (inventory.coverage.rootSearchesRepeated !== inventory.coverage.learnerNodeMemberships) {
+    context.addIssue({ code: 'custom', path: ['coverage', 'rootSearchesRepeated'], message: 'Every emitted learner node must have an independent repeated root search' })
   }
   for (const key of [
     inventory.packs.map(({ packId }) => packId),
@@ -234,7 +278,9 @@ export const FamilyEnginePromotionReceiptV1Schema = z.object({
   nodesPerPosition: z.literal(250_000),
   learnerNodesChecked: z.number().int().positive().max(12_800_000),
   allDrillableLearnerNodesChecked: z.literal(true),
-  candidatePacks: z.number().int().positive().max(128),
+  rootSearchesRepeated: z.number().int().positive().max(12_800_000),
+  rootRepeatabilityMismatches: z.literal(0),
+  candidatePacks: z.number().int().positive().max(MAXIMUM_AUDITED_FAMILY_PACKS),
   expectedEdgeProofs: z.number().int().positive().max(25_600_000),
   emittedEdgeProofs: z.number().int().positive().max(25_600_000),
   missingEdgeProofs: z.literal(0),
@@ -270,6 +316,8 @@ export function deriveFamilyEnginePromotionReceipt(options: {
     nodesPerPosition: inventory.engine.settings.nodes,
     learnerNodesChecked: inventory.coverage.learnerNodeMemberships,
     allDrillableLearnerNodesChecked: true,
+    rootSearchesRepeated: inventory.coverage.rootSearchesRepeated,
+    rootRepeatabilityMismatches: inventory.coverage.rootRepeatabilityMismatches,
     candidatePacks: inventory.coverage.candidatePacks,
     expectedEdgeProofs: inventory.coverage.expectedEdgeProofs,
     emittedEdgeProofs: inventory.coverage.emittedEdgeProofs,

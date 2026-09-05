@@ -126,9 +126,9 @@ describe('accessible chess input', () => {
     await user.click(screen.getByRole('button', { name: 'Play move' }))
     expect(onMove).toHaveBeenCalledWith('g1f3')
     expect(uciForSquareMove('a7', 'a8', 'q')).toBe('a7a8q')
-    expect(['book', 'playable', 'inaccuracy', 'mistake', 'unverified_deviation', 'illegal'].map((status) =>
+    expect(['book', 'playable', 'inaccuracy', 'mistake', 'unverified_deviation', 'illegal', 'solution'].map((status) =>
       moveStatusPresentation(status as Parameters<typeof moveStatusPresentation>[0]).label,
-    )).toEqual(['Book move', 'Playable alternative', 'Inaccuracy', 'Mistake', 'Unverified deviation', 'Illegal move'])
+    )).toEqual(['Book move', 'Playable alternative', 'Inaccuracy', 'Mistake', 'Unverified deviation', 'Illegal move', 'Solution move'])
 
     const promotion = '8/P7/8/8/8/8/7p/4K2k w - - 0 1'
     rerender(<ChessBoard fen={promotion} orientation="black" onMove={onMove} />)
@@ -584,7 +584,7 @@ describe('drill, progress, provenance, and top-level state', () => {
     )
     expect(await screen.findByRole('heading', { name: 'Your opening practice' })).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Repertoire' }))
-    await user.click(screen.getByRole('button', { name: /Caro/u }))
+    await user.click(screen.getByRole('button', { name: /^Caro/u }))
     await user.click(await screen.findByRole('button', { name: 'Practice all variations' }))
     expect(await screen.findByRole('heading', { name: 'Opening practice' })).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Start full opening' })).not.toBeInTheDocument()
@@ -852,7 +852,7 @@ describe('drill, progress, provenance, and top-level state', () => {
     render(<App dataSource={dataSource} />)
     expect(await screen.findByRole('heading', { name: 'Your opening practice' })).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Repertoire' }))
-    await user.click(screen.getByRole('button', { name: /Caro/u }))
+    await user.click(screen.getByRole('button', { name: /^Caro/u }))
     await waitFor(() => expect(loadRepertoirePack).toHaveBeenCalledTimes(2))
     expect(new Set(loadRepertoirePack.mock.calls.map(([ref]) => ref.packId))).toEqual(
       new Set(promotion.manifest.packRefs.map(({ packId }) => packId)),

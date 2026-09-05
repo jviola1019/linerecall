@@ -9,5 +9,11 @@
   "evidence": [],
   "limitations": [
     "This template is a hard release blocker and is not test evidence."
+  ],
+  "requiredChecks": [
+    "Exact hardened candidate across Today, Repertoire, family detail, training, Puzzles, Explore, Progress, and Data routes in Chromium, Firefox, and WebKit",
+    "320, 360, and 390 CSS-pixel phones, tablet, 1440x900 desktop, 200% and 400% zoom, light and dark themes, RTL, forced colors, and reduced motion",
+    "Autonomous same-family variation progression, exact completion counts, manual pacing, alternate paths, board special moves and animation frames, puzzle forced replies, and separate mastery",
+    "Loading, empty, stale, corrupt, offline, rate-limited, retry, remount, Back/Forward, keyboard, pointer, touch, and non-spatial move-picker behavior"
   ]
 }

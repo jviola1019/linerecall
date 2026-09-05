@@ -19,6 +19,7 @@ import {
   graphTrainingPathLearningProgress,
   listGraphTrainingPaths,
   markGraphTrainingHint,
+  markGraphTrainingReveal,
   nextNonemptyGraphTrainingBatch,
   overrideLastGraphTrainingReviewGrade,
   pendingOpponentGraphMove,
@@ -764,18 +765,24 @@ test('an alternate audited root edge switches to its real path and preserves the
   assert.equal(resumed.completedPathIds.filter((pathId) => pathId === fianchettoPath.id).length, 1)
 })
 
-test('incorrect recall requires correction, infers Again, and replays the failed card at session end', async () => {
+for (const failure of ['incorrect move', 'revealed answer'] as const) test(`${failure} requires correction, infers Again, and replays the failed card at session end`, async () => {
   const { adapter } = await adapterFixture()
   const path = listGraphTrainingPaths(adapter)[0]!
   const rootCard = stableRepertoireCardId(adapter.graph.pack.id, adapter.graph.pack.rootNodeId)
   const selection = createExplicitGraphSessionSelection({ adapter, pathIds: [path.id], dueCardIds: [rootCard] })
   let state = createGraphTrainingSession({ adapter, selection })
 
-  state = submitGraphTrainingMove({ adapter, state, moveUci: 'e2e4' })
+  const initialFen = graphTrainingFen(adapter, state)
+  state = failure === 'incorrect move'
+    ? submitGraphTrainingMove({ adapter, state, moveUci: 'e2e4' })
+    : markGraphTrainingReveal(adapter, state)
   assert.equal(state.phase, 'correction_required')
-  assert.equal(state.lastFeedback?.classification, 'unverified')
+  assert.equal(graphTrainingFen(adapter, state), initialFen)
+  if (failure === 'incorrect move') assert.equal(state.lastFeedback?.classification, 'unverified')
+  else assert.equal(state.revealedAnswer, true)
   state = submitGraphTrainingMove({ adapter, state, moveUci: expectedGraphTrainingMoves(adapter, state)[0]!.uci })
   assert.equal(state.lastFeedback?.review?.grade, 'again')
+  assert.equal(state.revealedAnswer, false)
   assert.deepEqual(state.repeatCardIds, [rootCard])
 
   while (state.phase !== 'path_complete') {
@@ -790,6 +797,17 @@ test('incorrect recall requires correction, infers Again, and replays the failed
   assert.equal(replay.activePathId, path.id)
   assert.equal(replay.currentNodeId, adapter.graph.pack.rootNodeId)
   assert.equal(replay.phase, 'awaiting_learner_move')
+})
+
+test('revealing a warm-up position never creates a review or a failed-card repeat', async () => {
+  const { adapter } = await adapterFixture()
+  const selection = createExplicitGraphSessionSelection({ adapter, pathIds: [adapter.graph.paths[0]!.id], dueCardIds: [] })
+  const state = markGraphTrainingReveal(adapter, createGraphTrainingSession({ adapter, selection }))
+  const answered = submitGraphTrainingMove({ adapter, state, moveUci: expectedGraphTrainingMoves(adapter, state)[0]!.uci })
+  assert.equal(answered.lastFeedback?.warmup, true)
+  assert.equal(answered.lastFeedback?.review, null)
+  assert.deepEqual(answered.repeatCardIds, [])
+  assert.equal(markGraphTrainingReveal(adapter, answered), answered)
 })
 
 test('hinted due recall is Hard, opponent moves cannot be applied early, and stale releases fail closed', async () => {
@@ -907,6 +925,17 @@ test('move evidence classes fail closed while a proven playable continuation is 
   const exploratory = submitGraphTrainingMove({ adapter: exploratoryAdapter, state, moveUci: 'g2g3' })
   assert.equal(exploratory.lastFeedback?.classification, 'exploratory')
   assert.equal(exploratory.lastFeedback?.reason, 'insufficient_sample')
+
+  const inaccuracyAdapter = replaceRootEdge(adapter, 'g2g3', (edge) => ({
+    ...edge,
+    role: 'inaccuracy',
+    eligibleForDrill: false,
+  }))
+  const inaccuracy = submitGraphTrainingMove({ adapter: inaccuracyAdapter, state, moveUci: 'g2g3' })
+  assert.equal(inaccuracy.lastFeedback?.classification, 'inaccuracy')
+  assert.equal(inaccuracy.lastFeedback?.reason, 'engine_inaccuracy')
+  assert.equal(inaccuracy.lastFeedback?.accepted, false)
+  assert.equal(inaccuracy.phase, 'correction_required')
 
   const quarantineAdapter = replaceRootEdge(adapter, 'g2g3', (edge) => ({
     ...edge,

@@ -37,6 +37,8 @@ describe('tactical puzzle route', () => {
     expect(screen.getByRole('heading', { level: 1, name: 'Puzzles' })).toBeVisible()
     expect(screen.getByRole('heading', { name: 'Verified puzzles aren’t included in this build yet.' })).toBeVisible()
     expect(screen.queryByText(/Find the repertoire move/u)).not.toBeInTheDocument()
+    expect(screen.getByText('You can still browse the opening reference library.')).toBeVisible()
+    expect(screen.queryByText(/Opening practice.*available/u)).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Browse openings' }))
     await user.click(screen.getByRole('button', { name: 'See puzzle data status' }))
     expect(onBrowseOpenings).toHaveBeenCalledOnce()
@@ -75,6 +77,8 @@ describe('tactical puzzle route', () => {
     await user.click(screen.getByRole('button', { name: 'Play move' }))
     await waitFor(() => expect(onAttempt).toHaveBeenCalledOnce())
     expect(screen.getByRole('status', { name: 'Puzzle status: Solved' })).toBeVisible()
+    expect(screen.getByText('Solution move', { exact: true })).toBeVisible()
+    expect(screen.queryByText('Book move', { exact: true })).not.toBeInTheDocument()
     expect(onAttempt.mock.calls[0]?.[0]).toMatchObject({
       puzzleId: puzzle.puzzleId,
       outcome: 'solved',

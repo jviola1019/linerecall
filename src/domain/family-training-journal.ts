@@ -206,6 +206,32 @@ function logicalCompletionKey(event: FamilyCoverageEventV1): string {
   ].join('\0')
 }
 
+/** Replay durable completion events after a crash between the event and cursor writes. */
+export function reconcileFamilyCursorCompletions(
+  input: FamilyTrainingCursorV1,
+  inputs: readonly FamilyCoverageEventV1[],
+): FamilyTrainingCursorV1 {
+  const cursor = FamilyTrainingCursorV1Schema.parse(input)
+  const packId = cursorPackId(cursor)
+  const selected = new Set([...cursor.completedPathIds, ...cursor.pendingPathIds])
+  const completed = new Set<string>()
+  for (const inputEvent of inputs) {
+    const event = FamilyCoverageEventV1Schema.parse(inputEvent)
+    if (event.releaseId !== cursor.releaseId || event.familyId !== cursor.familyId
+      || event.packId !== packId || event.coverageCycleId !== cursor.coverageCycleId) continue
+    if (!selected.has(event.pathId)) throw new Error('Saved completion is outside the selected family paths')
+    completed.add(event.pathId)
+  }
+  if (cursor.completedPathIds.some((pathId) => !completed.has(pathId))) {
+    throw new Error('Saved cursor completion is missing its append-only event')
+  }
+  return FamilyTrainingCursorV1Schema.parse({
+    ...cursor,
+    completedPathIds: [...cursor.completedPathIds, ...cursor.pendingPathIds.filter((pathId) => completed.has(pathId))],
+    pendingPathIds: cursor.pendingPathIds.filter((pathId) => !completed.has(pathId)),
+  })
+}
+
 function cycleScopeKey(scope: FamilyCoverageCycleScope): string {
   if (scope.side !== 'white' && scope.side !== 'black') {
     throw new Error('Family coverage cycle side must be white or black')

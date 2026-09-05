@@ -16,7 +16,10 @@ import {
   type ImmutableJsonReceiptV1,
 } from '../release/lib/immutable-json-receipt.ts'
 import { readHandleBoundRegularFile } from '../lib/handle-bound-file.ts'
-import { ScidManifestSchema } from '../verification/lib/manifest.ts'
+import {
+  ScidManifestSchema,
+  assertScidProvisionMatchesManifest,
+} from '../verification/lib/manifest.ts'
 import {
   buildScidPositionIndex,
   crosscheckLine,
@@ -86,6 +89,7 @@ export const FamilyScidCampaignReportV1Schema = z.object({
   oracle: z.object({
     repositoryCommit: z.string().regex(/^[a-f0-9]{40}$/u),
     sourceManifestSha256: Sha256Schema,
+    provisionReceiptSha256: Sha256Schema,
     sha256: Sha256Schema,
     license: z.literal('GPL-2.0-only'),
     parsedEntryCount: z.number().int().positive(),
@@ -212,6 +216,34 @@ export function selectFamilyScidSample(
   return selected
 }
 
+export function assertFamilyScidSampleMatchesInventory(options: {
+  report: FamilyScidCampaignReportV1
+  inventory: FamilyScidCandidateInventoryV1
+}): void {
+  const report = FamilyScidCampaignReportV1Schema.parse(options.report)
+  const inventory = FamilyScidCandidateInventoryV1Schema.parse(options.inventory)
+  if (
+    report.releaseId !== inventory.releaseId
+    || report.familyGraphBuildSha256 !== inventory.familyGraphBuildSha256
+  ) throw new Error('Scid report and candidate inventory belong to different graph releases')
+  const eligibleLineCount = inventory.lines.filter(({ drillEligible, engineQuarantined }) =>
+    drillEligible && !engineQuarantined).length
+  if (report.sampling.eligibleLineCount !== eligibleLineCount) {
+    throw new Error('Scid report eligible-line count differs from its candidate inventory')
+  }
+  const expected = selectFamilyScidSample(inventory, report.sampling.maximum, report.sampling.seed)
+  if (
+    expected.length !== report.results.length
+    || expected.some((line, index) => line.lineId !== report.results[index]?.lineId)
+  ) throw new Error('Scid report membership or order differs from the deterministic stratified sample')
+  for (const volume of ['A', 'B', 'C', 'D', 'E'] as const) {
+    const expectedCount = expected.filter(({ expectedBaseEco }) => expectedBaseEco.startsWith(volume)).length
+    if (report.sampling.byVolume[volume] !== expectedCount) {
+      throw new Error(`Scid report ${volume}-volume count differs from the deterministic sample`)
+    }
+  }
+}
+
 function moveInput(uci: string): { from: Square; to: Square; promotion?: PieceSymbol } {
   const promotion = uci[4] as PieceSymbol | undefined
   return promotion === undefined
@@ -238,6 +270,7 @@ export function buildFamilyScidCampaignReport(options: {
   oracle: {
     repositoryCommit: string
     sourceManifestSha256: string
+    provisionReceiptSha256: string
     sha256: string
   }
   seed: string
@@ -377,6 +410,7 @@ export async function runFamilyScidCampaign(options: {
   outputPath: string
   scidEcoPath: string
   scidManifestPath: string
+  scidProvisionReceiptPath: string
   now?: () => Date
 }): Promise<{ report: FamilyScidCampaignReportV1; receipt: ImmutableJsonReceiptV1 }> {
   const requestLoaded = await readImmutableJsonReceipt({ root: options.receiptRoot, receipt: options.requestReceipt, maximumStoredBytes: 2 * 1024 * 1024, maximumDecodedBytes: 2 * 1024 * 1024 })
@@ -386,6 +420,8 @@ export async function runFamilyScidCampaign(options: {
   if (inventory.releaseId !== request.releaseId) throw new Error('Scid request and candidate inventory releases differ')
   const manifestBytes = await readHandleBoundRegularFile(options.scidManifestPath, 'Scid source manifest', 2 * 1024 * 1024)
   const manifest = ScidManifestSchema.parse(JSON.parse(manifestBytes.toString('utf8')) as unknown)
+  const provisionBytes = await readHandleBoundRegularFile(options.scidProvisionReceiptPath, 'Scid provision receipt', 2 * 1024 * 1024)
+  assertScidProvisionMatchesManifest(manifest, JSON.parse(provisionBytes.toString('utf8')) as unknown)
   const oracleBytes = await readHandleBoundRegularFile(options.scidEcoPath, 'Scid ECO oracle', manifest.size)
   const oracleSha256 = createHash('sha256').update(oracleBytes).digest('hex')
   if (oracleBytes.byteLength !== manifest.size || oracleSha256 !== manifest.sha256) throw new Error('Scid ECO oracle differs from its approved manifest')
@@ -399,6 +435,7 @@ export async function runFamilyScidCampaign(options: {
     oracle: {
       repositoryCommit: manifest.repositoryCommit,
       sourceManifestSha256: createHash('sha256').update(manifestBytes).digest('hex'),
+      provisionReceiptSha256: createHash('sha256').update(provisionBytes).digest('hex'),
       sha256: oracleSha256,
     },
     seed: request.sampling.seed,

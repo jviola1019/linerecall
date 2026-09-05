@@ -130,6 +130,7 @@ describe('Stockfish verification policy', () => {
   it('quarantines a line when its expected move loses at least 100 centipawns', async () => {
     const calls: Array<{ searchMoveUci?: string }> = [];
     const engine: StockfishAnalysisAdapter = {
+      resetForPosition: async () => undefined,
       setMultiPv: () => undefined,
       analyze: async (options) => {
         calls.push({ ...(options.searchMoveUci === undefined ? {} : { searchMoveUci: options.searchMoveUci }) });
@@ -148,6 +149,7 @@ describe('Stockfish verification policy', () => {
 
   it('rejects a decision node that is not the trained side turn', async () => {
     const engine: StockfishAnalysisAdapter = {
+      resetForPosition: async () => undefined,
       setMultiPv: () => undefined,
       analyze: async () => ({ bestMoveUci: 'e7e5', variations: [variation(1, 'e7e5', 0)] }),
     };

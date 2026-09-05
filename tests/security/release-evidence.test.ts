@@ -20,6 +20,7 @@ import {
 import { initializeEvidence } from '../../scripts/release/init-evidence.ts'
 
 const hash = 'a'.repeat(64)
+const defaultReceiptPath = `audit/evidence/receipts/${hash}/browser.json`
 
 function config(overrides: Record<string, unknown> = {}) {
   return {
@@ -49,7 +50,7 @@ function config(overrides: Record<string, unknown> = {}) {
   }
 }
 
-function completedEvidence(overrides: Record<string, unknown> = {}) {
+function completedEvidence(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     schemaVersion: 2,
     id: 'browser-e2e',
@@ -58,7 +59,7 @@ function completedEvidence(overrides: Record<string, unknown> = {}) {
     reviewer: 'Release reviewer',
     artifactSha256: hash,
     summary: 'Exact candidate passed.',
-    evidence: [{ path: 'reports/browser.json', sha256: hash }],
+    evidence: [{ path: defaultReceiptPath, sha256: hash }],
     limitations: [],
     ...overrides,
   }
@@ -68,6 +69,9 @@ test('evidence schema enforces completed and not-run field consistency', () => {
   assert.doesNotThrow(() => EvidenceRecordSchema.parse(completedEvidence()))
   assert.throws(() => EvidenceRecordSchema.parse(completedEvidence({ completedAt: null })))
   assert.throws(() => EvidenceRecordSchema.parse(completedEvidence({ status: 'fail', evidence: [] })))
+  assert.throws(() => EvidenceRecordSchema.parse(completedEvidence({
+    evidence: [{ path: `audit/evidence/receipts/${'b'.repeat(64)}/report.json`, sha256: hash }],
+  })))
   assert.throws(() => EvidenceRecordSchema.parse(completedEvidence({
     status: 'not_run',
     completedAt: null,
@@ -227,17 +231,79 @@ test('completed evidence is invalidated when a referenced report is mutated', as
     await mkdir(join(root, 'audit/evidence'), { recursive: true })
     const reportPath = join(root, 'reports/browser.json')
     await writeFile(reportPath, '{"status":"pass"}\n', 'utf8')
-    const reportSha256 = await sha256File(reportPath)
+    const receipt = await contentAddressEvidenceFile('reports/browser.json', root, true)
     const evidencePath = join(root, 'audit/evidence/browser-e2e.json')
     await writeFile(evidencePath, `${JSON.stringify(completedEvidence({
-      evidence: [{ path: 'reports/browser.json', sha256: reportSha256 }],
+      evidence: [receipt],
     }))}\n`, 'utf8')
 
     assert.equal((await readEvidence('browser-e2e', 'audit/evidence/browser-e2e.json', hash, root)).status, 'pass')
-    await writeFile(reportPath, '{"status":"fail"}\n', 'utf8')
+    await writeFile(join(root, receipt.path), '{"status":"fail"}\n', 'utf8')
     const mutated = await readEvidence('browser-e2e', 'audit/evidence/browser-e2e.json', hash, root)
     assert.equal(mutated.status, 'fail')
     assert.match(mutated.summary, /digest mismatch/u)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('completed manual evidence must preserve every immutable template requirement', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'linerecall-evidence-template-'))
+  try {
+    await mkdir(join(root, 'audit/templates/evidence'), { recursive: true })
+    await mkdir(join(root, 'audit/evidence'), { recursive: true })
+    await mkdir(join(root, 'reports'), { recursive: true })
+    const templatePath = 'audit/templates/evidence/accessibility-manual.json'
+    const evidencePath = 'audit/evidence/accessibility-manual.json'
+    const reportPath = 'reports/accessibility.json'
+    await writeFile(join(root, reportPath), '{"status":"pass"}\n', 'utf8')
+    const reportReceipt = await contentAddressEvidenceFile(reportPath, root, true)
+    const requiredEnvironments = ['NVDA with Chrome', 'VoiceOver on iOS', 'TalkBack on Android']
+    const requiredChecks = ['WCAG 2.2 AA manual matrix']
+    await writeFile(join(root, templatePath), `${JSON.stringify({
+      schemaVersion: 2,
+      id: 'accessibility-manual',
+      status: 'not_run',
+      completedAt: null,
+      reviewer: null,
+      artifactSha256: null,
+      summary: 'Not run.',
+      evidence: [],
+      limitations: ['Manual review is required.'],
+      requiredEnvironments,
+      requiredChecks,
+    })}\n`, 'utf8')
+    const record = completedEvidence({
+      id: 'accessibility-manual',
+      evidence: [reportReceipt],
+      requiredEnvironments,
+      requiredChecks,
+      requirementResults: [...requiredEnvironments, ...requiredChecks].map((requirement) => ({
+        requirement,
+        status: 'pass',
+        evidencePaths: [reportReceipt.path],
+      })),
+    })
+    await writeFile(join(root, evidencePath), `${JSON.stringify(record)}\n`, 'utf8')
+    assert.equal((await readEvidence(
+      'accessibility-manual', evidencePath, hash, root, undefined, undefined, templatePath,
+    )).status, 'pass')
+
+    const { requiredEnvironments: _removed, ...withoutEnvironments } = record
+    await writeFile(join(root, evidencePath), `${JSON.stringify(withoutEnvironments)}\n`, 'utf8')
+    const omitted = await readEvidence(
+      'accessibility-manual', evidencePath, hash, root, undefined, undefined, templatePath,
+    )
+    assert.equal(omitted.status, 'fail')
+    assert.match(omitted.summary, /requiredEnvironments checklist/u)
+
+    const { requirementResults: _results, ...withoutResults } = record
+    await writeFile(join(root, evidencePath), `${JSON.stringify(withoutResults)}\n`, 'utf8')
+    const unmapped = await readEvidence(
+      'accessibility-manual', evidencePath, hash, root, undefined, undefined, templatePath,
+    )
+    assert.equal(unmapped.status, 'fail')
+    assert.match(unmapped.summary, /map every template requirement/u)
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -293,12 +359,12 @@ test('completed connected evidence is bound to the exact current source tree', a
     await writeFile(snapshotPath, `${JSON.stringify(snapshot, null, 2)}\n`, 'utf8')
     const reportPath = join(root, 'reports/security.json')
     await writeFile(reportPath, '{"status":"pass"}\n', 'utf8')
-    const reportSha256 = await sha256File(reportPath)
+    const reportReceipt = await contentAddressEvidenceFile('reports/security.json', root, true)
     const evidencePath = join(root, 'audit/evidence/security-review.json')
     await writeFile(evidencePath, `${JSON.stringify(completedEvidence({
       id: 'security-manual',
       sourceSnapshotSha256: snapshot.treeSha256,
-      evidence: [{ path: 'reports/security.json', sha256: reportSha256 }],
+      evidence: [reportReceipt],
     }))}\n`, 'utf8')
 
     assert.equal((await readEvidence(

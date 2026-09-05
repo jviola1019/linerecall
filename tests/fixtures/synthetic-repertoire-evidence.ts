@@ -10,6 +10,27 @@ import {
 } from '../../src/domain/statistics.ts'
 
 export const SYNTHETIC_GRAPH_PROVENANCE_REF = 'synthetic-fixture-not-production-evidence'
+export const SYNTHETIC_STOCKFISH_EXECUTABLE_PAYLOAD = Object.freeze({
+  fixture: 'synthetic-stockfish-executable-bytes',
+  productionEvidence: false,
+})
+export const SYNTHETIC_STOCKFISH_BIG_NNUE_PAYLOAD = Object.freeze({
+  fixture: 'synthetic-stockfish-big-nnue-bytes',
+  productionEvidence: false,
+})
+export const SYNTHETIC_STOCKFISH_SMALL_NNUE_PAYLOAD = Object.freeze({
+  fixture: 'synthetic-stockfish-small-nnue-bytes',
+  productionEvidence: false,
+})
+
+// These are SHA-256 digests of the fixture JSON plus a trailing newline.
+// Keep this shared browser fixture free of Node-only imports. Campaign binding
+// tests independently hash the payload bytes when writing their receipts.
+export const SYNTHETIC_STOCKFISH_EXECUTABLE_SHA256 = '0e822c9b600cff04e5e2d11f6145705c050242ae774854eccc833fb92b460a21'
+export const SYNTHETIC_STOCKFISH_NNUE_SHA256 = Object.freeze([
+  '7c1ce39c4b0bc89a999f86b628078983646d3c9106f16bb8f1103833a6e55c3e',
+  '8fcddef2b95c2c903e55762b99c17912613d17d2e8d3ce23e3bb02f09f578de6',
+].sort())
 
 const CANONICAL_BANDS = ['<1800', '1800-1999', '2000-2199', '2200-2399', '2400+'] as const
 const BEGINNER_BANDS = ['<1200', '1200-1499', '1500-1799'] as const
@@ -74,6 +95,7 @@ function cohort(options: {
 /** Explicitly synthetic evidence for schema and graph-behavior fixtures only. */
 export function createSyntheticRepertoireEvidence(options: {
   uci: string
+  bestUci?: string
   trainedSide: 'white' | 'black'
   moveN?: number
   reachN?: number
@@ -106,17 +128,17 @@ export function createSyntheticRepertoireEvidence(options: {
   })
   const check = status === 'unverified' || centipawnLoss === null ? null : {
     engineName: 'Stockfish 18' as const,
-    engineSha256: 'f'.repeat(64),
-    nnueSha256: ['e'.repeat(64)],
+    engineSha256: SYNTHETIC_STOCKFISH_EXECUTABLE_SHA256,
+    nnueSha256: [...SYNTHETIC_STOCKFISH_NNUE_SHA256],
     settings: { threads: 1 as const, hashMb: 128 as const, multiPv: 5 as const, nodes: 250_000 as const },
     analyzedAt: '2026-07-01T00:00:00.000Z',
     analyzedMoveUci: options.uci,
-    bestMoveUci: options.uci,
+    bestMoveUci: options.bestUci ?? options.uci,
     bestEvaluation: { kind: 'centipawn' as const, value: 20, unit: 'centipawn' as const, perspective: 'trained-side' as const },
     moveEvaluation: { kind: 'centipawn' as const, value: 20 - centipawnLoss, unit: 'centipawn' as const, perspective: 'trained-side' as const },
     centipawnLoss,
     forcedMateAgainstLearner,
-    bestPrincipalVariationUci: [options.uci],
+    bestPrincipalVariationUci: [options.bestUci ?? options.uci],
     movePrincipalVariationUci: [options.uci],
   }
   return RepertoireBranchEvidenceSchema.parse({

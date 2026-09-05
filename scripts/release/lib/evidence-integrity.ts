@@ -21,6 +21,21 @@ export const EvidenceReferenceSchema = z.object({
   path: WorkspacePathSchema,
   sha256: Sha256Schema,
   sourcePath: WorkspacePathSchema.optional(),
+}).strict().superRefine((value, context) => {
+  const match = /^audit\/evidence\/receipts\/([a-f0-9]{64})\/[^/\\]+$/u.exec(value.path)
+  if (!match || match[1] !== value.sha256) {
+    context.addIssue({
+      code: 'custom',
+      path: ['path'],
+      message: 'Evidence must use its SHA-256-addressed immutable receipt path',
+    })
+  }
+})
+
+const EvidenceRequirementResultSchema = z.object({
+  requirement: z.string().min(1),
+  status: z.enum(['pass', 'fail']),
+  evidencePaths: z.array(WorkspacePathSchema).min(1),
 }).strict()
 
 const EvidenceBaseSchema = z.object({
@@ -33,6 +48,7 @@ const EvidenceBaseSchema = z.object({
   requiredReview: z.array(z.string().min(1)).optional(),
   requiredEnvironments: z.array(z.string().min(1)).optional(),
   requiredChecks: z.array(z.string().min(1)).optional(),
+  requirementResults: z.array(EvidenceRequirementResultSchema).optional(),
 })
 
 const CompletedEvidenceFields = {
@@ -69,6 +85,13 @@ export const EvidenceRecordSchema = z.discriminatedUnion('status', [
       })
     }
     paths.add(reference.path)
+  }
+  if (value.status === 'not_run' && (value.requirementResults?.length ?? 0) > 0) {
+    context.addIssue({
+      code: 'custom',
+      message: 'Not-run evidence cannot claim completed requirement results',
+      path: ['requirementResults'],
+    })
   }
 })
 
@@ -244,6 +267,7 @@ export async function readEvidence(
   root = workspaceRoot,
   sourceSnapshotPath?: string,
   sourceRoots?: readonly string[],
+  templatePath?: string,
 ): Promise<GateResult> {
   let absolute: string
   try {
@@ -264,6 +288,66 @@ export async function readEvidence(
     const evidenceRecord = { path, sha256: await sha256File(absolute) }
     if (value.id !== id) {
       return { id, status: 'fail', summary: `Evidence ID mismatch (${value.id})`, evidencePath: path, evidenceRecord }
+    }
+    if (templatePath !== undefined) {
+      const templateAbsolute = resolveWorkspaceEvidencePath(root, templatePath)
+      if (!(await fileExists(templateAbsolute))) {
+        return {
+          id,
+          status: 'fail',
+          summary: `Required evidence template is missing (${templatePath})`,
+          evidencePath: path,
+          evidenceRecord,
+        }
+      }
+      const template = EvidenceRecordSchema.parse(
+        JSON.parse(await readFile(templateAbsolute, 'utf8')) as unknown,
+      )
+      if (template.id !== id || template.status !== 'not_run') {
+        return {
+          id,
+          status: 'fail',
+          summary: 'Evidence template is not the immutable not-run record for this gate',
+          evidencePath: path,
+          evidenceRecord,
+        }
+      }
+      const requirementFields = ['requiredReview', 'requiredEnvironments', 'requiredChecks'] as const
+      const expectedRequirements: string[] = []
+      for (const field of requirementFields) {
+        const expected = template[field] ?? []
+        const actual = value[field] ?? []
+        if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+          return {
+            id,
+            status: 'fail',
+            summary: `Evidence does not preserve the template's ${field} checklist`,
+            evidencePath: path,
+            evidenceRecord,
+            evidenceReceipts: value.evidence,
+          }
+        }
+        expectedRequirements.push(...expected)
+      }
+      if (value.status !== 'not_run' && expectedRequirements.length > 0) {
+        const results = value.requirementResults ?? []
+        const evidencePaths = new Set(value.evidence.map((reference) => reference.path))
+        const complete = results.length === expectedRequirements.length
+          && results.every((result, index) =>
+            result.requirement === expectedRequirements[index]
+            && (value.status !== 'pass' || result.status === 'pass')
+            && result.evidencePaths.every((resultPath) => evidencePaths.has(resultPath)))
+        if (!complete) {
+          return {
+            id,
+            status: 'fail',
+            summary: 'Evidence does not map every template requirement to a completed result and receipt',
+            evidencePath: path,
+            evidenceRecord,
+            evidenceReceipts: value.evidence,
+          }
+        }
+      }
     }
     if (value.status !== 'not_run' && value.artifactSha256 !== candidateSha256) {
       return {

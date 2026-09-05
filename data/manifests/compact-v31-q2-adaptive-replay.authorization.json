@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "kind": "linerecall-compact-v31-q2-adaptive-replay-authorization",
+  "sourceManifest": {
+    "path": "data/manifests/lichess-standard-q2-2026.source.json",
+    "bytes": 3462,
+    "sha256": "07f4b232476e32a02f0641c1f265faffc1b63c50569e1a462cd39426c43ab1c6"
+  },
+  "completeBaselineMaxPly": 30,
+  "adaptiveEvidenceMaxPly": 100,
+  "adaptiveCandidateMinimumSample": 100,
+  "releaseEligible": false,
+  "note": "Pending scope review only. The historical Q2 source manifest approves filtering through ply 30; this record must receive a named approval before adaptive candidate evidence may be replayed through ply 100.",
+  "decision": "pending",
+  "reviewedAt": null,
+  "reviewedBy": null
+}

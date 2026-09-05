@@ -12,6 +12,7 @@ import {
 } from '../../src/domain/family-training-journal.ts'
 import {
   GRAPH_TRAINING_CONTRACT_ID,
+  type GraphTrainingPathCompletionV1,
   type GraphTrainingReviewInference,
 } from '../../src/domain/graph-training-session.ts'
 import { stableRepertoireCardId, type RepertoireGraphDocument } from '../../src/domain/repertoire.ts'
@@ -160,15 +161,18 @@ describe('validated v3 graph-training boundary', () => {
     await user.click(screen.getByRole('button', { name: 'Play move' }))
 
     expect(reviews).toHaveBeenCalledTimes(1)
-    expect(reviews.mock.calls[0]?.[0]).toMatchObject({ grade: 'hard', source: 'due', moveUci: 'g2g3' })
+    expect(reviews.mock.calls[0]?.[0]).toMatchObject({ grade: 'again', source: 'due', moveUci: 'g2g3' })
     await waitFor(() => expect(writeOrder).toContain('cursor'))
     expect(writeOrder[0]).toBe('review')
     expect(announcements).toHaveBeenCalledWith('Known alternate line accepted. Continuing from the resulting position.')
     expect(document.querySelector('[data-square="g3"][data-piece-type="wp"]')).not.toBeNull()
-    await waitFor(() => expect(screen.getByText(/1 of 3 moves recalled this run · decision 2 next/u)).toBeVisible())
+    await waitFor(() => expect(screen.getByText(/1 of 3 moves played ·/u)).toBeVisible())
   })
 
-  test('full repertoire mode includes every path and a hint infers Hard for a due position', async () => {
+  test.each([
+    { button: 'Show hint', grade: 'hard' },
+    { button: 'Reveal line', grade: 'again' },
+  ])('full opening mode includes every path and $button infers $grade for a due position', async ({ button, grade }) => {
     const user = userEvent.setup()
     const reviews = vi.fn()
     render(
@@ -186,11 +190,11 @@ describe('validated v3 graph-training boundary', () => {
     expect(remaining).not.toBeNull()
     expect(within(remaining!).getByText(String(graph.paths.length))).toBeVisible()
     expect(screen.getByText(/Variation 1 of 2/u)).toBeVisible()
-    await user.click(screen.getByRole('button', { name: 'Show hint' }))
+    await user.click(screen.getByRole('button', { name: button }))
     const picker = screen.getByRole('combobox', { name: 'Legal move picker' })
     await user.selectOptions(picker, 'g1f3')
     await user.click(screen.getByRole('button', { name: 'Play move' }))
-    expect(reviews.mock.calls[0]?.[0]).toMatchObject({ grade: 'hard', source: 'due' })
+    expect(reviews.mock.calls[0]?.[0]).toMatchObject({ grade, source: 'due' })
   })
 
   test('provides a mobile-equivalent training toolbar and pauses moves during keyboard annotations', async () => {
@@ -278,9 +282,9 @@ describe('validated v3 graph-training boundary', () => {
     }
 
     await play('g1f3')
-    await waitFor(() => expect(screen.getByText(/1 of 3 moves recalled this run · decision 2 next/u)).toBeVisible())
+    await waitFor(() => expect(screen.getByText(/1 of 3 moves played ·/u)).toBeVisible())
     await play('g2g3')
-    await waitFor(() => expect(screen.getByText(/2 of 3 moves recalled this run · decision 3 next/u)).toBeVisible())
+    await waitFor(() => expect(screen.getByText(/2 of 3 moves played ·/u)).toBeVisible())
     await play('f1g2')
     await waitFor(() => expect(screen.getByText(/Variation 2 of 2/u)).toBeVisible())
 
@@ -290,9 +294,9 @@ describe('validated v3 graph-training boundary', () => {
     expect(screen.getByRole('heading', { name: 'Fianchetto first' })).toBeVisible()
 
     await play('g2g3')
-    await waitFor(() => expect(screen.getByText(/1 of 3 moves recalled this run · decision 2 next/u)).toBeVisible())
+    await waitFor(() => expect(screen.getByText(/1 of 3 moves played ·/u)).toBeVisible())
     await play('g1f3')
-    await waitFor(() => expect(screen.getByText(/2 of 3 moves recalled this run · decision 3 next/u)).toBeVisible())
+    await waitFor(() => expect(screen.getByText(/2 of 3 moves played ·/u)).toBeVisible())
     await play('f1g2')
 
     expect(await screen.findByRole('heading', { name: 'Every selected variation is complete.' })).toBeVisible()
@@ -307,9 +311,9 @@ describe('validated v3 graph-training boundary', () => {
 
     await user.click(screen.getByRole('button', { name: 'Start a new practice round' }))
     await play('g1f3')
-    await waitFor(() => expect(screen.getByText(/1 of 3 moves recalled this run · decision 2 next/u)).toBeVisible())
+    await waitFor(() => expect(screen.getByText(/1 of 3 moves played ·/u)).toBeVisible())
     await play('g2g3')
-    await waitFor(() => expect(screen.getByText(/2 of 3 moves recalled this run · decision 3 next/u)).toBeVisible())
+    await waitFor(() => expect(screen.getByText(/2 of 3 moves played ·/u)).toBeVisible())
     await play('f1g2')
     await waitFor(() => expect(completions).toHaveBeenCalledTimes(3))
     expect(completions.mock.calls[2]?.[0].coverageCycleId).toMatch(/::coverage:1$/u)
@@ -319,17 +323,25 @@ describe('validated v3 graph-training boundary', () => {
     const user = userEvent.setup()
     let saveCompletion!: () => void
     const completionSaved = new Promise<void>((resolve) => { saveCompletion = resolve })
-    const onPathCompleted = vi.fn(() => completionSaved)
-    render(
-      <GraphTrainingBoundary
-        resource={{ status: 'ready', envelope: { contractId: GRAPH_TRAINING_CONTRACT_ID, graph } }}
-        dueCardIds={[]}
-        orientation="white"
-        reducedMotion
-        onPathCompleted={onPathCompleted}
-      />,
-    )
+    const repository = new MemoryFamilyTrainingJournalRepository()
+    const onPathCompleted = vi.fn(async (completion: GraphTrainingPathCompletionV1) => {
+      await completionSaved
+      await repository.appendCoverageEvent({
+        schemaVersion: 1, eventId: crypto.randomUUID(), familyId: 'synthetic-family',
+        releaseId: completion.releaseId, packId: completion.packId, pathId: completion.pathId,
+        coverageCycleId: completion.coverageCycleId, completedAt: completion.completedAt,
+      })
+    })
+    const props = {
+      resource: { status: 'ready' as const, envelope: { contractId: GRAPH_TRAINING_CONTRACT_ID, graph } },
+      dueCardIds: [], orientation: 'white' as const, reducedMotion: true,
+      familyId: 'synthetic-family', journalRepository: repository, onPathCompleted,
+    }
+    const scope = { releaseId: graph.releaseId, familyId: 'synthetic-family', packId: graph.pack.id, side: graph.pack.side }
+    const first = render(<GraphTrainingBoundary {...props} />)
     await user.click(await screen.findByRole('button', { name: 'Start full opening' }))
+    await waitFor(async () => expect(await repository.loadLatestCursor(scope)).not.toBeNull())
+    const beforeCompletion = (await repository.loadLatestCursor(scope))!
 
     const play = async (uci: string): Promise<void> => {
       const picker = await screen.findByRole('combobox', { name: 'Legal move picker' })
@@ -346,11 +358,22 @@ describe('validated v3 graph-training boundary', () => {
     expect(screen.getByText(/Variation 1 of 2/u)).toBeVisible()
     await new Promise((resolve) => setTimeout(resolve, 10))
     expect(screen.queryByRole('heading', { name: 'Fianchetto first' })).not.toBeInTheDocument()
+    expect((await repository.loadLatestCursor(scope))?.completedPathIds).toHaveLength(0)
+    expect(await repository.listCoverageEvents(scope)).toHaveLength(0)
 
     saveCompletion()
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Fianchetto first' })).toBeVisible())
     expect(screen.getByText(/Variation 2 of 2/u)).toBeVisible()
     expect(screen.getByRole('progressbar', { name: '1 of 2 variations completed' })).toBeVisible()
+    await waitFor(async () => expect((await repository.loadLatestCursor(scope))?.completedPathIds).toHaveLength(1))
+    first.unmount()
+    // Simulate a crash after the event commit but before the latest cursor
+    // reached durable storage. Restoration must replay the event, not the line.
+    await repository.appendCursor(beforeCompletion)
+    render(<GraphTrainingBoundary {...props} />)
+    expect(await screen.findByRole('heading', { name: 'Fianchetto first' })).toBeVisible()
+    expect(screen.getByRole('progressbar', { name: '1 of 2 variations completed' })).toBeVisible()
+    expect(onPathCompleted).toHaveBeenCalledTimes(1)
   }, 30_000)
 
   test('keeps the finished variation open after a completion write fails and retries without double-counting', async () => {
@@ -421,12 +444,12 @@ describe('validated v3 graph-training boundary', () => {
     await new Promise((resolve) => setTimeout(resolve, 10))
     expect(opponent).toBeVisible()
     await user.click(opponent)
-    await waitFor(() => expect(screen.getByText(/1 of 3 moves recalled this run · decision 2 next/u)).toBeVisible())
+    await waitFor(() => expect(screen.getByText(/1 of 3 moves played ·/u)).toBeVisible())
 
     await user.selectOptions(screen.getByRole('combobox', { name: 'Legal move picker' }), 'g2g3')
     await user.click(screen.getByRole('button', { name: 'Play move' }))
     await user.click(screen.getByRole('button', { name: 'Play opponent reply' }))
-    await waitFor(() => expect(screen.getByText(/2 of 3 moves recalled this run · decision 3 next/u)).toBeVisible())
+    await waitFor(() => expect(screen.getByText(/2 of 3 moves played ·/u)).toBeVisible())
     await user.selectOptions(screen.getByRole('combobox', { name: 'Legal move picker' }), 'f1g2')
     await user.click(screen.getByRole('button', { name: 'Play move' }))
     const boundary = screen.getByRole('button', { name: 'Continue to next variation' })
@@ -434,6 +457,45 @@ describe('validated v3 graph-training boundary', () => {
     await new Promise((resolve) => setTimeout(resolve, 10))
     expect(boundary).toBeVisible()
   }, 30_000)
+
+  test('keeps future line and evidence hidden while manual opponent reply is pending', async () => {
+    const user = userEvent.setup()
+    render(
+      <GraphTrainingBoundary
+        resource={{ status: 'ready', envelope: { contractId: GRAPH_TRAINING_CONTRACT_ID, graph } }}
+        dueCardIds={[]}
+        orientation="white"
+        reducedMotion
+        manualPacing
+      />,
+    )
+    const pathList = await screen.findByRole('list', { name: 'Variation paths' })
+    const knightPath = within(pathList).getAllByRole('button')
+      .find((button) => button.textContent?.includes('Knight first'))
+    if (!knightPath) throw new Error('Knight-first regression path is missing')
+    await user.click(knightPath)
+    await user.click(await screen.findByRole('button', { name: 'Practice selected line' }))
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Legal move picker' }), 'g1f3')
+    await user.click(screen.getByRole('button', { name: 'Play move' }))
+
+    const line = screen.getByRole('tabpanel', { name: 'line analysis' })
+    expect(line).toHaveTextContent('The next moves stay hidden during recall.')
+    expect(within(line).getByRole('button', { name: 'Reveal line' })).toBeDisabled()
+    expect(line).not.toHaveTextContent('d5')
+
+    await user.click(screen.getByRole('tab', { name: 'Alternatives' }))
+    const alternatives = screen.getByRole('tabpanel', { name: 'alternatives analysis' })
+    expect(alternatives).toHaveTextContent('Alternatives stay hidden until you request help.')
+    expect(within(alternatives).getByRole('button', { name: 'Reveal moves' })).toBeDisabled()
+    expect(alternatives).not.toHaveTextContent('d5')
+
+    await user.click(screen.getByRole('tab', { name: 'Evidence' }))
+    const evidence = screen.getByRole('tabpanel', { name: 'evidence analysis' })
+    expect(evidence).toHaveTextContent('Move evidence stays hidden until you reveal this position.')
+    expect(within(evidence).getByRole('button', { name: 'Reveal evidence' })).toBeDisabled()
+    expect(evidence).not.toHaveTextContent('d5')
+    expect(screen.getByRole('button', { name: 'Play opponent reply' })).toBeVisible()
+  })
 
   test('restores authoritative completion and pending paths from an explicit journal repository after remount', async () => {
     const user = userEvent.setup()

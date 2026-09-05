@@ -7,7 +7,6 @@ import { buildProductionAppSnapshotManifest } from '../../scripts/release/lib/pr
 import { buildProductionDataReadiness } from '../../scripts/release/lib/production-data-readiness-builder.ts'
 import {
   createProductionHandoffFixture,
-  HANDOFF_FIXTURE_RELEASE,
   writeFixtureJson,
 } from '../fixtures/production-handoff-fixture.ts'
 
@@ -46,7 +45,7 @@ async function buildBoundApp(
   })
 }
 
-test('builders promote a receipt-bound family index and derive readiness from its immutable evidence', async () => {
+test('builders reject a receipt-complete handoff without mandatory regression families', async () => {
   const fixture = await createProductionHandoffFixture()
   const family = await buildFamilyPromotionIndex({
     root: fixture.root,
@@ -60,30 +59,20 @@ test('builders promote a receipt-bound family index and derive readiness from it
 
   const familyPromotionIndex = identityReceipt(family)
   const app = await buildBoundApp(fixture, family)
-  const production = await buildProductionDataReadiness({
-    root: fixture.root,
-    outputPath: 'handoff/production-data-readiness.json',
-    input: {
-      ...fixture.readinessInputs,
-      familyPromotionIndex,
-      appSnapshotManifest: identityReceipt(app),
-    },
-    now: () => new Date('2026-07-28T14:00:00.000Z'),
-  })
-  assert.equal(production.readiness.status, 'pass')
-  assert.equal(production.readiness.releaseId, HANDOFF_FIXTURE_RELEASE)
-  assert.equal(production.readiness.engine.learnerNodesChecked, fixture.learnerNodeCount)
-  assert.equal(production.readiness.caroKann.drillablePaths, 8)
-  assert.deepEqual(
-    [...production.readiness.caroKann.namedFamilies].sort(),
-    ['Advance', 'Classical', 'Exchange', 'Panov', 'Two Knights'].sort(),
+  await assert.rejects(
+    buildProductionDataReadiness({
+      root: fixture.root,
+      outputPath: 'handoff/production-data-readiness.json',
+      input: {
+        ...fixture.readinessInputs,
+        familyPromotionIndex,
+        appSnapshotManifest: identityReceipt(app),
+      },
+      now: () => new Date('2026-07-28T14:00:00.000Z'),
+    }),
+    /Required family sicilian-defence must appear exactly once/u,
   )
-  assert.equal(production.readiness.graph.provenanceMissing, 0)
-  assert.equal(production.readiness.graph.hiddenEligiblePracticeBranches, 0)
-  assert.equal(
-    JSON.parse(await readFile(join(fixture.root, production.outputPath), 'utf8')).appSnapshotManifestSha256,
-    app.sha256,
-  )
+  assert.equal(await absent(join(fixture.root, 'handoff/production-data-readiness.json')), true)
 })
 
 test('family index builder discards its candidate when exact eligible-edge inventory is incomplete', async () => {

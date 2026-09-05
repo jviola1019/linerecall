@@ -27,18 +27,15 @@ import {
   type ImmutableJsonReceiptV1,
 } from '../release/lib/immutable-json-receipt.ts'
 import { readHandleBoundRegularFile } from '../lib/handle-bound-file.ts'
-import { StockfishManifestSchema } from '../verification/lib/manifest.ts'
+import {
+  StockfishManifestSchema,
+  assertStockfishProvisionMatchesManifest,
+} from '../verification/lib/manifest.ts'
 import { sha256File } from '../verification/lib/files.ts'
 import { UciEngine, type UciAnalysis, type UciIdentity } from '../verification/lib/uci-engine.ts'
 
 const MAX_CONTROL_FILE_BYTES = 2 * 1024 * 1024
 const SETTINGS_SHA256 = createHash('sha256').update(JSON.stringify(FAMILY_ENGINE_SETTINGS)).digest('hex')
-
-const ProvisionReceiptSchema = z.object({
-  schemaVersion: z.literal(1),
-  releaseCommit: z.string().regex(/^[a-f0-9]{40}$/u),
-  executable: z.object({ sha256: z.string().regex(/^[a-f0-9]{64}$/u) }).passthrough(),
-}).passthrough()
 
 const CachedAnalysisSchema = z.object({
   schemaVersion: z.literal(1),
@@ -66,6 +63,7 @@ const CachedAnalysisSchema = z.object({
 }).strict()
 
 export interface FamilyEngineAnalysisAdapter {
+  resetForPosition(timeoutMs?: number): Promise<void>
   setMultiPv(value: 1 | 5): void
   analyze(options: { fen: string; nodes: 250_000; searchMoveUci?: string; timeoutMs?: number }): Promise<UciAnalysis>
 }
@@ -227,27 +225,44 @@ async function cachedAnalyze(options: {
   searchMoveUci: string | null
   engineSha256: string
   nnueSha256: readonly string[]
+  repeatRoot?: boolean
 }): Promise<{ key: string; result: UciAnalysis }> {
   const key = familyEngineCacheKey(options)
-  const prior = options.memory.get(key)
+  // Repeatability is per emitted learner node. Do not collapse duplicate EPD
+  // memberships in this mode; each pack/node receives two fresh searches.
+  const prior = options.repeatRoot ? undefined : options.memory.get(key)
   if (prior) return { key, result: await prior }
   const pending = (async () => {
-    const cached = await options.cache?.load(key)
+    // A repeated root is an authenticity check, so cached output cannot stand
+    // in for two fresh UCI searches. Ordinary forced searches may reuse cache.
+    const cached = options.repeatRoot ? null : await options.cache?.load(key)
     if (cached) return cached
+    await options.engine.resetForPosition()
     options.engine.setMultiPv(options.searchMoveUci === null ? 5 : 1)
     const result = await options.engine.analyze({
       fen: `${options.epd} 0 1`,
       nodes: FAMILY_ENGINE_SETTINGS.nodes,
       ...(options.searchMoveUci === null ? {} : { searchMoveUci: options.searchMoveUci }),
     })
+    if (options.repeatRoot) {
+      await options.engine.resetForPosition()
+      options.engine.setMultiPv(5)
+      const repeated = await options.engine.analyze({
+        fen: `${options.epd} 0 1`,
+        nodes: FAMILY_ENGINE_SETTINGS.nodes,
+      })
+      if (JSON.stringify(repeated) !== JSON.stringify(result)) {
+        throw new Error(`Stockfish root search was not repeatable at ${options.epd}`)
+      }
+    }
     await options.cache?.save(key, result, { epd: options.epd, searchMoveUci: options.searchMoveUci })
     return result
   })()
-  options.memory.set(key, pending)
+  if (!options.repeatRoot) options.memory.set(key, pending)
   try {
     return { key, result: await pending }
   } catch (error) {
-    options.memory.delete(key)
+    if (!options.repeatRoot) options.memory.delete(key)
     throw error
   }
 }
@@ -259,6 +274,7 @@ export async function analyzeFamilyEngineCandidatePacks(options: {
   nnueSha256: string[]
   analyzedAt: string
   cache?: FamilyEngineCache
+  repeatRoots?: boolean
 }): Promise<FamilyEnginePackProofDocumentV1[]> {
   const parsedTime = new Date(options.analyzedAt)
   if (!Number.isFinite(parsedTime.getTime())) throw new Error('Campaign analysis time must be an ISO timestamp')
@@ -281,6 +297,7 @@ export async function analyzeFamilyEngineCandidatePacks(options: {
         searchMoveUci: null,
         engineSha256: options.engineSha256,
         nnueSha256: options.nnueSha256,
+        repeatRoot: options.repeatRoots === true,
       })
       const legalMoveCount = new Chess(`${node.epd} 0 1`).moves().length
       const expectedMultiPv = Math.min(FAMILY_ENGINE_SETTINGS.multiPv, legalMoveCount)
@@ -298,6 +315,7 @@ export async function analyzeFamilyEngineCandidatePacks(options: {
         const rootCandidate = topVariations.find(({ movesUci }) => movesUci[0] === edge.uci)
         let candidate = rootCandidate
         let cacheKey = root.key
+        let searchMode: 'root-multipv' | 'forced-search' = 'root-multipv'
         if (!candidate) {
           const forced = await cachedAnalyze({
             engine: options.engine,
@@ -317,6 +335,7 @@ export async function analyzeFamilyEngineCandidatePacks(options: {
             throw new Error(`Forced Stockfish bestmove did not match candidate ${edge.uci} at ${node.positionId}`)
           }
           candidate = exactVariation(variation, node.epd, `${node.positionId} candidate ${edge.uci}`)
+          searchMode = 'forced-search'
         }
         const derived = comparison(best.score, candidate.score)
         const check = RepertoireEngineCheckSchema.parse({
@@ -333,7 +352,12 @@ export async function analyzeFamilyEngineCandidatePacks(options: {
           bestPrincipalVariationUci: best.movesUci,
           movePrincipalVariationUci: candidate.movesUci,
         })
-        edgeChecks.push({ toEpd: edge.toEpd, cacheKey, check })
+        edgeChecks.push({
+          toEpd: edge.toEpd,
+          cacheKey,
+          observation: { searchMode, variation: candidate },
+          check,
+        })
       }
       analyses.push(FamilyEnginePackProofDocumentV1Schema.shape.analyses.element.parse({
         positionId: node.positionId,
@@ -461,8 +485,10 @@ export async function runFamilyEngineCampaign(options: {
     throw new Error('Pinned Stockfish manifest settings differ from the family campaign')
   }
   const provisionBytes = await readHandleBoundRegularFile(options.provisionReceiptPath, 'Stockfish provision receipt', MAX_CONTROL_FILE_BYTES)
-  const provision = ProvisionReceiptSchema.parse(JSON.parse(provisionBytes.toString('utf8')) as unknown)
-  if (provision.releaseCommit !== manifest.releaseCommit) throw new Error('Stockfish provision receipt belongs to another release')
+  const provision = assertStockfishProvisionMatchesManifest(
+    manifest,
+    JSON.parse(provisionBytes.toString('utf8')) as unknown,
+  )
   const engineSha256 = await sha256File(options.enginePath)
   if (engineSha256 !== provision.executable.sha256) throw new Error('Stockfish executable differs from its provision receipt')
 
@@ -484,6 +510,7 @@ export async function runFamilyEngineCampaign(options: {
       nnueSha256,
       analyzedAt: completedAt,
       cache,
+      repeatRoots: true,
     })
     const indexedPacks: FamilyEngineCampaignProofInventoryV1['packs'] = []
     for (const [index, document] of documents.entries()) {
@@ -531,6 +558,8 @@ export async function runFamilyEngineCampaign(options: {
         candidatePacks: indexedPacks.length,
         uniqueLearnerPositions: allEpds.size,
         learnerNodeMemberships: nodeMemberships,
+        rootSearchesRepeated: nodeMemberships,
+        rootRepeatabilityMismatches: 0,
         expectedEdgeProofs: edgeProofs,
         emittedEdgeProofs: edgeProofs,
         missingEdgeProofs: 0,

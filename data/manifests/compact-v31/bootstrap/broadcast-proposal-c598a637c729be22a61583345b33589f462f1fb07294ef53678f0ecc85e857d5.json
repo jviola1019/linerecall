@@ -1,0 +1,733 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-07-11T04:08:37.539Z",
+  "startMonth": "2020-01",
+  "cutoffMonth": "2026-06",
+  "source": {
+    "listUrl": "https://database.lichess.org/broadcast/list.txt",
+    "checksumsUrl": "https://database.lichess.org/broadcast/sha256sums.txt",
+    "license": "CC BY-SA 4.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/"
+  },
+  "approval": {
+    "status": "pending",
+    "approvedOn": null,
+    "scope": "Pending review. This proposal does not authorize compact-v3 ingestion, benchmark promotion, or release use.",
+    "basis": "Pending manual review of broadcast transport metadata observation SHA-256 043b06dfd1fdf6adee65b1e1d29e18a561c0a046c4d6a5dd124aeb138465d56c.",
+    "reviewRequiredWhen": "Before first compact-v3 use and whenever an archive URL, checksum, byte length, response identity, source snapshot, license, filter, or cutoff changes."
+  },
+  "archives": [
+    {
+      "month": "2020-01",
+      "filename": "lichess_db_broadcast_2020-01.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2020-01.pgn.zst",
+      "sha256": "9461382d6933dedfbe7bb3de2ac139066d8d8657f2070cb11d59c7686f00f47e",
+      "bytes": 628586,
+      "etagObserved": "\"6811d7b2-9976a\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 07:56:34 GMT"
+    },
+    {
+      "month": "2020-02",
+      "filename": "lichess_db_broadcast_2020-02.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2020-02.pgn.zst",
+      "sha256": "013411015df5a2c07f6005de16cc956b846b1aef36ee56643fb0a909d4a3feb6",
+      "bytes": 800401,
+      "etagObserved": "\"6811d7c4-c3691\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 07:56:52 GMT"
+    },
+    {
+      "month": "2020-03",
+      "filename": "lichess_db_broadcast_2020-03.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2020-03.pgn.zst",
+      "sha256": "51adf1be8b7dc69cb317093ab06aba50131e056d1aa69f849a3c2ca9e1e3babc",
+      "bytes": 140602,
+      "etagObserved": "\"6811d7c7-2253a\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 07:56:55 GMT"
+    },
+    {
+      "month": "2020-04",
+      "filename": "lichess_db_broadcast_2020-04.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2020-04.pgn.zst",
+      "sha256": "8c39dfedff509c36a37a017d2be5dd066b1e1dbb9e62a6bf63b16c018d496725",
+      "bytes": 49180,
+      "etagObserved": "\"6811d7c8-c01c\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 07:56:56 GMT"
+    },
+    {
+      "month": "2020-05",
+      "filename": "lichess_db_broadcast_2020-05.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2020-05.pgn.zst",
+      "sha256": "1e791e6578e434b5e35df1f0780e3e9ddff6b22d047579dba8230ab5c1f7ea7d",
+      "bytes": 316926,
+      "etagObserved": "\"6811d7ce-4d5fe\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 07:57:02 GMT"
+    },
+    {
+      "month": "2020-06",
+      "filename": "lichess_db_broadcast_2020-06.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2020-06.pgn.zst",
+      "sha256": "2cb57e6681cdaaa18142f3287d0cdb057210638f519b2e65a90374a78acf7cdd",
+      "bytes": 218983,
+      "etagObserved": "\"6811d7d3-35767\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 07:57:07 GMT"
+    },
+    {
+      "month": "2020-07",
+      "filename": "lichess_db_broadcast_2020-07.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2020-07.pgn.zst",
+      "sha256": "d2d12d73ea2721122a50622ec669ab8a50324fb97faf2a3721d292a9824353e4",
+      "bytes": 301115,
+      "etagObserved": "\"6811d7d8-4983b\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 07:57:12 GMT"
+    },
+    {
+      "month": "2020-08",
+      "filename": "lichess_db_broadcast_2020-08.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2020-08.pgn.zst",
+      "sha256": "bfc3216b85ccdc63b7ffd6261d826347f5b294006ba222e82585433d8fb7fe18",
+      "bytes": 200790,
+      "etagObserved": "\"6811d7dc-31056\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 07:57:16 GMT"
+    },
+    {
+      "month": "2020-09",
+      "filename": "lichess_db_broadcast_2020-09.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2020-09.pgn.zst",
+      "sha256": "69169589e509b1717faabaa8ff03067af10869642d156b6500f421e2775a798e",
+      "bytes": 333443,
+      "etagObserved": "\"6811d7e2-51683\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 07:57:22 GMT"
+    },
+    {
+      "month": "2020-10",
+      "filename": "lichess_db_broadcast_2020-10.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2020-10.pgn.zst",
+      "sha256": "23c6f9726b7f50af1297442316dba364c7a19fb2ab5c5cecdb9526a69e6f1664",
+      "bytes": 469114,
+      "etagObserved": "\"6811d7eb-7287a\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 07:57:31 GMT"
+    },
+    {
+      "month": "2020-11",
+      "filename": "lichess_db_broadcast_2020-11.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2020-11.pgn.zst",
+      "sha256": "61a489bba13af03271c0eaa3fc08cda6054bc94e07c82a933810767e63b55e88",
+      "bytes": 249103,
+      "etagObserved": "\"6811d7f0-3cd0f\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 07:57:36 GMT"
+    },
+    {
+      "month": "2020-12",
+      "filename": "lichess_db_broadcast_2020-12.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2020-12.pgn.zst",
+      "sha256": "91b4ad4576ee1e53aeff3492ccacd25a0e58112befe8058016fff5fb62c32369",
+      "bytes": 761423,
+      "etagObserved": "\"6811d804-b9e4f\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 07:57:56 GMT"
+    },
+    {
+      "month": "2021-01",
+      "filename": "lichess_db_broadcast_2021-01.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2021-01.pgn.zst",
+      "sha256": "48159f1a55c61dca8addf1e37f555ac4a10f129851b0ae5331afbd70b53b7b8f",
+      "bytes": 393711,
+      "etagObserved": "\"6811d80e-601ef\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 07:58:06 GMT"
+    },
+    {
+      "month": "2021-02",
+      "filename": "lichess_db_broadcast_2021-02.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2021-02.pgn.zst",
+      "sha256": "d68fb32b9a895e2b1acb420ea50414c81ca95a8dca83223cc44e871958113ca2",
+      "bytes": 246822,
+      "etagObserved": "\"6811d814-3c426\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 07:58:12 GMT"
+    },
+    {
+      "month": "2021-03",
+      "filename": "lichess_db_broadcast_2021-03.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2021-03.pgn.zst",
+      "sha256": "c8610ce7a1e03093236f8e3ffd6f18642bafc8706f42cc61d48214dc1810432b",
+      "bytes": 430712,
+      "etagObserved": "\"6811d81e-69278\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 07:58:22 GMT"
+    },
+    {
+      "month": "2021-04",
+      "filename": "lichess_db_broadcast_2021-04.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2021-04.pgn.zst",
+      "sha256": "ca86c70aff854377423a6cfedd17290e377b47a594bf5f263211441d4f23a42b",
+      "bytes": 428878,
+      "etagObserved": "\"6811d82d-68b4e\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 07:58:37 GMT"
+    },
+    {
+      "month": "2021-05",
+      "filename": "lichess_db_broadcast_2021-05.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2021-05.pgn.zst",
+      "sha256": "4bd8733d23c1318207a1f492e10d176edd1e3a505c637e0442ff82ecd00c7370",
+      "bytes": 2771026,
+      "etagObserved": "\"6811d866-2a4852\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 07:59:34 GMT"
+    },
+    {
+      "month": "2021-06",
+      "filename": "lichess_db_broadcast_2021-06.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2021-06.pgn.zst",
+      "sha256": "99c37b910da4be0d9d8aa1491456c7e08a6e9932e54244cb17b41b7afd754ee6",
+      "bytes": 3182381,
+      "etagObserved": "\"6811d8b4-308f2d\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 08:00:52 GMT"
+    },
+    {
+      "month": "2021-07",
+      "filename": "lichess_db_broadcast_2021-07.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2021-07.pgn.zst",
+      "sha256": "facfbdeff07d7f36cdcf14bd342ef7b663dcb6cb5c643af920aa3f3076d7861a",
+      "bytes": 5238417,
+      "etagObserved": "\"6811d948-4fee91\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 08:03:20 GMT"
+    },
+    {
+      "month": "2021-08",
+      "filename": "lichess_db_broadcast_2021-08.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2021-08.pgn.zst",
+      "sha256": "da11a29ce22c92e6ad87bc33e005b69e91040bc99ee981db39b99ea50a05f38b",
+      "bytes": 12054739,
+      "etagObserved": "\"6811da38-b7f0d3\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 08:07:20 GMT"
+    },
+    {
+      "month": "2021-09",
+      "filename": "lichess_db_broadcast_2021-09.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2021-09.pgn.zst",
+      "sha256": "4d21b63b49b1ff458f6011033bb242f3d95138b6ddb5ccc01b0a24213cb92711",
+      "bytes": 5313472,
+      "etagObserved": "\"6811daad-5113c0\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 08:09:17 GMT"
+    },
+    {
+      "month": "2021-10",
+      "filename": "lichess_db_broadcast_2021-10.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2021-10.pgn.zst",
+      "sha256": "22a23de4e16713846452c3a7c2f9071501f3046d2d5f7e54348a3d33551459f3",
+      "bytes": 5665418,
+      "etagObserved": "\"6811db2e-56728a\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 08:11:26 GMT"
+    },
+    {
+      "month": "2021-11",
+      "filename": "lichess_db_broadcast_2021-11.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2021-11.pgn.zst",
+      "sha256": "23b4b06d4309ab726349a89040493cdb0bf1cca524a7ddbf480f41fa7bacf8f9",
+      "bytes": 7190194,
+      "etagObserved": "\"6811dbbb-6db6b2\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 08:13:47 GMT"
+    },
+    {
+      "month": "2021-12",
+      "filename": "lichess_db_broadcast_2021-12.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2021-12.pgn.zst",
+      "sha256": "a88ce4bb96ec670f52716e108743bb629fa70e3fe0dd3d892c042d4c68a799a7",
+      "bytes": 5743576,
+      "etagObserved": "\"6811dc35-57a3d8\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 08:15:49 GMT"
+    },
+    {
+      "month": "2022-01",
+      "filename": "lichess_db_broadcast_2022-01.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2022-01.pgn.zst",
+      "sha256": "b66e0af21df09713bb7093cac853ef04527d589963e0bcbd39620cf03f20303f",
+      "bytes": 1791355,
+      "etagObserved": "\"6811dc58-1b557b\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 08:16:24 GMT"
+    },
+    {
+      "month": "2022-02",
+      "filename": "lichess_db_broadcast_2022-02.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2022-02.pgn.zst",
+      "sha256": "fcca15bd3d0060bade81a799fb42ecfdbaf70bcc8746488b7ad623b45431b805",
+      "bytes": 2235720,
+      "etagObserved": "\"6811dc86-221d48\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 08:17:10 GMT"
+    },
+    {
+      "month": "2022-03",
+      "filename": "lichess_db_broadcast_2022-03.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2022-03.pgn.zst",
+      "sha256": "b5ab992f88d28ed9a225f1fe64ab74485de9811483fbd66edfb9095aac2aa408",
+      "bytes": 2722749,
+      "etagObserved": "\"6811dcbf-298bbd\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 08:18:07 GMT"
+    },
+    {
+      "month": "2022-04",
+      "filename": "lichess_db_broadcast_2022-04.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2022-04.pgn.zst",
+      "sha256": "c0b2607462be962125535ad4afdce21f362a0d4113aa4db3c6daddacd3ea03f3",
+      "bytes": 4163055,
+      "etagObserved": "\"6811dd16-3f85ef\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 08:19:34 GMT"
+    },
+    {
+      "month": "2022-05",
+      "filename": "lichess_db_broadcast_2022-05.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2022-05.pgn.zst",
+      "sha256": "752168d1f620544e12e6974d92e1974655687055049b59b86bd98bf99aa3ab72",
+      "bytes": 3546408,
+      "etagObserved": "\"6811dd5c-361d28\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 08:20:44 GMT"
+    },
+    {
+      "month": "2022-06",
+      "filename": "lichess_db_broadcast_2022-06.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2022-06.pgn.zst",
+      "sha256": "517cf19858c8fb43f17fa4375f1bb8c6a52a5f21599232e5b62e81341056fc96",
+      "bytes": 4037529,
+      "etagObserved": "\"6811ddb7-3d9b99\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 08:22:15 GMT"
+    },
+    {
+      "month": "2022-07",
+      "filename": "lichess_db_broadcast_2022-07.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2022-07.pgn.zst",
+      "sha256": "fcee46c674066941d46531938511fc7a7de45a5153fc115465dde7f8032a5b96",
+      "bytes": 8037313,
+      "etagObserved": "\"6811de6c-7aa3c1\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 08:25:16 GMT"
+    },
+    {
+      "month": "2022-08",
+      "filename": "lichess_db_broadcast_2022-08.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2022-08.pgn.zst",
+      "sha256": "2cdc93fe77ab43e534214ae6a44462d261bebb10c47ad61d1c4d02b67d313461",
+      "bytes": 11402433,
+      "etagObserved": "\"6811df40-adfcc1\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 08:28:48 GMT"
+    },
+    {
+      "month": "2022-09",
+      "filename": "lichess_db_broadcast_2022-09.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2022-09.pgn.zst",
+      "sha256": "e1a80febd895ac08f9be0c405d5c788381084a49af8a991b9a5a4a070ef448a0",
+      "bytes": 4525335,
+      "etagObserved": "\"6811df9d-450d17\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 08:30:21 GMT"
+    },
+    {
+      "month": "2022-10",
+      "filename": "lichess_db_broadcast_2022-10.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2022-10.pgn.zst",
+      "sha256": "316cca64cce9ebf1b31c2f646a63e9ff8122eb18da5c2830a37276d9f829871d",
+      "bytes": 5127438,
+      "etagObserved": "\"6811e00b-4e3d0e\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 08:32:11 GMT"
+    },
+    {
+      "month": "2022-11",
+      "filename": "lichess_db_broadcast_2022-11.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2022-11.pgn.zst",
+      "sha256": "fba1b54c418521dd803e854560dc5c5d338bf815da98ebf82e547e544f118102",
+      "bytes": 2351230,
+      "etagObserved": "\"6811e042-23e07e\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 08:33:06 GMT"
+    },
+    {
+      "month": "2022-12",
+      "filename": "lichess_db_broadcast_2022-12.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2022-12.pgn.zst",
+      "sha256": "698ada93a6474d7c8036759454e4903b86d5d79965ee61f271275e5f58179033",
+      "bytes": 8347485,
+      "etagObserved": "\"6811e0ed-7f5f5d\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 08:35:57 GMT"
+    },
+    {
+      "month": "2023-01",
+      "filename": "lichess_db_broadcast_2023-01.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2023-01.pgn.zst",
+      "sha256": "4bb223a574c148a75eccd260bb89c1d748c2ee505e594ad1578cfc1a0b97fe3e",
+      "bytes": 3021062,
+      "etagObserved": "\"6811e13a-2e1906\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 08:37:14 GMT"
+    },
+    {
+      "month": "2023-02",
+      "filename": "lichess_db_broadcast_2023-02.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2023-02.pgn.zst",
+      "sha256": "bcb758ec420c5e38a9aedceff21b20b80451e3418ee6893fa10398386981b964",
+      "bytes": 3642207,
+      "etagObserved": "\"6811e190-37935f\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 08:38:40 GMT"
+    },
+    {
+      "month": "2023-03",
+      "filename": "lichess_db_broadcast_2023-03.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2023-03.pgn.zst",
+      "sha256": "3c4fa359993716557123ca4f6ba9c73c098a407646fbc909e08f4378db15a910",
+      "bytes": 4127867,
+      "etagObserved": "\"6811e1e3-3efc7b\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 08:40:03 GMT"
+    },
+    {
+      "month": "2023-04",
+      "filename": "lichess_db_broadcast_2023-04.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2023-04.pgn.zst",
+      "sha256": "74174b6a3bd4981ac0366cf26258f62f252aabfc790affc35792b16ab04461f8",
+      "bytes": 5447089,
+      "etagObserved": "\"6811e262-531db1\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 08:42:10 GMT"
+    },
+    {
+      "month": "2023-05",
+      "filename": "lichess_db_broadcast_2023-05.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2023-05.pgn.zst",
+      "sha256": "1a6c0bba0cced51feb50b9e62a85f5713ba4ad957334e056f9713db94f423450",
+      "bytes": 4726168,
+      "etagObserved": "\"6811e2cc-481d98\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 08:43:56 GMT"
+    },
+    {
+      "month": "2023-06",
+      "filename": "lichess_db_broadcast_2023-06.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2023-06.pgn.zst",
+      "sha256": "49cff44dcef9877a4b658118f887a954d67a6875a2da4595ad4b5c72cbb37302",
+      "bytes": 10093165,
+      "etagObserved": "\"6811e399-9a026d\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 08:47:21 GMT"
+    },
+    {
+      "month": "2023-07",
+      "filename": "lichess_db_broadcast_2023-07.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2023-07.pgn.zst",
+      "sha256": "895655258162edfbfaa7c81529e481772bfdb85495a2363a84f95c4aed55ddc7",
+      "bytes": 13945705,
+      "etagObserved": "\"6811e4b1-d4cb69\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 08:52:01 GMT"
+    },
+    {
+      "month": "2023-08",
+      "filename": "lichess_db_broadcast_2023-08.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2023-08.pgn.zst",
+      "sha256": "db8fcee8390c2edbf959c197f9da89714ac565d00e10b221afcd769366ea7691",
+      "bytes": 8086823,
+      "etagObserved": "\"6811e559-7b6527\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 08:54:49 GMT"
+    },
+    {
+      "month": "2023-09",
+      "filename": "lichess_db_broadcast_2023-09.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2023-09.pgn.zst",
+      "sha256": "b11402dab04b8270942723660956f9258f51aeea687e4f4b95942bc801336be6",
+      "bytes": 6667984,
+      "etagObserved": "\"6811e5e9-65bed0\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 08:57:13 GMT"
+    },
+    {
+      "month": "2023-10",
+      "filename": "lichess_db_broadcast_2023-10.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2023-10.pgn.zst",
+      "sha256": "9589177b519c848236fe684d28ad3cc2afa80a360755a31376efd7767a247452",
+      "bytes": 9979495,
+      "etagObserved": "\"6811e6b4-984667\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 09:00:36 GMT"
+    },
+    {
+      "month": "2023-11",
+      "filename": "lichess_db_broadcast_2023-11.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2023-11.pgn.zst",
+      "sha256": "3390ad4bd2f2a5d6ad3a4475723fb591fe8f4bc16926ec9eb1854696f400399c",
+      "bytes": 7860008,
+      "etagObserved": "\"6811e745-77ef28\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 09:03:01 GMT"
+    },
+    {
+      "month": "2023-12",
+      "filename": "lichess_db_broadcast_2023-12.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2023-12.pgn.zst",
+      "sha256": "a2fa6ef6a6d3bc219c6acbbfded72df45f6aa24111a2cb314153e0b88caf0048",
+      "bytes": 10865867,
+      "etagObserved": "\"6811e810-a5cccb\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 09:06:24 GMT"
+    },
+    {
+      "month": "2024-01",
+      "filename": "lichess_db_broadcast_2024-01.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2024-01.pgn.zst",
+      "sha256": "edd008e921e495e0f176967eb81434004692c52ae1cd1fe20e3d03bde37d24fb",
+      "bytes": 8005269,
+      "etagObserved": "\"6811ccab-7a2695\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 07:09:31 GMT"
+    },
+    {
+      "month": "2024-02",
+      "filename": "lichess_db_broadcast_2024-02.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2024-02.pgn.zst",
+      "sha256": "5b363f1041d893c034f7e349bbe8b290c909b135eca116c0eb1a942bd1d08ae4",
+      "bytes": 6711907,
+      "etagObserved": "\"6811cd40-666a63\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 07:12:00 GMT"
+    },
+    {
+      "month": "2024-03",
+      "filename": "lichess_db_broadcast_2024-03.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2024-03.pgn.zst",
+      "sha256": "1174cfd7900603ab9f435a1f37f0447aa613c3d646e650e8828e0a6eb7766551",
+      "bytes": 10075618,
+      "etagObserved": "\"6811ce01-99bde2\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 07:15:13 GMT"
+    },
+    {
+      "month": "2024-04",
+      "filename": "lichess_db_broadcast_2024-04.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2024-04.pgn.zst",
+      "sha256": "8f9081128c29713868e02f7a862cae50274f74f3dad1d9e3af0f6ef2c29f4fef",
+      "bytes": 8455619,
+      "etagObserved": "\"6811cea7-8105c3\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 07:17:59 GMT"
+    },
+    {
+      "month": "2024-05",
+      "filename": "lichess_db_broadcast_2024-05.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2024-05.pgn.zst",
+      "sha256": "b367b00f0d594e6a5942947a8ca55fc243f9de5dbf4a16fc851ff8404c596fea",
+      "bytes": 13000081,
+      "etagObserved": "\"6811cfa1-c65d91\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 07:22:09 GMT"
+    },
+    {
+      "month": "2024-06",
+      "filename": "lichess_db_broadcast_2024-06.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2024-06.pgn.zst",
+      "sha256": "ea871988a15bb72c4e359ee935ceb18103eb978672c86983f5563139e9eefeb1",
+      "bytes": 13741174,
+      "etagObserved": "\"6811d0ad-d1ac76\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 07:26:37 GMT"
+    },
+    {
+      "month": "2024-07",
+      "filename": "lichess_db_broadcast_2024-07.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2024-07.pgn.zst",
+      "sha256": "8b9d0e9f247363d799947232854bd2aee88c27faf80a6a3a2468d72bb6d2853e",
+      "bytes": 19707495,
+      "etagObserved": "\"6811d212-12cb667\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 07:32:34 GMT"
+    },
+    {
+      "month": "2024-08",
+      "filename": "lichess_db_broadcast_2024-08.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2024-08.pgn.zst",
+      "sha256": "1ad8ce6ab83688ff2813b62ae98b0962ab467756c3cf79641c4a7ce7e99f2137",
+      "bytes": 21230539,
+      "etagObserved": "\"6811d379-143f3cb\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 07:38:33 GMT"
+    },
+    {
+      "month": "2024-09",
+      "filename": "lichess_db_broadcast_2024-09.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2024-09.pgn.zst",
+      "sha256": "e6b441d0c8994648be6b024e7d14feaaaba675567b76607decf6cc91cfeda447",
+      "bytes": 13411172,
+      "etagObserved": "\"6811d470-cca364\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 07:42:40 GMT"
+    },
+    {
+      "month": "2024-10",
+      "filename": "lichess_db_broadcast_2024-10.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2024-10.pgn.zst",
+      "sha256": "7d2042e12bfd9e077402865dd4ca0c335d68da31d414a88f2c94842b48971603",
+      "bytes": 11308945,
+      "etagObserved": "\"6811d54c-ac8f91\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 07:46:20 GMT"
+    },
+    {
+      "month": "2024-11",
+      "filename": "lichess_db_broadcast_2024-11.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2024-11.pgn.zst",
+      "sha256": "354d96760609711ce471c131339a3a999d83929cb790615be4d76fb00bd3a89d",
+      "bytes": 12522861,
+      "etagObserved": "\"6811d62b-bf156d\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 07:50:03 GMT"
+    },
+    {
+      "month": "2024-12",
+      "filename": "lichess_db_broadcast_2024-12.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2024-12.pgn.zst",
+      "sha256": "b2ae52c6cacfc078045760e2f4fd5e8e5ae3d24accf6d02fb8692d3fb5b02e9e",
+      "bytes": 18767695,
+      "etagObserved": "\"6811d786-11e5f4f\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 07:55:50 GMT"
+    },
+    {
+      "month": "2025-01",
+      "filename": "lichess_db_broadcast_2025-01.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2025-01.pgn.zst",
+      "sha256": "301bb574c3aca71d51a070ef7c43954434c10601e90869a262adf21c38801423",
+      "bytes": 11411195,
+      "etagObserved": "\"6811e3b7-ae1efb\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 08:47:51 GMT"
+    },
+    {
+      "month": "2025-02",
+      "filename": "lichess_db_broadcast_2025-02.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2025-02.pgn.zst",
+      "sha256": "f92d0fea95e6c733898a920c0790a8c02f3f8a1e1c9ca0c42f15330cd5430434",
+      "bytes": 10423902,
+      "etagObserved": "\"6811e490-9f0e5e\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 08:51:28 GMT"
+    },
+    {
+      "month": "2025-03",
+      "filename": "lichess_db_broadcast_2025-03.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2025-03.pgn.zst",
+      "sha256": "840bdb7d640f82032f8373c86efcb69d0801c0d54cf3edf2152e4b8d25b8da87",
+      "bytes": 9448612,
+      "etagObserved": "\"6811e54c-902ca4\"",
+      "lastModifiedObserved": "Wed, 30 Apr 2025 08:54:36 GMT"
+    },
+    {
+      "month": "2025-04",
+      "filename": "lichess_db_broadcast_2025-04.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2025-04.pgn.zst",
+      "sha256": "6b6fd9e9e79a94e80d0f556fb323ad951922fdff1f42089fc18a348e65d79624",
+      "bytes": 16218003,
+      "etagObserved": "\"68132750-f77793\"",
+      "lastModifiedObserved": "Thu, 01 May 2025 07:48:32 GMT"
+    },
+    {
+      "month": "2025-05",
+      "filename": "lichess_db_broadcast_2025-05.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2025-05.pgn.zst",
+      "sha256": "ed1b62de4c4f81e19d8e269a0ddbb4c5133361ff942439938f9d20f3d904795c",
+      "bytes": 14139476,
+      "etagObserved": "\"68400f09-d7c054\"",
+      "lastModifiedObserved": "Wed, 04 Jun 2025 09:16:57 GMT"
+    },
+    {
+      "month": "2025-06",
+      "filename": "lichess_db_broadcast_2025-06.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2025-06.pgn.zst",
+      "sha256": "b226325f2798003e4811dca8ea9556dc91837ec9ae3493f00ba102b50a73a43c",
+      "bytes": 18799435,
+      "etagObserved": "\"6863a2d1-11edb4b\"",
+      "lastModifiedObserved": "Tue, 01 Jul 2025 08:56:49 GMT"
+    },
+    {
+      "month": "2025-07",
+      "filename": "lichess_db_broadcast_2025-07.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2025-07.pgn.zst",
+      "sha256": "1ffc6b775d27631ac988dd816a137b6dd0ec05561aeee8b45861e0c08dbcb10b",
+      "bytes": 23831026,
+      "etagObserved": "\"688c72ec-16ba1f2\"",
+      "lastModifiedObserved": "Fri, 01 Aug 2025 07:55:24 GMT"
+    },
+    {
+      "month": "2025-08",
+      "filename": "lichess_db_broadcast_2025-08.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2025-08.pgn.zst",
+      "sha256": "f925d1f3b494517c8eae223976a886bed77a7b8627b17ec287e50cdda766dae8",
+      "bytes": 28856531,
+      "etagObserved": "\"68b547a9-1b850d3\"",
+      "lastModifiedObserved": "Mon, 01 Sep 2025 07:13:45 GMT"
+    },
+    {
+      "month": "2025-09",
+      "filename": "lichess_db_broadcast_2025-09.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2025-09.pgn.zst",
+      "sha256": "da3a261e926a2c0f5e79c393818e643d76448edf94cfdaefa3892258a6f9e7ba",
+      "bytes": 16315369,
+      "etagObserved": "\"68dceac8-f8f3e9\"",
+      "lastModifiedObserved": "Wed, 01 Oct 2025 08:48:08 GMT"
+    },
+    {
+      "month": "2025-10",
+      "filename": "lichess_db_broadcast_2025-10.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2025-10.pgn.zst",
+      "sha256": "77be4c998ca8d3b303928e1619f0f9dc2a03a71d5ab6a59d02d42291ae0524e3",
+      "bytes": 17369667,
+      "etagObserved": "\"6908b9b6-1090a43\"",
+      "lastModifiedObserved": "Mon, 03 Nov 2025 14:18:30 GMT"
+    },
+    {
+      "month": "2025-11",
+      "filename": "lichess_db_broadcast_2025-11.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2025-11.pgn.zst",
+      "sha256": "39deb43faf6e2f4569a76f369ca0a3b87aa7787330c9e2ff87705c6f3bf32ff1",
+      "bytes": 15575096,
+      "etagObserved": "\"692e9ad4-eda838\"",
+      "lastModifiedObserved": "Tue, 02 Dec 2025 07:52:52 GMT"
+    },
+    {
+      "month": "2025-12",
+      "filename": "lichess_db_broadcast_2025-12.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2025-12.pgn.zst",
+      "sha256": "fadbe80ee65e9f8499578e934d7600ece69d09b1cf8abc75fdd3bd840f61e63f",
+      "bytes": 22427525,
+      "etagObserved": "\"695792a3-1563785\"",
+      "lastModifiedObserved": "Fri, 02 Jan 2026 09:40:51 GMT"
+    },
+    {
+      "month": "2026-01",
+      "filename": "lichess_db_broadcast_2026-01.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2026-01.pgn.zst",
+      "sha256": "9abf10d106a8bf5ecd41359825b3bf55c2f124c8a790a380cb98844c2cca5dca",
+      "bytes": 15717635,
+      "etagObserved": "\"697f1c56-efd503\"",
+      "lastModifiedObserved": "Sun, 01 Feb 2026 09:26:46 GMT"
+    },
+    {
+      "month": "2026-02",
+      "filename": "lichess_db_broadcast_2026-02.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2026-02.pgn.zst",
+      "sha256": "ea977569917718b33940ba5379db2adad77d58876c29084294d357f15fe6a31b",
+      "bytes": 12215117,
+      "etagObserved": "\"69aabb5c-ba634d\"",
+      "lastModifiedObserved": "Fri, 06 Mar 2026 11:32:44 GMT"
+    },
+    {
+      "month": "2026-03",
+      "filename": "lichess_db_broadcast_2026-03.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2026-03.pgn.zst",
+      "sha256": "1a5ad83fc9f440dcdadde17b11cc81a953f4895aaf8b8588470b3078209dc7fc",
+      "bytes": 16446491,
+      "etagObserved": "\"69cccb8a-faf41b\"",
+      "lastModifiedObserved": "Wed, 01 Apr 2026 07:38:50 GMT"
+    },
+    {
+      "month": "2026-04",
+      "filename": "lichess_db_broadcast_2026-04.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2026-04.pgn.zst",
+      "sha256": "97b036f3a3639ae3be59c1508b1e18c76ac1b2e8fada4587d1b5c5a93c438d5d",
+      "bytes": 18431347,
+      "etagObserved": "\"69f46f9c-1193d73\"",
+      "lastModifiedObserved": "Fri, 01 May 2026 09:17:16 GMT"
+    },
+    {
+      "month": "2026-05",
+      "filename": "lichess_db_broadcast_2026-05.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2026-05.pgn.zst",
+      "sha256": "d212987f7972a70268809ff6c726acff8bf0987161aacd7647b160f8564f6a53",
+      "bytes": 22912287,
+      "etagObserved": "\"6a1fdad6-15d9d1f\"",
+      "lastModifiedObserved": "Wed, 03 Jun 2026 07:42:14 GMT"
+    },
+    {
+      "month": "2026-06",
+      "filename": "lichess_db_broadcast_2026-06.pgn.zst",
+      "url": "https://database.lichess.org/broadcast/lichess_db_broadcast_2026-06.pgn.zst",
+      "sha256": "65905d611c0d78d90ab57cd9edd3821f4119b46c22b5489fd7e265a74c6767b3",
+      "bytes": 22797518,
+      "etagObserved": "\"6a44d3c4-15bdcce\"",
+      "lastModifiedObserved": "Wed, 01 Jul 2026 08:45:56 GMT"
+    }
+  ],
+  "metadataObservation": {
+    "schemaVersion": 1,
+    "kind": "linerecall-broadcast-metadata-observation-ref",
+    "receiptSha256": "043b06dfd1fdf6adee65b1e1d29e18a561c0a046c4d6a5dd124aeb138465d56c",
+    "sourceManifestSha256": "498f201b0679621cd3e27dbff84ee70760c5e29614acf59863626b96ed14d00e",
+    "sourceSnapshotSha256": "191600fea0223338cc4c371009f7cabb3fe83895b95762393c31520e75976eb4",
+    "observedAt": "2026-08-23T12:24:12.8719886Z",
+    "archiveCount": 78,
+    "localArchivesVerified": true
+  }
+}

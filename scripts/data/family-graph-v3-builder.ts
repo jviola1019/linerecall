@@ -49,7 +49,9 @@ import {
   RepertoireBranchEvidenceSchema,
   classifyBookTerminalStatus,
   classifyRepertoireTier,
+  compareTrainingValueSummaries,
   stableRepertoireCardId,
+  trainingValueSummaryForPath,
   validateEligibleSourceEdgeInventory,
   validateRepertoireGraphDocument,
   type EligibleSourceEdgeInventoryV1,
@@ -861,7 +863,7 @@ function roleAndEligibility(
   }
   if (engine.status === 'quarantined') return { role: 'book', eligibleForDrill: false }
   if (engine.centipawnLoss > 50) {
-    throw new Error(`N>=500 edge ${identity} loses 51-99cp and cannot be silently hidden or mislabeled`)
+    return { role: 'inaccuracy', eligibleForDrill: false }
   }
   return { role: 'book', eligibleForDrill: true }
 }
@@ -995,7 +997,6 @@ export async function buildFamilyGraphFromVerifiedExactStates(options: {
     verified: options.verified,
   })
   const proofs = new Map(proofSet.proofs.map((proof) => [engineProofKey(proof.fromEpd, proof.uci, proof.toEpd), proof.check]))
-  const usedProofs = new Set<string>()
   const nodesByEpd = new Map<string, { id: string; depth: number; outgoing: string[] }>()
   const edgesByKey = new Map<string, GraphEdgeWork>()
   const queue: string[] = [spec.rootEpd]
@@ -1015,7 +1016,6 @@ export async function buildFamilyGraphFromVerifiedExactStates(options: {
       const learnerTurn = row.fromEpd.split(' ')[1] === (spec.side === 'white' ? 'w' : 'b')
       const classification = roleAndEligibility(evidence, `${row.uci} at ${row.fromEpd}`, learnerTurn)
       if (classification === null) continue
-      if (check !== null) usedProofs.add(identity)
       const destinationDepth = sourceNode.depth + 1
       if (destinationDepth > REPERTOIRE_MAX_PLY) continue
       let destination = nodesByEpd.get(row.toEpd)
@@ -1051,9 +1051,6 @@ export async function buildFamilyGraphFromVerifiedExactStates(options: {
       if (edgesByKey.size > spec.limits.maximumEdges) throw new Error('Family graph exceeded its edge hard cap; no partial output was emitted')
     }
   }
-  const unusedProof = [...proofs.keys()].find((key) => !usedProofs.has(key))
-  if (unusedProof) throw new Error(`Engine proof ${unusedProof} does not match an emitted sampled family edge`)
-
   const eligibleEdges = [...edgesByKey.values()].filter(({ eligibleForDrill }) => eligibleForDrill)
   if (eligibleEdges.length === 0) throw new Error('Family pack has no sampled, engine-approved drill edge')
   const incoming = new Map<string, GraphEdgeWork[]>()
@@ -1132,7 +1129,7 @@ export async function buildFamilyGraphFromVerifiedExactStates(options: {
       conditionalUsage,
       provenanceRef: spec.provenanceRef,
     }
-  }).sort((left, right) => left.id.localeCompare(right.id, 'en'))
+  })
 
   const emittedEdges = [...edgesByKey.values()]
     .map((edge) => emittedEdge(edge, spec.provenanceRef))
@@ -1161,25 +1158,64 @@ export async function buildFamilyGraphFromVerifiedExactStates(options: {
   }
   const coreDepth = Math.max(...paths.map(({ learnerDecisionCount }) => learnerDecisionCount)
   )
+  const pack: RepertoireGraphDocument['pack'] = {
+    schemaVersion: REPERTOIRE_SCHEMA_VERSION,
+    id: spec.packId,
+    side: spec.side,
+    rootNodeId,
+    rootPly: spec.rootPly,
+    tier: classifyRepertoireTier(coreDepth, opponentBranchCountAfterRoot),
+    coreDepth,
+    opponentBranchCountAfterRoot,
+    coverage: Math.min(1, paths.reduce((sum, path) => sum + path.conditionalUsage, 0)),
+    ecoCodes: [...spec.ecoCodes].sort(),
+    nodeIds: nodes.map(({ id }) => id),
+    edgeIds: emittedEdges.map(({ id }) => id),
+    pathIds: [],
+    provenanceRef: spec.provenanceRef,
+  }
+  const rankingGraph: RepertoireGraphDocument = {
+    schemaVersion: REPERTOIRE_SCHEMA_VERSION,
+    releaseId: spec.releaseId,
+    pack,
+    nodes,
+    edges: emittedEdges,
+    paths,
+  }
+  const pathValues = new Map(paths.map((path) => [path.id, trainingValueSummaryForPath(rankingGraph, path)]))
+  paths.sort((left, right) => compareTrainingValueSummaries(
+    pathValues.get(left.id)!,
+    pathValues.get(right.id)!,
+    left.id,
+    right.id,
+  ))
+  const bestPathByEdgeId = new Map<string, RepertoirePath>()
+  for (const path of paths) {
+    for (const edgeId of path.edgeIds) bestPathByEdgeId.set(edgeId, bestPathByEdgeId.get(edgeId) ?? path)
+  }
+  const edgeById = new Map(emittedEdges.map((edge) => [edge.id, edge]))
+  for (const node of nodes) {
+    node.outgoingEdgeIds.sort((leftId, rightId) => {
+      const leftPath = bestPathByEdgeId.get(leftId)
+      const rightPath = bestPathByEdgeId.get(rightId)
+      if (leftPath && rightPath) {
+        return compareTrainingValueSummaries(
+          pathValues.get(leftPath.id)!,
+          pathValues.get(rightPath.id)!,
+          edgeById.get(leftId)?.uci ?? leftId,
+          edgeById.get(rightId)?.uci ?? rightId,
+        )
+      }
+      if (leftPath) return -1
+      if (rightPath) return 1
+      return (edgeById.get(leftId)?.uci ?? leftId).localeCompare(edgeById.get(rightId)?.uci ?? rightId, 'en')
+    })
+  }
+  pack.pathIds = paths.map(({ id }) => id)
   const graphValue: RepertoireGraphDocument = {
     schemaVersion: REPERTOIRE_SCHEMA_VERSION,
     releaseId: spec.releaseId,
-    pack: {
-      schemaVersion: REPERTOIRE_SCHEMA_VERSION,
-      id: spec.packId,
-      side: spec.side,
-      rootNodeId,
-      rootPly: spec.rootPly,
-      tier: classifyRepertoireTier(coreDepth, opponentBranchCountAfterRoot),
-      coreDepth,
-      opponentBranchCountAfterRoot,
-      coverage: Math.min(1, paths.reduce((sum, path) => sum + path.conditionalUsage, 0)),
-      ecoCodes: [...spec.ecoCodes].sort(),
-      nodeIds: nodes.map(({ id }) => id),
-      edgeIds: emittedEdges.map(({ id }) => id),
-      pathIds: paths.map(({ id }) => id),
-      provenanceRef: spec.provenanceRef,
-    },
+    pack,
     nodes,
     edges: emittedEdges,
     paths,

@@ -99,6 +99,12 @@ export async function createSyntheticCaroKannGraph(
     key,
     await stableRepertoireEdgeId(edge.fromEpd, edge.uci, edge.toEpd),
   ] as const)))
+  const bestMoveByLearnerEpd = new Map<string, string>()
+  for (const edge of [...rawEdges.values()].sort((left, right) => left.uci.localeCompare(right.uci, 'en'))) {
+    if (edge.fromEpd.split(' ')[1] === 'b' && !bestMoveByLearnerEpd.has(edge.fromEpd)) {
+      bestMoveByLearnerEpd.set(edge.fromEpd, edge.uci)
+    }
+  }
   const outgoing = new Map<string, string[]>()
   const edges: RepertoireEdge[] = [...rawEdges.entries()].map(([key, edge]) => {
     const id = edgeIds.get(key)!
@@ -116,7 +122,13 @@ export async function createSyntheticCaroKannGraph(
       role: 'book',
       eligibleForDrill: true,
       acceptedBookTransposition: false,
-      evidence: createSyntheticRepertoireEvidence({ uci: edge.uci, trainedSide: 'black' }),
+      evidence: createSyntheticRepertoireEvidence({
+        uci: edge.uci,
+        ...(bestMoveByLearnerEpd.get(edge.fromEpd) === undefined
+          ? {}
+          : { bestUci: bestMoveByLearnerEpd.get(edge.fromEpd)! }),
+        trainedSide: 'black',
+      }),
       provenanceRef: SYNTHETIC_GRAPH_PROVENANCE_REF,
     }
   })

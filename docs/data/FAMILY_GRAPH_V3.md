@@ -29,6 +29,77 @@ specifications. They do not download data or run Stockfish themselves. Receipt
 paths are project-root relative; the exact SQLite artifacts remain relative to
 the compact work directory.
 
+## Compact-v3.1 family handoff
+
+The v3.1 handoff consumes the two deep-audited production corpus receipts,
+the pinned taxonomy inventory, and a fully approved editorial ledger. It
+replays every taxonomy move legally, hashes normalized EPD roots, and emits
+one immutable edge inventory per family/side plus one content-addressed index.
+N>=500 edges are retained as book evidence; N100-499 edges remain explicitly
+exploratory. Samples are never pooled across corpora, rating systems, or time
+controls. All 149 proposals remain review-bound, while the approved ledger's
+canonical family count determines how many final families and side records
+remain in the index. A side without a qualifying root is marked study-only
+with an evidence-derived no-root or insufficient-sample disposition.
+
+```powershell
+npm run data:family-handoff-v31 -- `
+  --release-id <approved-release-id> `
+  --broadcast-corpus-receipt <receipt.json> `
+  --q2-corpus-receipt <receipt.json> `
+  --editorial-ledger data/manifests/opening-family-editorial.approved.json
+```
+
+The command fails closed on altered receipts, incomplete taxonomy ownership,
+ambiguous or cyclic roots, duplicate edge ownership, and roots beyond ply 100.
+
+### v3.1 operational boundary and boundedness
+
+`compact-v31-family-handoff.ts` is an evidence handoff and not the production
+graph builder. It streams each receipt-named exact-edge NDJSON partition,
+verifies its byte digest while reading, and retains at most
+`MAX_HANDOFF_EXACT_EDGE_ROWS` (currently 1,000,000) rows in its bounded
+source-edge index. A larger corpus fails closed; it is not loaded wholesale
+and is not silently truncated. Each edge uses the maximum valid individual
+cohort `N` in its corpus, never a sum across cells or corpora. The handoff
+walks every legal eligible continuation reachable from each selected root
+through absolute ply 100 and emits the complete reachable edge inventory.
+Root hints are assertions about the uniquely selected empirical root and do
+not grant eligibility.
+
+The existing `build-family-engine-candidates-v3.ts` and
+`build-family-graphs-v3.ts` commands still consume the v3 exact SQLite state
+handoff and its reviewed v3 specifications. There is no operational adapter
+that bridges the v3.1 streamed NDJSON handoff into those SQLite graph-builder
+inputs in this release. Consequently, a v3.1 eligibility index or its
+synthetic fixtures is not a production graph, does not authorize Stockfish,
+and cannot be presented as connected production ingestion.
+
+The proposed provider-neutral read contract is described in
+`scripts/data/family-graph-evidence-reader.ts`. A v3 SQLite implementation
+can satisfy it because `family-graph-v3-builder.ts` reads `positions`, `edges`,
+and `outcomes` (including source/target EPD, SAN, `cohort_id`, month,
+`rating_detail`, `min_ply`, and separate position reach and edge move rows).
+The v3.1 projection cannot currently satisfy that contract. Its exact row
+schema in `scripts/data/compact-v31-production-contracts.ts` contains only
+EPD hashes, UCI, one `sampleSize`, and W/D/L cells keyed by rating system,
+time control, and rating band. It has no EPD/SAN or node IDs, no month,
+`cohort_id`, rating detail, `min_ply`, position-reach rows, or trained-side
+dimension. It therefore cannot produce the graph builder's complete
+`EvidenceCohortResult` without inventing reach or cohort data, and no v3.1
+adapter is provided.
+
+There is a separate eligibility accounting gap: v3.1 currently defines
+`sampleSize` as the maximum rating-cell `N`. A valid source/time-control
+cohort may have its canonical rating-band counts spread across cells, while
+the `<1800` aggregate can overlap its three beginner sub-bands. A future
+projection must carry enough cohort/band detail to sum disjoint canonical
+bands (and bind trained side) before applying the 100/500 thresholds; neither
+cross-corpus pooling nor the current max-cell shortcut is sufficient evidence.
+The v3.1 handoff therefore fails closed on multi-cell edge rows until that
+richer projection is available; it does not reinterpret them as complete
+cohort totals.
+
 ```powershell
 npx tsx scripts/data/build-family-engine-candidates-v3.ts `
   --receipt-root . `

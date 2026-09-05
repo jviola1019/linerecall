@@ -148,7 +148,7 @@ export class MemoryProgressRepository implements ProgressRepository {
 export async function selectProgressRepository(): Promise<{ repository: ProgressRepository; warning: string | null }> {
   return {
     repository: new MemoryProgressRepository(),
-    warning: 'Session-only progress is active. Sign in to cloud sync, use supported Artifact storage, or export JSON before leaving.',
+    warning: 'Session-only progress is active. Export JSON before leaving.',
   }
 }
 

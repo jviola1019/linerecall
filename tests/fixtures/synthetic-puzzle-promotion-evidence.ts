@@ -9,6 +9,7 @@ import {
   sha256Json,
 } from '../../scripts/data/puzzle-v3-contracts.ts'
 import { tacticalPuzzleFromVerifiedEnvelope } from '../../scripts/data/puzzle-v3-promotion.ts'
+import { createSyntheticPuzzleEngineProof } from './synthetic-puzzle-engine-proof.ts'
 
 export function createSyntheticVerifiedPuzzlePromotionEvidence(options: {
   releaseId: string
@@ -18,11 +19,15 @@ export function createSyntheticVerifiedPuzzlePromotionEvidence(options: {
   q2ExactReceiptSha256: string
   graphReconciliationSha256: string
   engineSha256: string
-  nnueSha256: string
+  nnueSha256: string | string[]
+  stockfishSourceManifestSha256?: string
+  stockfishProvisionReceiptSha256?: string
+  stockfishReleaseCommit?: string
   engineCampaignSha256?: string
   puzzleId?: string
 }) {
   const puzzleId = options.puzzleId ?? 'Puzzle1'
+  const campaignNnueSha256 = Array.isArray(options.nnueSha256) ? options.nnueSha256 : [options.nnueSha256]
   const parsed = parsePuzzleSourceFields([
     puzzleId,
     'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1',
@@ -42,20 +47,12 @@ export function createSyntheticVerifiedPuzzlePromotionEvidence(options: {
     taxonomyLineIdsForTag: () => [],
   })
   const { engineStatus: _engineStatus, releaseEligible: _releaseEligible, ...candidateBase } = candidate
-  const engineChecks = candidate.learnerNodes.map((node) => ({
+  const engineChecks = candidate.learnerNodes.map((node) => createSyntheticPuzzleEngineProof({
     learnerIndex: node.learnerIndex,
     positionEpd: node.epd,
     expectedMoveUci: node.expectedMoveUci,
-    engineBestMoveUci: node.expectedMoveUci,
-    centipawnLoss: 0,
-    mateConsistent: true,
-    status: 'pass' as const,
-    engine: 'Stockfish 18' as const,
     engineSha256: options.engineSha256,
-    nnueSha256: options.nnueSha256,
-    settingsSha256: PUZZLE_ENGINE_SETTINGS_SHA256,
-    settings: { threads: 1 as const, hashMb: 128 as const, multiPv: 5 as const, nodes: 250_000 as const },
-    principalVariationUci: [node.expectedMoveUci],
+    nnueSha256: campaignNnueSha256[0]!,
     analyzedAt: '2026-07-28T11:00:00.000Z',
   }))
   const evidence = PuzzleV3EvidenceBindingV1Schema.parse({
@@ -103,9 +100,10 @@ export function createSyntheticVerifiedPuzzlePromotionEvidence(options: {
     },
     engineCampaign: {
       campaignSha256: options.engineCampaignSha256 ?? 'd'.repeat(64),
-      sourceReceiptSha256: 'e'.repeat(64), sourceManifestSha256: 'f'.repeat(64),
-      releaseCommit: 'a'.repeat(40), executableSha256: options.engineSha256,
-      nnueSha256: [options.nnueSha256], settingsSha256: PUZZLE_ENGINE_SETTINGS_SHA256,
+      sourceReceiptSha256: options.stockfishProvisionReceiptSha256 ?? 'e'.repeat(64),
+      sourceManifestSha256: options.stockfishSourceManifestSha256 ?? 'f'.repeat(64),
+      releaseCommit: options.stockfishReleaseCommit ?? 'a'.repeat(40), executableSha256: options.engineSha256,
+      nnueSha256: campaignNnueSha256, settingsSha256: PUZZLE_ENGINE_SETTINGS_SHA256,
     },
   })
   const evidenceBindingSha256 = sha256Json(evidence)

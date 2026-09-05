@@ -18,6 +18,29 @@ jobs:
     name: Test and audit
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    services:
+      postgres:
+        image: postgres:18.0-bookworm@sha256:3f55f8895c4ed50603e2fbdfc72fffeeaba3173321fee5cb825bbbeb30d9d854
+        env:
+          POSTGRES_DB: linerecall_ci
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d linerecall_ci"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+      redis:
+        image: redis:8.2.3-bookworm@sha256:0908d9af26bf9b985e984a40a5eb82eed229b07a3317eee6843832c3cc3a9619
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
     env:
       CI: 'true'
     steps:
@@ -57,6 +80,14 @@ jobs:
           npm run hosted:test
           npm run server:test
 
+      - name: Verify real PostgreSQL 18 RLS and Redis coordination
+        env:
+          LINERECALL_CONNECTED_INTEGRATION: '1'
+          LINERECALL_INTEGRATION_ADMIN_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/linerecall_ci
+          LINERECALL_INTEGRATION_APP_DATABASE_URL: postgresql://linerecall_app:integration-app-only@127.0.0.1:5432/linerecall_ci
+          LINERECALL_INTEGRATION_REDIS_URL: redis://127.0.0.1:6379/0
+        run: npm run server:test:connected-dependencies
+
       - name: Build connected client and server
         run: |
           npm run hosted:build
@@ -88,6 +119,11 @@ jobs:
           npm run build:review
           npm run artifact:harden
           npm run artifact:audit
+
+      - name: Verify synthetic family and puzzle browser behavior
+        run: |
+          npx playwright install --with-deps chromium
+          npm run test:e2e:review
 
       - name: Produce fail-closed release report
         if: always()

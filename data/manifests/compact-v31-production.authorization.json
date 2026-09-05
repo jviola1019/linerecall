@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "kind": "linerecall-compact-v31-production-authorization",
+  "storageModel": "log-structured-external-merge-v3.1",
+  "proposalCreatedAt": "2026-08-28T04:15:00.000Z",
+  "proposedBy": "line-recall-release-engineering",
+  "benchmarkAuthorizationSha256": "07e5c36c6ab6bb932a9547b963c6208cc81815ff642c85998fa8d078af5a7cb7",
+  "sourceManifests": {
+    "broadcasts": {
+      "path": "data/manifests/broadcasts.source.json",
+      "bytes": 22181,
+      "sha256": "498f201b0679621cd3e27dbff84ee70760c5e29614acf59863626b96ed14d00e"
+    },
+    "standardQ2_2026": {
+      "path": "data/manifests/lichess-standard-q2-2026.source.json",
+      "bytes": 3462,
+      "sha256": "07f4b232476e32a02f0641c1f265faffc1b63c50569e1a462cd39426c43ab1c6"
+    }
+  },
+  "broadcastTransportIdentity": {
+    "proposal": {
+      "path": "data/manifests/compact-v31/bootstrap/broadcast-proposal-c598a637c729be22a61583345b33589f462f1fb07294ef53678f0ecc85e857d5.json",
+      "bytes": 32962,
+      "sha256": "c598a637c729be22a61583345b33589f462f1fb07294ef53678f0ecc85e857d5"
+    },
+    "observation": {
+      "path": "data/manifests/compact-v31/bootstrap/broadcast-observation-043b06dfd1fdf6adee65b1e1d29e18a561c0a046c4d6a5dd124aeb138465d56c.json",
+      "bytes": 83182,
+      "sha256": "043b06dfd1fdf6adee65b1e1d29e18a561c0a046c4d6a5dd124aeb138465d56c"
+    }
+  },
+  "q2AdaptiveReplayApproval": {
+    "path": "data/manifests/compact-v31-q2-adaptive-replay.authorization.json",
+    "bytes": 710,
+    "sha256": "ac1a3e2d19491055e076314ee24dff99031b42eaa1268c93b267b59476bc3685"
+  },
+  "limits": {
+    "minimumAvailableMemoryBytes": 8589934592,
+    "maximumWorkerResidentBytes": 6442450944,
+    "minimumFreeReserveBytes": 10737418240,
+    "archiveConcurrency": 1,
+    "maximumDeltaBytesPerArchive": 2147483648,
+    "maximumPartitionRunBytes": 2147483648,
+    "maximumMergeWorkspaceBytes": 17179869184,
+    "maximumReceiptBytes": 67108864,
+    "maximumRetainedDeltaBytes": 34359738368,
+    "maximumFinalStateBytes": 34359738368,
+    "inputStagingBytes": 0
+  },
+  "limitsSha256": "d8ab004f5e646f3eba52c5f6f8ef1a632f94e0b55eee3303dab430fac12a0be2",
+  "decision": "pending",
+  "reviewedAt": null,
+  "reviewedBy": null,
+  "benchmarkRepeatabilityBinding": null,
+  "authorizedCorpora": [],
+  "q2IngestionAuthorized": false,
+  "productionExecutionAuthorized": false,
+  "promotionAuthorized": false,
+  "releaseEligible": false,
+  "note": "Pending only. Approval requires two byte-identical complete broadcast benchmark runs, review of measured resource bounds, explicit authorization for both approved corpora, and a named reviewer. This file cannot authorize execution or promotion in its present state."
+}

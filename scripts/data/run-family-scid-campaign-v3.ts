@@ -5,7 +5,7 @@ import { readHandleBoundRegularFile } from '../lib/handle-bound-file.ts'
 import { ImmutableJsonReceiptV1Schema, resolveReceiptRoot, resolveSafeReceiptPath } from '../release/lib/immutable-json-receipt.ts'
 import { runFamilyScidCampaign } from './family-scid-v3.ts'
 
-const OPTIONS = new Set(['--receipt-root', '--input', '--output', '--scid-eco', '--manifest'])
+const OPTIONS = new Set(['--receipt-root', '--input', '--output', '--scid-eco', '--manifest', '--provision'])
 
 function option(name: string, fallback?: string): string {
   const indexes = process.argv.flatMap((value, index) => value === name ? [index] : [])
@@ -41,6 +41,7 @@ export async function main(): Promise<void> {
     outputPath: option('--output', 'scid/family-scid-campaign-report.json'),
     scidEcoPath: resolve(option('--scid-eco')),
     scidManifestPath: resolve(option('--manifest', 'data/manifests/scid.source.json')),
+    scidProvisionReceiptPath: resolve(option('--provision')),
   })
   process.stdout.write(`Cross-checked ${report.sampling.selected}/${report.sampling.requiredSampleSize} stratified family line(s); ${report.summary.quarantined} require quarantine.\n`)
 }

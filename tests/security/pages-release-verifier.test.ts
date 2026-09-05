@@ -29,16 +29,38 @@ async function writeJson(path: string, value: unknown): Promise<void> {
 
 function readiness(appSnapshotManifestSha256: string) {
   const hash = 'a'.repeat(64)
+  const families = Array.from({ length: 149 }, (_, index) => `fixture-family-${index}`).sort((left, right) => left.localeCompare(right, 'en'))
+  const reviewedFamilies = families.map((familyId, index) => {
+    const trainable = index < 75
+    return {
+      familyId,
+      trainable,
+      evidenceEligibleSides: trainable ? ['white' as const] : [],
+      emittedSides: trainable ? ['white' as const] : [],
+      nonTrainableReason: trainable ? null : 'insufficient-sample' as const,
+    }
+  })
   return {
     schemaVersion: 3,
     status: 'pass',
     releaseId,
     auditedAt: '2026-07-16T12:00:00.000Z',
-    storageModel: 'bounded-two-pass-content-addressed-v3',
+    storageModel: 'log-structured-external-merge-v3.1',
     appSnapshotManifestSha256,
+    taxonomy: { sourceCommit: '17ee660257de02870636f36248e919f2e01d8e85', sourceManifestSha256: hash, inventorySha256: hash, sourceFileCount: 5, taxonomyLineCount: 3_790, ecoCodeCount: 500, proposedFamilyCount: 149, exactOwnershipClosure: true },
+    familyCoverage: {
+      reviewedProposalFamilyCount: 149,
+      reviewedCanonicalFamilyCount: 149,
+      minimumTrainableFamilyCount: 75,
+      trainableFamilyCount: 75,
+      evidenceEligibleFamilySideCount: 75,
+      emittedFamilySideCount: 75,
+      allEvidenceEligibleFamilySidesEmitted: true,
+      families: reviewedFamilies,
+    },
     corpora: {
-      broadcasts: { manifestSha256: hash, archiveCount: 78, archivesComplete: true, digestsVerified: true, recordsSeen: 1_146_297, accepted: 800_176, rejected: 346_121, deduplicated: 0, accountingReconciles: true },
-      standardQ2_2026: { manifestSha256: hash, archiveCount: 3, archivesComplete: true, digestsVerified: true, recordsSeen: 267_333_507, publishedRecords: 267_333_507, publishedCompressedBytes: 87_256_474_116, accepted: 200_000_000, rejected: 67_333_507, deduplicated: 0, accountingReconciles: true },
+      broadcasts: { manifestSha256: hash, corpusReceiptSha256: hash, exactMergeReceiptSha256: hash, sourceEdgeInventorySha256: hash, eligibleSourceEdges: 1, archiveCount: 78, archivesComplete: true, digestsVerified: true, recordsSeen: 1_146_297, accepted: 800_176, rejected: 346_121, deduplicated: 0, accountingReconciles: true },
+      standardQ2_2026: { manifestSha256: hash, corpusReceiptSha256: hash, exactMergeReceiptSha256: hash, sourceEdgeInventorySha256: hash, eligibleSourceEdges: 1, archiveCount: 3, archivesComplete: true, digestsVerified: true, recordsSeen: 267_333_507, publishedRecords: 267_333_507, publishedCompressedBytes: 87_256_474_116, accepted: 200_000_000, rejected: 67_333_507, deduplicated: 0, accountingReconciles: true },
     },
     graph: { schemaVersion: 3, baselineMaximumPly: 30, adaptiveMaximumPly: 100, exactSecondPassComplete: true, reconciliationComplete: true, allEligiblePracticeBranchesRetained: true, maximumPracticeBranches: null, hiddenEligiblePracticeBranches: 0, terminalPolicy: 'evidence-defined-through-ply-100', coreMinimumLearnerDecisions: 10, provenanceMissing: 0, illegalEdges: 0, quarantinedEdgesInDrills: 0, unresolvedDataDiscrepancies: 0, familyGraphBuildSha256: hash },
     engine: { name: 'Stockfish 18', threads: 1, hashMb: 128, multiPv: 5, nodes: 250_000, learnerNodesChecked: 1, proofInventorySha256: hash, engineSha256: hash, nnueSha256: [hash] },
@@ -62,7 +84,7 @@ interface Fixture {
 async function passingFixture(): Promise<Fixture> {
   const root = await mkdtemp(join(tmpdir(), 'linerecall-pages-'))
   for (const directory of [
-    'src', 'config', 'build/candidate', 'dist', 'audit/generated', 'audit/evidence',
+    'src', 'config', 'build/candidate', 'dist', 'audit/generated', 'audit/evidence', 'audit/templates/evidence',
     'data/generated/v3', 'data/generated/app-snapshot',
   ]) await mkdir(join(root, ...directory.split('/')), { recursive: true })
   await writeFile(join(root, 'src/app.ts'), 'export const release = true\n', 'utf8')
@@ -120,6 +142,23 @@ async function passingFixture(): Promise<Fixture> {
   })
   const configPath = join(root, 'config/release-gates.json')
   await writeJson(configPath, config)
+  const requiredChecks = [
+    'Exact release inputs are signed with a trusted Ed25519 key',
+    'The signature payload binds candidate, source, data, automated, and evidence digests',
+  ]
+  await writeJson(join(root, 'audit/templates/evidence/release-signing.json'), {
+    schemaVersion: 2,
+    id: 'release-signing',
+    status: 'not_run',
+    completedAt: null,
+    reviewer: null,
+    artifactSha256: null,
+    sourceSnapshotSha256: null,
+    summary: 'Release signing has not been completed.',
+    evidence: [],
+    limitations: ['Signing is a hard release blocker.'],
+    requiredChecks,
+  })
   const automated: GateResult[] = [{ id: 'tests', status: 'pass', summary: 'Passed' }]
   const signingStub: GateResult = {
     id: 'release-signing',
@@ -167,6 +206,12 @@ async function passingFixture(): Promise<Fixture> {
     summary: 'Signed release inputs.',
     evidence: [attestationReceipt],
     limitations: [],
+    requiredChecks,
+    requirementResults: requiredChecks.map((requirement) => ({
+      requirement,
+      status: 'pass',
+      evidencePaths: [attestationReceipt.path],
+    })),
   })
   const evidence = [await readEvidence(
     'release-signing',
@@ -175,6 +220,7 @@ async function passingFixture(): Promise<Fixture> {
     root,
     'audit/generated/connected-source-snapshot.json',
     sourceRoots,
+    'audit/templates/evidence/release-signing.json',
   )]
   assert.equal(evidence[0]!.status, 'pass')
   const bindings = await loadVerifiedReleaseBindings({

@@ -52,3 +52,10 @@ The `x-linerecall-user` development header is accepted only under that explicit 
 7. Run `npm run start:lichess-worker` as a separate task with the application database role, verified database CA, `rediss://` endpoint, KMS decrypt permission, and monitored contact User-Agent. Build the dedicated container target with `docker build --target lichess-worker .`; it has no misleading API HTTP health check. The API accepts sync requests only while this task renews its Redis readiness lease.
 
 No cloud resources were deployed and no external provider call was made by the repository tests. Manual accessibility, legal/trademark, production recovery, and live-provider audits remain external release gates.
+
+The public CI additionally runs `npm run test:connected-dependencies` against
+digest-pinned PostgreSQL 18 and Redis containers. It validates real forced RLS,
+non-owner pooled tenant isolation, share resolution, auth-role separation, and
+atomic distributed limits. The runner is ephemeral and is not a substitute for
+the credentialed exercises in
+[`docs/ZERO_COST_STAGING_AND_MANUAL_EVIDENCE.md`](../docs/ZERO_COST_STAGING_AND_MANUAL_EVIDENCE.md).

@@ -5,6 +5,7 @@ import {
   type FamilyCoverageEventV1,
   type FamilyTrainingCursorV1,
   type OpeningFamilyManifestV1,
+  resolveFamilyBranchGroups,
 } from './opening-family.ts'
 import type { FamilyCoverageGenerationV1 } from './family-training-journal.ts'
 
@@ -39,17 +40,14 @@ function pathKey(packId: string, pathId: string): string {
   return `${packId}\0${pathId}`
 }
 
-function branchPathIdsByPack(
+function legacyBranchPathIdsByPack(
   manifest: OpeningFamilyManifestV1,
   sidePackIds: ReadonlySet<string>,
 ): Map<string, Map<string, Set<string>>> {
   const result = new Map<string, Map<string, Set<string>>>()
   for (const membership of manifest.pathMemberships) {
     if (!sidePackIds.has(membership.packId)) continue
-    for (const branchId of new Set([
-      membership.primaryBranchId,
-      ...membership.secondaryBranchIds,
-    ])) {
+    for (const branchId of new Set([membership.primaryBranchId, ...membership.secondaryBranchIds])) {
       const byPack = result.get(branchId) ?? new Map<string, Set<string>>()
       const paths = byPack.get(membership.packId) ?? new Set<string>()
       paths.add(membership.pathId)
@@ -164,32 +162,69 @@ export function restoreFamilyCoverageScope(options: {
     }
   }
 
-  const fullMatches = [...selectedByPack].every(([packId, selected]) =>
-    sameSet(selected, packs.get(packId)!))
-  const branchMemberships = branchPathIdsByPack(manifest, sidePackIds)
-  const branchMatches = [...branchMemberships].filter(([, pathsByPack]) =>
+  // A full-family interpretation is valid only when every promoted side pack
+  // is bound and each cursor selected that pack's complete graph. A single
+  // fully-selected bound pack is not evidence that the whole family ran.
+  const fullMatches = selectedByPack.size === packs.size
+    && [...selectedByPack].every(([packId, selected]) => sameSet(selected, packs.get(packId)!))
+  const branchGroups = resolveFamilyBranchGroups({ manifest, side })
+  const groupedBranchMatches = branchGroups.filter(({ pathIdsByPack }) =>
+    [...selectedByPack].every(([packId, selected]) => {
+      const branchPaths = pathIdsByPack[packId]
+      return branchPaths !== undefined && sameSet(selected, new Set(branchPaths))
+    }))
+  const legacyBranchMatches = [...legacyBranchPathIdsByPack(manifest, sidePackIds)].filter(([, pathsByPack]) =>
     [...selectedByPack].every(([packId, selected]) => {
       const branchPaths = pathsByPack.get(packId)
       return branchPaths !== undefined && sameSet(selected, branchPaths)
     }))
 
-  if (fullMatches && branchMatches.length > 0) {
-    throw new Error('Saved family coverage is ambiguous between full-family and named-branch practice')
-  }
+  // Bound packs may be a prefix of a full-family run. A matching named scope
+  // is ambiguous only when its COMPLETE inventory differs from the family.
+  // Identical all-pack inventories have the same remaining practice obligation.
+  const boundPacksAreComplete = [...selectedByPack].every(([packId, selected]) =>
+    sameSet(selected, packs.get(packId)!))
   if (fullMatches) {
     return { kind: 'full', completedPathKeys: [...completionKeys] }
   }
-  if (branchMatches.length !== 1) {
-    throw new Error(branchMatches.length === 0
+  if (boundPacksAreComplete) {
+    const allPathKeys = new Set([...packs].flatMap(([packId, paths]) =>
+      [...paths].map((pathId) => pathKey(packId, pathId))))
+    const smallerScopeExists = groupedBranchMatches.some(({ pathKeys }) => !sameSet(new Set(pathKeys), allPathKeys))
+      || legacyBranchMatches.some(([, byPack]) => !sameSet(new Set([...byPack].flatMap(([packId, paths]) =>
+        [...paths].map((pathId) => pathKey(packId, pathId)))), allPathKeys))
+    if (smallerScopeExists) throw new Error('Saved family coverage is ambiguous between full-family and named-branch practice')
+    return { kind: 'full', completedPathKeys: [...completionKeys] }
+  }
+  // Prefer an exact legacy branch match when restoring an older journal. A
+  // pre-grouping cycle must keep its original branch identity and path set;
+  // newly grouped cycles use the stable representative ID below.
+  if (legacyBranchMatches.length > 1) {
+    throw new Error('Saved family coverage matches more than one named branch')
+  }
+  if (legacyBranchMatches.length === 1) {
+    const [branchId, pathsByPack] = legacyBranchMatches[0]!
+    const pathKeys = [...pathsByPack].flatMap(([packId, pathIds]) =>
+      [...pathIds].map((pathId) => pathKey(packId, pathId)))
+    return {
+      kind: 'branch',
+      branchId,
+      pathKeys,
+      completedPathKeys: pathKeys.filter((key) => completionKeys.has(key)),
+    }
+  }
+  if (groupedBranchMatches.length !== 1) {
+    throw new Error(groupedBranchMatches.length === 0
       ? 'Saved family coverage does not match a promoted named branch'
       : 'Saved family coverage matches more than one named branch')
   }
-  const [branchId, pathsByPack] = branchMatches[0]!
-  const pathKeys = [...pathsByPack].flatMap(([packId, pathIds]) =>
-    [...pathIds].map((pathId) => pathKey(packId, pathId)))
+  const branch = groupedBranchMatches[0]!
+  const pathKeys = [...branch.pathKeys]
   return {
     kind: 'branch',
-    branchId,
+    // Return the canonical representative so journals written with any
+    // duplicate-label alias restore into the same grouped scope.
+    branchId: branch.id,
     pathKeys,
     completedPathKeys: pathKeys.filter((key) => completionKeys.has(key)),
   }

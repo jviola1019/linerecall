@@ -4,6 +4,7 @@ import { describe, test } from 'node:test'
 import {
   FamilyScidCampaignReportV1Schema,
   FamilyScidCandidateInventoryV1Schema,
+  assertFamilyScidSampleMatchesInventory,
   buildFamilyScidCampaignReport,
   deriveFamilyScidPromotionReceipt,
   selectFamilyScidSample,
@@ -71,7 +72,7 @@ describe('family Scid v3 campaign', () => {
       inventory: value,
       inventoryReceipt: receipt,
       oracleEntries: await fixture(),
-      oracle: { repositoryCommit: 'c'.repeat(40), sourceManifestSha256: 'd'.repeat(64), sha256: 'e'.repeat(64) },
+      oracle: { repositoryCommit: 'c'.repeat(40), sourceManifestSha256: 'd'.repeat(64), provisionReceiptSha256: 'f'.repeat(64), sha256: 'e'.repeat(64) },
       seed: 'fixed-seed',
       completedAt: '2026-08-06T12:00:00.000Z',
     })
@@ -79,6 +80,15 @@ describe('family Scid v3 campaign', () => {
     assert.equal(report.summary.baseEcoMismatch, 1)
     assert.equal(report.summary.quarantined, 1)
     assert.equal(JSON.stringify(report).includes('Sicilian Defense'), false, 'Scid oracle names are not copied into campaign evidence')
+    assert.doesNotThrow(() => assertFamilyScidSampleMatchesInventory({ report, inventory: value }))
+    const reordered = structuredClone(report)
+    reordered.results.reverse()
+    assert.equal(FamilyScidCampaignReportV1Schema.safeParse(reordered).success, true,
+      'shape and aggregate counts alone cannot prove deterministic sample membership')
+    assert.throws(
+      () => assertFamilyScidSampleMatchesInventory({ report: reordered, inventory: value }),
+      /deterministic stratified sample/u,
+    )
     const conflict = report.results.find(({ quarantined }) => quarantined)!
     assert.throws(
       () => deriveFamilyScidPromotionReceipt({
@@ -106,7 +116,7 @@ describe('family Scid v3 campaign', () => {
       inventory: value,
       inventoryReceipt: receipt,
       oracleEntries: await fixture(),
-      oracle: { repositoryCommit: 'c'.repeat(40), sourceManifestSha256: 'd'.repeat(64), sha256: 'e'.repeat(64) },
+      oracle: { repositoryCommit: 'c'.repeat(40), sourceManifestSha256: 'd'.repeat(64), provisionReceiptSha256: 'f'.repeat(64), sha256: 'e'.repeat(64) },
       seed: 'fixed-seed',
       completedAt: '2026-08-06T12:00:00.000Z',
     })
@@ -118,7 +128,7 @@ describe('family Scid v3 campaign', () => {
       inventory: value,
       inventoryReceipt: receipt,
       oracleEntries: [],
-      oracle: { repositoryCommit: 'c'.repeat(40), sourceManifestSha256: 'd'.repeat(64), sha256: 'e'.repeat(64) },
+      oracle: { repositoryCommit: 'c'.repeat(40), sourceManifestSha256: 'd'.repeat(64), provisionReceiptSha256: 'f'.repeat(64), sha256: 'e'.repeat(64) },
       seed: 'fixed-seed',
       completedAt: '2026-08-06T12:00:00.000Z',
     }), /another release/u)
@@ -127,7 +137,7 @@ describe('family Scid v3 campaign', () => {
       inventory: inventory([line(9, 'B00', ['e2e5'])]),
       inventoryReceipt: receipt,
       oracleEntries: [],
-      oracle: { repositoryCommit: 'c'.repeat(40), sourceManifestSha256: 'd'.repeat(64), sha256: 'e'.repeat(64) },
+      oracle: { repositoryCommit: 'c'.repeat(40), sourceManifestSha256: 'd'.repeat(64), provisionReceiptSha256: 'f'.repeat(64), sha256: 'e'.repeat(64) },
       seed: 'fixed-seed',
       completedAt: '2026-08-06T12:00:00.000Z',
     }), /illegal move/u)

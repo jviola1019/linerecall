@@ -19,7 +19,7 @@ import {
   type CompactV31ResourceLimits,
 } from './compact-v31-contracts.ts'
 import { readBoundedRegularFile, syncCompactParentDirectory } from './compact-v3-orchestrator.ts'
-import { createSourceSnapshot } from '../release/lib/source-snapshot.ts'
+import { createIngestionSourceSnapshot } from './ingestion-source-snapshot.ts'
 
 const SHA256 = /^[a-f0-9]{64}$/u
 const MAXIMUM_CONTROL_BYTES = 8 * 1024 * 1024
@@ -246,8 +246,8 @@ function argumentsFor(argv: readonly string[]): CompactV31PlanArguments {
 
 async function main(): Promise<void> {
   const args = argumentsFor(process.argv.slice(2))
-  const current = await createSourceSnapshot()
-  if (current.treeSha256 !== args['source-snapshot-sha256']) throw new Error(`Source snapshot is stale; current tree SHA-256 is ${current.treeSha256}`)
+  const current = await createIngestionSourceSnapshot()
+  if (current.treeSha256 !== args['source-snapshot-sha256']) throw new Error(`Ingestion source snapshot is stale; current pipeline SHA-256 is ${current.treeSha256}`)
   const bundle = generateCompactV31BenchmarkPlanBundle({
     proposalBytes: await readBoundedRegularFile(resolve(args.proposal), MAXIMUM_CONTROL_BYTES, 'Broadcast proposal', 1),
     observationBytes: await readBoundedRegularFile(resolve(args.observation), MAXIMUM_CONTROL_BYTES, 'Broadcast observation', 1),

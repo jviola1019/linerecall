@@ -7,7 +7,7 @@ import {
 } from './lib/production-data-readiness.ts'
 
 const readinessPath = option('--readiness', 'data/generated/v3/production-data-readiness.json')
-const appManifestPath = option('--app-manifest', 'data/generated/app-snapshot/manifest.json')
+const appManifestPath = option('--app-manifest', 'data/generated/v3/app-snapshot-manifest.json')
 const output = option('--output', 'audit/generated/production-data-readiness.json')
 const missing = []
 if (!(await fileExists(readinessPath))) missing.push(workspaceRelative(readinessPath))

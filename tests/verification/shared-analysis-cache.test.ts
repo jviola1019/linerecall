@@ -8,6 +8,7 @@ import {
 
 function delegate(calls: string[]): StockfishAnalysisAdapter {
   return {
+    resetForPosition: async () => { calls.push('reset') },
     setMultiPv: (value) => calls.push(`multipv:${value}`),
     analyze: async (options) => {
       calls.push(`analyze:${options.searchMoveUci ?? 'root'}`)

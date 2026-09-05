@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createHash } from 'node:crypto'
 import { gzipSync } from 'node:zlib'
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
@@ -16,7 +16,10 @@ import {
   createSyntheticFamilyGraphProvenanceDocument,
 } from '../fixtures/synthetic-repertoire-evidence.ts'
 import { createSyntheticFamilyCampaignBindings } from '../fixtures/synthetic-family-campaign-bindings.ts'
-import { createSyntheticApprovedEditorialLedger } from '../fixtures/synthetic-editorial-ledger.ts'
+import {
+  createSyntheticApprovedEditorialLedger,
+  loadPinnedTaxonomyInventoryFixture,
+} from '../fixtures/synthetic-editorial-ledger.ts'
 
 type Receipt = {
   path: string
@@ -65,8 +68,25 @@ async function fixture(options: {
   tamperNestedReceipt?: boolean
   puzzleProofFailure?: 'missing' | 'arbitrary-reference' | 'cross-campaign'
   puzzleInternalId?: string
-} = {}): Promise<{ root: string; index: any }> {
+} = {}): Promise<{ root: string; index: any; taxonomyInventory: Awaited<ReturnType<typeof loadPinnedTaxonomyInventoryFixture>> }> {
   const root = await mkdtemp(join(tmpdir(), 'linerecall-family-promotion-'))
+  const taxonomyInventory = await loadPinnedTaxonomyInventoryFixture()
+  const taxonomySourceManifest = JSON.parse(await readFile(
+    new URL('../../data/manifests/taxonomy.source.json', import.meta.url),
+    'utf8',
+  )) as unknown
+  const taxonomySourceManifestReceipt = await writeJson(
+    root,
+    'resources/taxonomy-source-manifest.json',
+    taxonomySourceManifest,
+    'identity',
+  )
+  const taxonomyInventoryReceipt = await writeJson(
+    root,
+    'resources/taxonomy-inventory.json',
+    taxonomyInventory,
+    'identity',
+  )
   const graph = await createSyntheticTranspositionGraph()
   graph.pack.provenanceRef = 'synthetic-pack-provenance'
   for (const node of graph.nodes) node.provenanceRef = 'synthetic-node-provenance'
@@ -160,8 +180,11 @@ async function fixture(options: {
     broadcastExactReceiptSha256: BROADCAST_EXACT_RECEIPT,
     q2ExactReceiptSha256: Q2_EXACT_RECEIPT,
     graphReconciliationSha256: evidenceGate.sha256,
-    engineSha256: HASH,
-    nnueSha256: HASH,
+    engineSha256: campaign.engineSha256,
+    nnueSha256: campaign.nnueSha256,
+    stockfishSourceManifestSha256: campaign.stockfishSourceManifestSha256,
+    stockfishProvisionReceiptSha256: campaign.stockfishProvisionReceiptSha256,
+    stockfishReleaseCommit: campaign.stockfishReleaseCommit,
   })
   const shippedPuzzle = structuredClone(verifiedPuzzle.puzzle)
   if (options.puzzleProofFailure === 'arbitrary-reference') {
@@ -221,10 +244,7 @@ async function fixture(options: {
         completedAt,
       })
   const puzzleGate = await writeJson(root, 'receipts/puzzle-promotion.json', puzzleGateValue, 'identity')
-  const taxonomyLineIds = Array.from(
-    { length: 3_790 },
-    (_, index) => `tax_${index.toString(16).padStart(24, '0')}`,
-  )
+  const taxonomyLineIds = taxonomyInventory.rows.map(({ id }) => id)
   const manifestReceipt = await writeJson(root, 'resources/manifest.json.gz', {
     schemaVersion: 1,
     releaseId: RELEASE,
@@ -288,6 +308,7 @@ async function fixture(options: {
         ecoCodes: ['A00'],
         taxonomyLineIds,
       }],
+      candidateFamilies: taxonomyInventory.proposedFamilies,
     }),
     'gzip',
   )
@@ -304,8 +325,11 @@ async function fixture(options: {
     schemaVersion: 1,
     releaseId: RELEASE,
     selectionPolicy: { practiceBranches: 'all-eligible-audited', maximumPracticeBranches: null },
+    taxonomySourceManifest: taxonomySourceManifestReceipt,
+    taxonomyInventory: taxonomyInventoryReceipt,
     catalog: catalogReceipt,
     editorialLedger,
+    campaignSourceBinding: campaign.campaignSourceBinding,
     familyGraphBuild: campaign.familyGraphBuild,
     engineProofInventory: campaign.engineProofInventory,
     scidCrosscheckReport: campaign.scidCrosscheckReport,
@@ -316,13 +340,13 @@ async function fixture(options: {
     promotionReceipts: gates,
   }
   await writeJson(root, 'index.json', index, 'identity')
-  return { root, index }
+  return { root, index, taxonomyInventory }
 }
 
 test('promotion audit passes only a complete receipt-bound family release with exact eligible-edge equality', async () => {
   const { root } = await fixture()
   const report = await auditFamilyPromotion({ root, indexPath: 'index.json', now: () => new Date('2026-07-28T13:00:00.000Z') })
-  assert.equal(report.status, 'pass')
+  assert.equal(report.status, 'pass', JSON.stringify(report.findings, null, 2))
   assert.deepEqual(report.findings, [])
   assert.equal(report.counts.families, 1)
   assert.equal(report.counts.packs, 1)
@@ -340,11 +364,9 @@ test('promotion audit blocks a complete mechanical family ledger until editorial
       canonicalName: 'Synthetic Family',
       aliases: [],
       ecoCodes: ['A00'],
-      taxonomyLineIds: Array.from(
-        { length: 3_790 },
-        (_, index) => `tax_${index.toString(16).padStart(24, '0')}`,
-      ),
+      taxonomyLineIds: value.taxonomyInventory.rows.map(({ id }) => id),
     }],
+    candidateFamilies: value.taxonomyInventory.proposedFamilies,
   })
   const pending = {
     ...approved,
@@ -371,6 +393,55 @@ test('promotion audit blocks a complete mechanical family ledger until editorial
   assert.equal(report.status, 'blocked')
   assert.ok(report.findings.some(({ code }) => code === 'family-editorial-ledger-invalid'))
   assert.equal(report.gates.find(({ id }) => id === 'family-editorial-review')?.status, 'blocked')
+})
+
+test('promotion audit rejects forged pinned taxonomy rows and candidate ownership', async () => {
+  const forgedInventory = await fixture()
+  const alteredInventory = structuredClone(forgedInventory.taxonomyInventory)
+  alteredInventory.rows[0]!.name = 'Forged Opening'
+  forgedInventory.index.taxonomyInventory = await writeJson(
+    forgedInventory.root,
+    'resources/forged-taxonomy-inventory.json',
+    alteredInventory,
+    'identity',
+  )
+  await writeJson(forgedInventory.root, 'forged-taxonomy-index.json', forgedInventory.index, 'identity')
+  const inventoryReport = await auditFamilyPromotion({
+    root: forgedInventory.root,
+    indexPath: 'forged-taxonomy-index.json',
+  })
+  assert.equal(inventoryReport.status, 'blocked')
+  assert.ok(inventoryReport.findings.some(({ code }) => code === 'pinned-taxonomy-inventory-invalid'))
+  assert.equal(inventoryReport.gates.find(({ id }) => id === 'pinned-taxonomy-inventory')?.status, 'blocked')
+
+  const forgedOwnership = await fixture()
+  const ledger = createSyntheticApprovedEditorialLedger({
+    releaseId: RELEASE,
+    families: [{
+      id: 'synthetic-family',
+      canonicalName: 'Synthetic Family',
+      aliases: [],
+      ecoCodes: ['A00'],
+      taxonomyLineIds: forgedOwnership.taxonomyInventory.rows.map(({ id }) => id),
+    }],
+    candidateFamilies: forgedOwnership.taxonomyInventory.proposedFamilies,
+  })
+  const moved = ledger.decisions[0]!.candidateTaxonomyLineIds.pop()!
+  ledger.decisions[1]!.candidateTaxonomyLineIds.push(moved)
+  forgedOwnership.index.editorialLedger = await writeJson(
+    forgedOwnership.root,
+    'resources/forged-candidate-ownership.json.gz',
+    ledger,
+    'gzip',
+  )
+  await writeJson(forgedOwnership.root, 'forged-ownership-index.json', forgedOwnership.index, 'identity')
+  const ownershipReport = await auditFamilyPromotion({
+    root: forgedOwnership.root,
+    indexPath: 'forged-ownership-index.json',
+  })
+  assert.equal(ownershipReport.status, 'blocked')
+  assert.ok(ownershipReport.findings.some(({ code }) => code === 'family-editorial-ledger-invalid'))
+  assert.equal(ownershipReport.gates.find(({ id }) => id === 'family-editorial-review')?.status, 'blocked')
 })
 
 test('promotion audit rejects missing, arbitrary, and cross-campaign puzzle proofs', async () => {

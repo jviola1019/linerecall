@@ -26,6 +26,10 @@ export class SharedAnalysisCacheAdapter implements StockfishAnalysisAdapter {
     this.#delegate.setMultiPv(value)
   }
 
+  async resetForPosition(timeoutMs?: number): Promise<void> {
+    await this.#delegate.resetForPosition(timeoutMs)
+  }
+
   analyze(options: {
     fen: string
     nodes: 250000

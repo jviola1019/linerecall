@@ -1,10 +1,11 @@
-import { writeFile } from 'node:fs/promises'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { gunzipSync } from 'node:zlib'
 import { resolve } from 'node:path'
 import embeddedSnapshot from '../../src/generated/embedded-snapshot.json' with { type: 'json' }
 import { deriveOpeningFamilySeeds } from '../data/opening-family-registry.ts'
 import { ReviewOpeningFamilyCatalogV1Schema } from '../../src/data/review-family-catalog.ts'
 import { createPendingOpeningFamilyEditorialLedger } from '../data/opening-family-editorial.ts'
+import { buildOpeningFamilyEditorialAudit } from '../data/opening-family-editorial-audit.ts'
 import { WireSearchSnapshotSchema } from '../../src/data/wire.ts'
 import { DataManifestSchema } from '../../src/domain/opening-data.ts'
 
@@ -54,4 +55,11 @@ await writeFile(target, `${JSON.stringify(catalog, null, 2)}\n`, 'utf8')
 const editorialTarget = resolve('data/manifests/opening-family-editorial.proposal.json')
 const editorialProposal = createPendingOpeningFamilyEditorialLedger(catalog)
 await writeFile(editorialTarget, `${JSON.stringify(editorialProposal, null, 2)}\n`, 'utf8')
-process.stdout.write(`Wrote ${catalog.familyCount} opening families covering ${catalog.taxonomyLineCount} taxonomy rows to ${target}; the corresponding editorial ledger remains pending at ${editorialTarget}\n`)
+const editorialAuditTarget = resolve('audit/generated/opening-family-editorial.audit.json')
+const editorialAudit = buildOpeningFamilyEditorialAudit({
+  ledger: editorialProposal,
+  taxonomyRows: rows,
+})
+await mkdir(resolve('audit/generated'), { recursive: true })
+await writeFile(editorialAuditTarget, `${JSON.stringify(editorialAudit, null, 2)}\n`, 'utf8')
+process.stdout.write(`Wrote ${catalog.familyCount} opening families covering ${catalog.taxonomyLineCount} taxonomy rows to ${target}; the editorial ledger remains pending at ${editorialTarget}, with deterministic review triage at ${editorialAuditTarget}\n`)

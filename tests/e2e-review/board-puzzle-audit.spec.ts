@@ -1,6 +1,7 @@
 import { AxeBuilder } from '@axe-core/playwright'
 import { expect, test, type Page, type TestInfo } from '@playwright/test'
 import { assertNoPageOverflow } from '../e2e/helpers.ts'
+import { attachReviewScreenshot } from './evidence.ts'
 
 const MOTION_PATH = '/index.html?surface=board-motion'
 const APP_PATH = '/index.html'
@@ -13,12 +14,14 @@ async function auditAxeIncludingModerate(
   const result = await new AxeBuilder({ page })
     .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
     .analyze()
-  const reviewed = {
-    violations: result.violations.map(({ id, impact, nodes }) => ({ id, impact, nodes: nodes.length })),
-    incomplete: result.incomplete.map(({ id, impact, nodes }) => ({ id, impact, nodes: nodes.length })),
-  }
   await testInfo.attach(`axe-reviewed-${label}.json`, {
-    body: JSON.stringify({ reviewedAutomatically: true, manualAtEvidence: false, ...reviewed }, null, 2),
+    body: JSON.stringify({
+      automatedScan: true,
+      manualAtEvidence: false,
+      unresolvedContrast: result.incomplete.filter(({ id }) => id === 'color-contrast').length,
+      violations: result.violations,
+      incomplete: result.incomplete,
+    }, null, 2),
     contentType: 'application/json',
   })
   expect(
@@ -105,10 +108,7 @@ test.describe('review-only board and tactical audit', () => {
     expect(pieceCenter.y).toBeGreaterThan(Math.min(sourceCenter.y, destinationCenter.y) + 1)
     expect(pieceCenter.y).toBeLessThan(Math.max(sourceCenter.y, destinationCenter.y) - 1)
     expect(Math.abs(pieceCenter.x - sourceCenter.x)).toBeLessThan(1)
-    await testInfo.attach('review-board-normal-midpoint.png', {
-      body: await page.screenshot({ animations: 'allow' }),
-      contentType: 'image/png',
-    })
+    await attachReviewScreenshot(page, testInfo, 'review-board-normal-midpoint.png', { animations: 'allow' })
     await normal.evaluate((element) => {
       for (const animation of element.getAnimations()) animation.finish()
     })
@@ -579,6 +579,10 @@ test.describe('review-only board and tactical audit', () => {
     await page.keyboard.press('Space')
     await expect(page.getByText(/Solved\. The full line is complete/u)).toBeVisible()
 
+    const guides = page.getByRole('list', { name: 'Visible board guides' })
+    await expect(guides).toContainText('Solution move')
+    await expect(guides).not.toContainText('Book move')
+
     const why = page.getByRole('button', { name: 'Why' })
     const boardFrame = page.locator('.chessboard-overlay-frame')
     const dock = page.getByRole('group', { name: 'Puzzle actions' })
@@ -605,13 +609,10 @@ test.describe('review-only board and tactical audit', () => {
     })
     expect(Math.abs(focusedLayout.banner.top), 'synthetic fixture banner must stay at the viewport top after focus moves').toBeLessThanOrEqual(1)
     await assertNoPageOverflow(page, 'review puzzle mobile')
-    await testInfo.attach('review-puzzle-mobile-controls.png', {
-      body: await page.screenshot({ animations: 'disabled' }),
-      contentType: 'image/png',
-    })
+    await attachReviewScreenshot(page, testInfo, 'review-puzzle-mobile-controls.png')
     await testInfo.attach('review-puzzle-mobile-layout.json', {
       body: JSON.stringify({
-        viewport: { width: 320, height: 800 },
+        viewport: page.viewportSize(),
         initial: fixtureTop,
         focused: focusedLayout,
         dock: { top: dockBox.y, bottom: dockBox.y + dockBox.height },

@@ -3,35 +3,19 @@ import { availableParallelism } from 'node:os';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { z } from 'zod';
 
 import {
   EngineAnalysisInputSchema,
   STOCKFISH_ANALYSIS_CONFIGURATION as CONFIG,
 } from '../../src/data/verification/contracts.ts';
 import { readJsonFile, sha256File, sha256Text, writeJsonAtomic } from './lib/files.ts';
-import { StockfishManifestSchema } from './lib/manifest.ts';
+import { StockfishManifestSchema, assertStockfishProvisionMatchesManifest } from './lib/manifest.ts';
 import { analyzeVerificationLines, selectTopEligibleLines } from './lib/stockfish-analysis.ts';
 import { createSharedAnalysisCache, SharedAnalysisCacheAdapter } from './lib/shared-analysis-cache.ts';
 import { UciEngine } from './lib/uci-engine.ts';
 
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 const DEFAULT_MANIFEST = join(REPOSITORY_ROOT, 'data', 'manifests', 'stockfish-18.source.json');
-
-const ProvisionReceiptSchema = z
-  .object({
-    schemaVersion: z.literal(1),
-    releaseTag: z.literal('sf_18'),
-    releaseCommit: z.string().regex(/^[a-f0-9]{40}$/),
-    executable: z
-      .object({
-        path: z.string().min(1),
-        fileName: z.string().min(1),
-        sha256: z.string().regex(/^[a-f0-9]{64}$/),
-      })
-      .passthrough(),
-  })
-  .passthrough();
 
 function requiredArgument(name: string): string {
   const index = process.argv.indexOf(name);
@@ -71,10 +55,7 @@ export async function runStockfishAnalysis(options: {
   const rawInput = await readFile(options.inputPath, 'utf8');
   const input = EngineAnalysisInputSchema.parse(JSON.parse(rawInput) as unknown);
   const manifest = StockfishManifestSchema.parse(await readJsonFile(options.manifestPath));
-  const receipt = ProvisionReceiptSchema.parse(await readJsonFile(options.receiptPath));
-  if (receipt.releaseCommit !== manifest.releaseCommit) {
-    throw new Error('Provision receipt does not match the pinned Stockfish release commit');
-  }
+  const receipt = assertStockfishProvisionMatchesManifest(manifest, await readJsonFile(options.receiptPath));
   const binarySha256 = await sha256File(options.enginePath);
   if (binarySha256 !== receipt.executable.sha256) {
     throw new Error('Stockfish executable SHA-256 does not match its verified provision receipt');

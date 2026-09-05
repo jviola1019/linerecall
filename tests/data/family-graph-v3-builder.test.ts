@@ -280,6 +280,7 @@ async function finalSpecFor(
   root: string,
   line: LineDefinition,
   verified: VerifiedCompactExactFamilyGraphHandoff,
+  checkFor: (from: Chess, uci: string) => ReturnType<typeof engineCheck> = engineCheck,
 ) {
   const unsigned = FamilyGraphPackBuildSpecV1Schema.parse(baseSpec(line))
   const candidates = buildFamilyEngineCandidatePackFromVerifiedExactStates({ verified, specValue: unsigned })
@@ -288,7 +289,7 @@ async function finalSpecFor(
     fromEpd: epd,
     uci,
     toEpd,
-    check: engineCheck(new Chess(`${epd} 0 1`), uci),
+    check: checkFor(new Chess(`${epd} 0 1`), uci),
   })))
   const proofValue = FamilyGraphEngineProofSetV1Schema.parse({
     schemaVersion: 1,
@@ -367,6 +368,44 @@ test('final graph keeps empirical opponent edges, exact learner proofs, explorat
       const learnerTurn = nodes.get(edge.fromNodeId)!.learnerTurn
       assert.equal(edge.evidence.engine.status, learnerTurn ? 'verified' : 'unverified')
     }
+    await validateRepertoireGraphDocument(result.graph)
+  } finally {
+    broadcast.close()
+    standard.close()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('51-99cp learner edges remain visible as blocked inaccuracies and pruned descendants do not invalidate proofs', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'linerecall-family-inaccuracy-'))
+  const broadcast = setupEvidenceDatabase(':memory:', 'broadcast')
+  const standard = setupEvidenceDatabase(':memory:', 'standard')
+  try {
+    const line = LINES[0]!
+    const verified = verifiedFixture(broadcast, standard)
+    const spec = await finalSpecFor(root, line, verified, (from, uci) => {
+      const check = engineCheck(from, uci)
+      if (uci !== 'd7d5') return check
+      return {
+        ...check,
+        bestMoveUci: 'g8f6',
+        bestEvaluation: { ...check.bestEvaluation, value: 95 },
+        moveEvaluation: { ...check.moveEvaluation, value: 20 },
+        centipawnLoss: 75,
+        bestPrincipalVariationUci: ['g8f6'],
+      }
+    })
+    const result = await buildFamilyGraphFromVerifiedExactStates({
+      receiptRoot: root,
+      verified,
+      specValue: spec,
+    })
+    const inaccuracy = result.graph.edges.find(({ uci }) => uci === 'd7d5')
+    assert.equal(inaccuracy?.role, 'inaccuracy')
+    assert.equal(inaccuracy?.eligibleForDrill, false)
+    assert.equal(inaccuracy?.evidence.engine.centipawnLoss, 75)
+    assert.equal(result.graph.edges.some(({ uci }) => uci === 'c8f5'), false,
+      'a sound proof below the blocked edge stays in the campaign but is not emitted as reachable graph content')
     await validateRepertoireGraphDocument(result.graph)
   } finally {
     broadcast.close()

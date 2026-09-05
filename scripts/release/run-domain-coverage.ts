@@ -9,6 +9,7 @@ const tsxCli = resolve(workspaceRoot, 'node_modules/tsx/dist/cli.mjs')
 const args = [
   tsxCli,
   '--test',
+  '--test-concurrency=1',
   '--experimental-test-coverage',
   '--test-reporter=lcov',
   `--test-reporter-destination=${output}`,

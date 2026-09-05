@@ -1,10 +1,10 @@
-import { readFile, stat } from 'node:fs/promises'
+import { lstat, readFile, realpath } from 'node:fs/promises'
 import { isAbsolute, relative, resolve } from 'node:path'
 import { z } from 'zod'
 import {
   collectFiles,
+  readRegularFileBound,
   sha256Bytes,
-  sha256File,
   workspaceRoot,
 } from '../../security/lib/files.ts'
 
@@ -70,6 +70,7 @@ export const CONNECTED_SOURCE_ROOTS = [
   'playwright.review.config.ts',
   'tsconfig.json',
   'vite.config.ts',
+  'vite.production.config.ts',
   'vite.review-harness.config.ts',
   'vitest.config.ts',
   'SECURITY.md',
@@ -129,6 +130,12 @@ function compareOrdinal(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0
 }
 
+function samePath(left: string, right: string): boolean {
+  return process.platform === 'win32'
+    ? left.toLowerCase() === right.toLowerCase()
+    : left === right
+}
+
 function normalizeRelativePath(root: string, absolutePath: string): string {
   const path = relative(root, absolutePath)
   if (path === '' || path.startsWith('..') || isAbsolute(path)) {
@@ -158,9 +165,24 @@ async function assertRootsExist(root: string, roots: readonly string[]): Promise
     if (absolute === root || workspacePath.startsWith('..') || isAbsolute(workspacePath)) {
       throw new Error(`Source snapshot root escapes the workspace: ${selectedRoot}`)
     }
-    await stat(absolute).catch(() => {
+    const details = await lstat(absolute).catch(() => null)
+    if (details === null) {
       throw new Error(`Required source snapshot root is missing: ${selectedRoot}`)
-    })
+    }
+    if (details.isSymbolicLink()) {
+      throw new Error(`Required source snapshot root is a symbolic link: ${selectedRoot}`)
+    }
+    // A junction/reparse point can resolve outside the selected workspace even
+    // when lstat does not report it as a symbolic link on a given platform.
+    const canonical = await realpath(absolute)
+    const canonicalRoot = await realpath(root)
+    const canonicalRelative = relative(canonicalRoot, canonical)
+    if (canonical === canonicalRoot || canonicalRelative.startsWith('..') || isAbsolute(canonicalRelative)) {
+      throw new Error(`Source snapshot root resolves outside the workspace: ${selectedRoot}`)
+    }
+    if (!samePath(canonical, absolute)) {
+      throw new Error(`Required source snapshot root resolves through a linked ancestor: ${selectedRoot}`)
+    }
   }
 }
 
@@ -177,14 +199,27 @@ export async function createSourceSnapshot(
 
   const absoluteFiles = await collectFiles(normalizedRoots.map((path) => resolve(root, path)), {
     ignoredDirectories,
+    rejectSymbolicLinks: true,
   })
   const files = await Promise.all(absoluteFiles.map(async (absolutePath) => {
     const path = normalizeRelativePath(root, absolutePath)
     if (forbiddenEvidencePaths.some((pattern) => pattern.test(path)) && path !== 'server/.env.example') {
       throw new Error(`Secret-bearing file type is forbidden in source evidence: ${path}`)
     }
-    const details = await stat(absolutePath)
-    return { path, bytes: details.size, sha256: await sha256File(absolutePath) }
+    // Re-check the returned path before reading it.  collectFiles rejects
+    // links during traversal, while this handle-bound read also prevents a
+    // concurrent directory-entry replacement from changing the returned
+    // bytes after the path was enumerated.
+    const details = await lstat(absolutePath)
+    if (details.isSymbolicLink() || !details.isFile()) {
+      throw new Error(`Source snapshot file is not a regular file: ${path}`)
+    }
+    const canonical = await realpath(absolutePath)
+    if (!samePath(canonical, absolutePath)) {
+      throw new Error(`Source snapshot file resolves through a linked path: ${path}`)
+    }
+    const bytes = await readRegularFileBound(absolutePath)
+    return { path, bytes: bytes.byteLength, sha256: sha256Bytes(bytes) }
   }))
   files.sort((left, right) => compareOrdinal(left.path, right.path))
   if (files.length === 0) throw new Error('Source snapshot contains no files')

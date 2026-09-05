@@ -95,6 +95,13 @@
 .movement-guide-legend li[data-guide="mistake"],
 .movement-guide-legend li[data-guide="unverified_deviation"] { border-style: dotted; }
 
+.board-square[data-move-status="solution"] {
+  outline: 6px solid var(--accent);
+  outline-offset: -6px;
+}
+
+.movement-guide-route.guide-solution { color: var(--accent); }
+
 .visual-piece-promoting .piece-promotion-from,
 .visual-piece-promoting .piece-promotion-to {
   transition-duration: 160ms;

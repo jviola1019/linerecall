@@ -17,12 +17,14 @@ import {
 } from './synthetic-repertoire-evidence.ts'
 import { createSyntheticFamilyCampaignBindings } from './synthetic-family-campaign-bindings.ts'
 import { productionBrowseManifestFixture } from './production-app-manifest.ts'
-import { createSyntheticApprovedEditorialLedger } from './synthetic-editorial-ledger.ts'
+import {
+  createSyntheticApprovedEditorialLedger,
+  loadPinnedTaxonomyInventoryFixture,
+} from './synthetic-editorial-ledger.ts'
+import { createSyntheticV31ProductionChains } from './synthetic-v31-production-chain.ts'
 
 export const HANDOFF_FIXTURE_RELEASE = 'synthetic-handoff-release-not-for-shipping'
 const HASH = 'a'.repeat(64)
-const BROADCAST_EXACT_RECEIPT = 'b'.repeat(64)
-const Q2_EXACT_RECEIPT = 'c'.repeat(64)
 
 export type ReadinessBuildInput = z.infer<typeof ProductionDataReadinessBuildInputV1Schema>
 
@@ -119,6 +121,21 @@ export async function createProductionHandoffFixture(options: {
   learnerNodeCount: number
 }> {
   const root = await mkdtemp(join(tmpdir(), 'linerecall-production-handoff-'))
+  const taxonomyInventory = await loadPinnedTaxonomyInventoryFixture()
+  const taxonomySourceManifest = JSON.parse(await readFile(
+    new URL('../../data/manifests/taxonomy.source.json', import.meta.url),
+    'utf8',
+  )) as unknown
+  const taxonomySourceManifestReceipt = await writeFixtureJson(
+    root,
+    'resources/taxonomy-source-manifest.json',
+    taxonomySourceManifest,
+  )
+  const taxonomyInventoryReceipt = await writeFixtureJson(
+    root,
+    'resources/taxonomy-inventory.json',
+    taxonomyInventory,
+  )
   const graph = await createSyntheticCaroKannGraph(HANDOFF_FIXTURE_RELEASE)
   const graphReceipt = await writeFixtureJson(root, 'resources/caro-graph.json.gz', graph, 'gzip')
   const eligibleEdgeIds = graph.edges.filter(({ eligibleForDrill }) => eligibleForDrill).map(({ id }) => id)
@@ -162,6 +179,9 @@ export async function createProductionHandoffFixture(options: {
       .map(({ fromNodeId }) => fromNodeId),
   ).size
   const completedAt = '2026-07-28T12:00:00.000Z'
+  const v31 = await createSyntheticV31ProductionChains(root)
+  const BROADCAST_EXACT_RECEIPT = v31.broadcastExactMergeSha256
+  const Q2_EXACT_RECEIPT = v31.q2ExactMergeSha256
   const broadcastPromotionReceipt = await writeFixtureJson(root, 'receipts/broadcast.json', {
     schemaVersion: 1, releaseId: HANDOFF_FIXTURE_RELEASE, status: 'pass', completedAt,
     gate: 'lichess-broadcasts-through-2026-06', archiveCount: 78,
@@ -211,8 +231,11 @@ export async function createProductionHandoffFixture(options: {
     broadcastExactReceiptSha256: BROADCAST_EXACT_RECEIPT,
     q2ExactReceiptSha256: Q2_EXACT_RECEIPT,
     graphReconciliationSha256: evidencePromotionReceipt.sha256,
-    engineSha256: HASH,
-    nnueSha256: HASH,
+    engineSha256: campaign.engineSha256,
+    nnueSha256: campaign.nnueSha256,
+    stockfishSourceManifestSha256: campaign.stockfishSourceManifestSha256,
+    stockfishProvisionReceiptSha256: campaign.stockfishProvisionReceiptSha256,
+    stockfishReleaseCommit: campaign.stockfishReleaseCommit,
   })
   const puzzleShard = {
     schemaVersion: 1,
@@ -250,10 +273,7 @@ export async function createProductionHandoffFixture(options: {
       completedAt,
     }),
   )
-  const taxonomyLineIds = Array.from(
-    { length: 3_790 },
-    (_, index) => `tax_${index.toString(16).padStart(24, '0')}`,
-  )
+  const taxonomyLineIds = taxonomyInventory.rows.map(({ id }) => id)
   const branches = graph.paths.map((path, index) => ({
     schemaVersion: 1 as const,
     id: `variation-${index + 1}`,
@@ -318,9 +338,31 @@ export async function createProductionHandoffFixture(options: {
         ecoCodes: graph.pack.ecoCodes,
         taxonomyLineIds,
       }],
+      candidateFamilies: taxonomyInventory.proposedFamilies,
     }),
     'gzip',
   )
+  // Keep the synthetic handoff receipt-complete even though it deliberately
+  // contains no eligible roots. Readiness consumes this source-owned
+  // disposition proof and rejects it when the promoted graph lacks the
+  // canonical family-side eligibility root.
+  const eligibilityIndex = await writeFixtureJson(root, 'resources/family-eligibility-index.json', {
+    schemaVersion: 1,
+    kind: 'linerecall-compact-v31-family-eligibility-index',
+    releaseEligible: false,
+    releaseId: HANDOFF_FIXTURE_RELEASE,
+    corpusBindings: [
+      { corpus: 'lichess-broadcasts', corpusReceiptSha256: v31.compactV31Corpora.broadcasts.sha256, sourceManifestSha256: v31.sourceManifests.broadcasts.sha256, exactMergeReceiptSha256: v31.broadcastExactMergeSha256, sourceEdgeInventorySha256: v31.broadcastSourceEdgeInventorySha256 },
+      { corpus: 'lichess-standard-rated-q2-2026', corpusReceiptSha256: v31.compactV31Corpora.standardQ2_2026.sha256, sourceManifestSha256: v31.sourceManifests.standardQ2_2026.sha256, exactMergeReceiptSha256: v31.q2ExactMergeSha256, sourceEdgeInventorySha256: v31.q2SourceEdgeInventorySha256 },
+    ],
+    taxonomyInventorySha256: taxonomyInventoryReceipt.sha256,
+    editorialLedgerSha256: editorialLedger.sha256,
+    proposedFamilyCount: 149,
+    familyCount: 1,
+    familyDispositions: (['black', 'white'] as const).map((side) => ({ familyId: 'caro-kann', side, taxonomyLineIds, readiness: 'study-only', reason: 'no-root', rootEpd: null })),
+    roots: [],
+    completedAt,
+  })
 
   const promotionReceipts = {
     broadcast: broadcastPromotionReceipt,
@@ -331,16 +373,7 @@ export async function createProductionHandoffFixture(options: {
     puzzles: puzzlePromotionReceipt,
   }
 
-  const broadcastSource = JSON.parse(
-    await readFile(join(process.cwd(), 'data/manifests/broadcasts.source.json'), 'utf8'),
-  ) as unknown
-  const q2Source = JSON.parse(
-    await readFile(join(process.cwd(), 'data/manifests/lichess-standard-q2-2026.source.json'), 'utf8'),
-  ) as unknown
-  const sourceManifests = {
-    broadcasts: await writeFixtureJson(root, 'sources/broadcasts.source.json', broadcastSource),
-    standardQ2_2026: await writeFixtureJson(root, 'sources/standard-q2.source.json', q2Source),
-  }
+  const sourceManifests = v31.sourceManifests
   const browse = await createSyntheticBrowseSnapshot(root)
 
   return {
@@ -352,8 +385,11 @@ export async function createProductionHandoffFixture(options: {
       schemaVersion: 1,
       releaseId: HANDOFF_FIXTURE_RELEASE,
       selectionPolicy: { practiceBranches: 'all-eligible-audited', maximumPracticeBranches: null },
+      taxonomySourceManifest: taxonomySourceManifestReceipt,
+      taxonomyInventory: taxonomyInventoryReceipt,
       catalog: catalogReceipt,
       editorialLedger,
+      campaignSourceBinding: campaign.campaignSourceBinding,
       familyGraphBuild: campaign.familyGraphBuild,
       engineProofInventory: campaign.engineProofInventory,
       scidCrosscheckReport: campaign.scidCrosscheckReport,
@@ -366,6 +402,11 @@ export async function createProductionHandoffFixture(options: {
       puzzleProofInventory: puzzleProofInventoryReceipt,
       promotionReceipts,
     },
-    readinessInputs: { schemaVersion: 1, sourceManifests },
+    readinessInputs: {
+      schemaVersion: 1,
+      sourceManifests,
+      compactV31Corpora: v31.compactV31Corpora,
+      familyEligibilityIndex: eligibilityIndex,
+    },
   }
 }

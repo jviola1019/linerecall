@@ -14,6 +14,12 @@ import {
 } from '../../../src/domain/opening-family.ts'
 import { validateApprovedOpeningFamilyEditorialLedger } from '../../../src/domain/opening-family-editorial.ts'
 import {
+  assertExactProposedFamilyOwnership,
+  assertExactTaxonomyPrimaryOwnership,
+  validatePinnedTaxonomyInventory,
+  type PinnedTaxonomyInventoryV1,
+} from '../../data/taxonomy-inventory.ts'
+import {
   EligibleSourceEdgeInventoryV1Schema,
   FamilyGraphProvenanceDocumentV1Schema,
   validateEligibleSourceEdgeInventory,
@@ -41,8 +47,13 @@ import {
   FamilyScidCampaignReportV1Schema,
   FamilyScidCandidateInventoryV1Schema,
   FamilyScidPromotionReceiptV1Schema,
+  assertFamilyScidSampleMatchesInventory,
   deriveFamilyScidPromotionReceipt,
 } from '../../data/family-scid-v3.ts'
+import {
+  verifyVerificationCampaignSources,
+  type VerifiedCampaignSourcesV1,
+} from '../../data/verification-campaign-source-binding.ts'
 
 const SHA256 = /^[a-f0-9]{64}$/u
 const SAFE_RELATIVE_PATH = /^(?!\/)(?!.*(?:^|\/)\.{1,2}(?:\/|$))[a-zA-Z0-9][a-zA-Z0-9_./-]{0,510}$/u
@@ -85,8 +96,11 @@ export const FamilyPromotionAuditIndexV1Schema = z.object({
     practiceBranches: z.literal('all-eligible-audited'),
     maximumPracticeBranches: z.null(),
   }).strict(),
+  taxonomySourceManifest: FileReceiptSchema,
+  taxonomyInventory: FileReceiptSchema,
   catalog: FileReceiptSchema,
   editorialLedger: FileReceiptSchema,
+  campaignSourceBinding: FileReceiptSchema,
   familyGraphBuild: FileReceiptSchema,
   engineProofInventory: FileReceiptSchema,
   scidCrosscheckReport: FileReceiptSchema,
@@ -109,8 +123,11 @@ export const FamilyPromotionAuditIndexV1Schema = z.object({
   promotionReceipts: GateFileMapSchema,
 }).strict().superRefine((index, context) => {
   const allPaths = [
+    index.taxonomySourceManifest.path,
+    index.taxonomyInventory.path,
     index.catalog.path,
     index.editorialLedger.path,
+    index.campaignSourceBinding.path,
     index.familyGraphBuild.path,
     index.engineProofInventory.path,
     index.scidCrosscheckReport.path,
@@ -271,7 +288,7 @@ function decodeJson(bytes: Uint8Array): unknown {
   return JSON.parse(text) as unknown
 }
 
-async function readIndexedJson(rootReal: string, receiptInput: z.infer<typeof FileReceiptSchema>): Promise<unknown> {
+async function readIndexedJsonWithBytes(rootReal: string, receiptInput: z.infer<typeof FileReceiptSchema>): Promise<{ value: unknown; storedBytes: Uint8Array }> {
   const receipt = FileReceiptSchema.parse(receiptInput)
   const path = await safeExistingPath(rootReal, receipt.path)
   const compressed = await readExactFile(path, receipt.bytes, MAX_COMPRESSED_RESOURCE_BYTES)
@@ -283,7 +300,11 @@ async function readIndexedJson(rootReal: string, receiptInput: z.infer<typeof Fi
   if (decoded.byteLength !== receipt.uncompressedBytes) {
     throw new Error('Resource uncompressed-byte receipt does not match the decoded JSON')
   }
-  return decodeJson(decoded)
+  return { value: decodeJson(decoded), storedBytes: compressed }
+}
+
+async function readIndexedJson(rootReal: string, receiptInput: z.infer<typeof FileReceiptSchema>): Promise<unknown> {
+  return (await readIndexedJsonWithBytes(rootReal, receiptInput)).value
 }
 
 function sameContentReference(reference: ContentAddressedRefV1, receipt: z.infer<typeof FileReceiptSchema>): boolean {
@@ -353,8 +374,49 @@ export async function auditFamilyPromotion(
     return { schemaVersion: 1, audit: 'linerecall-family-promotion', generatedAt, releaseId, status: 'blocked', counts, gates, findings }
   }
 
+  let verifiedCampaignSources: VerifiedCampaignSourcesV1 | null = null
+  try {
+    const binding = await readIndexedJson(rootReal, index.campaignSourceBinding)
+    verifiedCampaignSources = await verifyVerificationCampaignSources({ root: rootReal, binding })
+    if (verifiedCampaignSources.binding.releaseId !== index.releaseId) {
+      throw new Error('Verification campaign source binding belongs to another release')
+    }
+    gateResult(
+      gates,
+      'verification-campaign-source-bytes',
+      true,
+      'Pinned Stockfish manifest, provision, executable, NNUE, Scid manifest, and oracle bytes were reopened and verified',
+    )
+  } catch (error) {
+    findings.push(finding(error, 'verification-campaign-source-binding-invalid', index.campaignSourceBinding.path))
+    gateResult(
+      gates,
+      'verification-campaign-source-bytes',
+      false,
+      'Verification campaign source bytes are absent, changed, unsafe, or inconsistent with their pinned manifests',
+    )
+  }
+
   const manifests = new Map<string, OpeningFamilyManifestV1>()
   const graphProvenanceByFamily = new Map<string, FamilyGraphProvenanceDocumentV1>()
+  let taxonomyInventory: PinnedTaxonomyInventoryV1 | null = null
+  try {
+    const sourceManifest = await readIndexedJson(rootReal, index.taxonomySourceManifest)
+    taxonomyInventory = validatePinnedTaxonomyInventory(
+      await readIndexedJson(rootReal, index.taxonomyInventory),
+      sourceManifest,
+    )
+  } catch (error) {
+    findings.push(finding(error, 'pinned-taxonomy-inventory-invalid', index.taxonomyInventory.path))
+  }
+  gateResult(
+    gates,
+    'pinned-taxonomy-inventory',
+    taxonomyInventory !== null,
+    taxonomyInventory
+      ? 'All 3,790 rows, legal move sequences, source receipts, and proposed owners were re-derived from the five pinned TSV byte streams'
+      : 'Pinned taxonomy bytes or the exact derived row inventory are absent or inconsistent',
+  )
   let catalog: z.infer<typeof OpeningFamilyCatalogV1Schema> | null = null
   try {
     catalog = OpeningFamilyCatalogV1Schema.parse(await readIndexedJson(rootReal, index.catalog))
@@ -422,6 +484,13 @@ export async function auditFamilyPromotion(
     if (taxonomyOwners.size !== catalog.taxonomyLineCount) {
       findings.push({ code: 'taxonomy-primary-ownership-incomplete', path: index.catalog.path, message: `Expected ${catalog.taxonomyLineCount} uniquely owned taxonomy rows; found ${taxonomyOwners.size}` })
     }
+    if (taxonomyInventory) {
+      try {
+        assertExactTaxonomyPrimaryOwnership({ inventory: taxonomyInventory, actualOwnership: taxonomyOwners })
+      } catch (error) {
+        findings.push(finding(error, 'taxonomy-primary-ownership-not-pinned', index.taxonomyInventory.path))
+      }
+    }
   }
   gateResult(gates, 'family-catalog-and-manifests', findings.every(({ code }) => !code.includes('family') && !code.includes('taxonomy')), `${manifests.size} family manifests validated`)
 
@@ -439,10 +508,15 @@ export async function auditFamilyPromotion(
         taxonomyLineIds: manifest.taxonomyLineIds,
       }
     })
-    validateApprovedOpeningFamilyEditorialLedger(
+    const editorialLedger = validateApprovedOpeningFamilyEditorialLedger(
       await readIndexedJson(rootReal, index.editorialLedger),
       expectedFamilies,
     )
+    if (!taxonomyInventory) throw new Error('Editorial validation requires the pinned taxonomy inventory')
+    assertExactProposedFamilyOwnership({
+      inventory: taxonomyInventory,
+      decisions: editorialLedger.decisions,
+    })
     editorialLedgerApproved = true
   } catch (error) {
     findings.push(finding(error, 'family-editorial-ledger-invalid', index.editorialLedger.path))
@@ -452,7 +526,7 @@ export async function auditFamilyPromotion(
     'family-editorial-review',
     editorialLedgerApproved,
     editorialLedgerApproved
-      ? 'All 149 proposed families and 3,790 primary assignments have approved editorial decisions bound to the promoted catalog'
+      ? 'All 149 proposed families and 3,790 primary assignments have approved editorial decisions bound to the promoted canonical catalog'
       : 'The complete human family/editorial ledger is absent, pending, or differs from the promoted catalog',
   )
 
@@ -560,6 +634,7 @@ export async function auditFamilyPromotion(
   }
   const puzzleIds = new Set<string>()
   const promotedPuzzleShards = new Map<string, z.infer<typeof TacticalPuzzleShardPayloadV1Schema>>()
+  const promotedPuzzleShardBytes = new Map<string, Uint8Array>()
   for (const indexed of index.puzzleShards) {
     try {
       const matching = [...expectedPuzzleRefs.values()].find(({ reference }) => sameContentReference(reference, indexed.shard))
@@ -570,7 +645,8 @@ export async function auditFamilyPromotion(
       // Persisted shards omit `id`; a legacy or caller-controlled internal ID
       // fails this strict schema. Runtime identity is derived from the verified
       // content reference after these exact bytes pass SHA-256 verification.
-      const shard = TacticalPuzzleShardPayloadV1Schema.parse(await readIndexedJson(rootReal, indexed.shard))
+      const shardRead = await readIndexedJsonWithBytes(rootReal, indexed.shard)
+      const shard = TacticalPuzzleShardPayloadV1Schema.parse(shardRead.value)
       if (shard.releaseId !== index.releaseId) throw new Error('Puzzle shard belongs to another release')
       if (shard.familyIds.length !== indexed.familyIds.length || shard.familyIds.some((id) => !indexed.familyIds.includes(id))) {
         throw new Error('Puzzle shard content family IDs differ from the promotion index')
@@ -583,6 +659,7 @@ export async function auditFamilyPromotion(
         throw new Error('Promoted puzzle shard SHA-256 appears more than once')
       }
       promotedPuzzleShards.set(indexed.shard.sha256, shard)
+      promotedPuzzleShardBytes.set(indexed.shard.sha256, shardRead.storedBytes)
       counts.puzzleShards += 1
       counts.puzzles += shard.puzzles.length
     } catch (error) {
@@ -641,6 +718,18 @@ export async function auditFamilyPromotion(
       const inventory = FamilyEngineCampaignProofInventoryV1Schema.parse(
         await readIndexedJson(rootReal, index.engineProofInventory),
       )
+      if (!verifiedCampaignSources) throw new Error('Engine promotion requires verified campaign source bytes')
+      if (
+        inventory.engine.releaseCommit !== verifiedCampaignSources.stockfish.releaseCommit
+        || inventory.engine.sourceManifestSha256 !== verifiedCampaignSources.stockfish.sourceManifestSha256
+        || inventory.engine.provisionReceiptSha256 !== verifiedCampaignSources.stockfish.provisionReceiptSha256
+        || inventory.engine.executableSha256 !== verifiedCampaignSources.stockfish.executableSha256
+        || !sameStringSet(inventory.engine.nnueSha256, verifiedCampaignSources.stockfish.nnueSha256)
+      ) throw new Error('Engine campaign inventory differs from independently reopened Stockfish source bytes')
+      if (
+        inventory.coverage.rootSearchesRepeated !== inventory.coverage.learnerNodeMemberships
+        || inventory.coverage.rootRepeatabilityMismatches !== 0
+      ) throw new Error('Engine campaign does not prove repeatable fresh root searches for every learner node')
       const derived = deriveFamilyEnginePromotionReceipt({
         inventory,
         proofInventory: index.engineProofInventory,
@@ -705,6 +794,24 @@ export async function auditFamilyPromotion(
           graphProofs.size !== candidates.size || campaign.learnerNodeCount !== candidatePack.learnerNodes.length ||
           proofDocument.analyses.length !== candidatePack.learnerNodes.length
         ) throw new Error(`Engine proof counts do not reconcile for pack ${indexed.packId}`)
+        const candidateNodes = new Map(candidatePack.learnerNodes.map((node) => [node.positionId, node]))
+        const analyzedNodes = new Map(proofDocument.analyses.map((analysis) => [analysis.positionId, analysis]))
+        if (
+          candidateNodes.size !== candidatePack.learnerNodes.length
+          || analyzedNodes.size !== proofDocument.analyses.length
+          || candidateNodes.size !== analyzedNodes.size
+        ) throw new Error(`Engine proof learner-node identities are not unique for pack ${indexed.packId}`)
+        for (const [positionId, candidateNode] of candidateNodes) {
+          const analysis = analyzedNodes.get(positionId)
+          if (!analysis || analysis.epd !== candidateNode.epd || analysis.learnerSide !== candidatePack.side) {
+            throw new Error(`Engine proof omits or changes learner node ${positionId} in pack ${indexed.packId}`)
+          }
+          const candidateMoves = new Set(candidateNode.candidateEdges.map((edge) => edge.uci))
+          const analyzedMoves = new Set(analysis.edgeChecks.map(({ check }) => check.analyzedMoveUci))
+          if (candidateMoves.size !== analyzedMoves.size || [...candidateMoves].some((move) => !analyzedMoves.has(move))) {
+            throw new Error(`Engine proof learner-edge membership differs at ${positionId} in pack ${indexed.packId}`)
+          }
+        }
         for (const key of candidates.keys()) {
           const documentCheck = documentProofs.get(key)
           const graphCheck = graphProofs.get(key)
@@ -713,6 +820,10 @@ export async function auditFamilyPromotion(
           }
         }
         const nodeById = new Map(graph.nodes.map((node) => [node.id, node]))
+        const processedLearnerEpds = new Set(graph.edges.flatMap((edge) => {
+          const from = nodeById.get(edge.fromNodeId)
+          return from?.learnerTurn ? [from.epd] : []
+        }))
         const graphChecks = new Map(graph.edges.flatMap((edge) => {
           const from = nodeById.get(edge.fromNodeId)
           const to = nodeById.get(edge.toNodeId)
@@ -721,12 +832,18 @@ export async function auditFamilyPromotion(
             ? [[engineEdgeKey(from.epd, edge.uci, to.epd), check] as const]
             : []
         }))
-        if (graphChecks.size !== graphProofs.size) {
-          throw new Error(`Promoted graph and Stockfish proof set contain different learner edges for pack ${indexed.packId}`)
+        if (graphChecks.size > graphProofs.size) {
+          throw new Error(`Promoted graph contains more learner checks than its Stockfish proof set for pack ${indexed.packId}`)
         }
-        for (const [key, check] of graphProofs) {
-          if (JSON.stringify(graphChecks.get(key)) !== JSON.stringify(check)) {
+        for (const [key, check] of graphChecks) {
+          if (JSON.stringify(graphProofs.get(key)) !== JSON.stringify(check)) {
             throw new Error(`Promoted graph engine evidence differs at ${key}`)
+          }
+        }
+        for (const key of graphProofs.keys()) {
+          const fromEpd = key.split('\0', 1)[0]!
+          if (processedLearnerEpds.has(fromEpd) && !graphChecks.has(key)) {
+            throw new Error(`Promoted graph omitted Stockfish evidence at reachable learner position ${key}`)
           }
         }
         checkedLearnerNodes += candidatePack.learnerNodes.length
@@ -748,6 +865,13 @@ export async function auditFamilyPromotion(
       const report = FamilyScidCampaignReportV1Schema.parse(
         await readIndexedJson(rootReal, index.scidCrosscheckReport),
       )
+      if (!verifiedCampaignSources) throw new Error('Scid promotion requires verified campaign source bytes')
+      if (
+        report.oracle.repositoryCommit !== verifiedCampaignSources.scid.repositoryCommit
+        || report.oracle.sourceManifestSha256 !== verifiedCampaignSources.scid.sourceManifestSha256
+        || report.oracle.provisionReceiptSha256 !== verifiedCampaignSources.scid.provisionReceiptSha256
+        || report.oracle.sha256 !== verifiedCampaignSources.scid.oracleSha256
+      ) throw new Error('Scid cross-check report differs from independently reopened oracle bytes')
       if (report.releaseId !== index.releaseId) throw new Error('Scid report belongs to another release')
       if (report.familyGraphBuildSha256 !== index.familyGraphBuild.sha256) {
         throw new Error('Scid report is not bound to the promoted family graph build output')
@@ -759,7 +883,28 @@ export async function auditFamilyPromotion(
         candidateInventory.releaseId !== index.releaseId ||
         candidateInventory.familyGraphBuildSha256 !== index.familyGraphBuild.sha256
       ) throw new Error('Scid candidate inventory is not bound to the promoted family graph build')
+      const indexedFamilyByPack = new Map(index.packs.map(({ packId, familyId }) => [packId, familyId]))
+      const promotedPathCount = [...promotedGraphs.values()].reduce((total, graph) => total + graph.paths.length, 0)
+      if (candidateInventory.lines.length !== promotedPathCount) {
+        throw new Error('Scid candidate inventory is not exactly equal to every promoted drill path')
+      }
+      for (const line of candidateInventory.lines) {
+        const graph = promotedGraphs.get(line.packId)
+        const path = graph?.paths.find(({ id }) => id === line.pathId)
+        if (
+          !graph || !path || indexedFamilyByPack.get(line.packId) !== line.familyId
+          || !line.drillEligible || line.engineQuarantined
+          || !graph.pack.ecoCodes.includes(line.expectedBaseEco)
+        ) throw new Error(`Scid candidate ${line.lineId} does not identify one eligible promoted graph path`)
+        const edges = new Map(graph.edges.map((edge) => [edge.id, edge]))
+        const expectedMoves = path.edgeIds.map((edgeId) => edges.get(edgeId)?.uci)
+        if (
+          expectedMoves.some((move) => move === undefined)
+          || JSON.stringify(expectedMoves) !== JSON.stringify(line.movesUci)
+        ) throw new Error(`Scid candidate ${line.lineId} moves differ from its promoted graph path`)
+      }
       const candidates = new Map(candidateInventory.lines.map((line) => [line.lineId, line]))
+      assertFamilyScidSampleMatchesInventory({ report, inventory: candidateInventory })
       for (const result of report.results) {
         const candidate = candidates.get(result.lineId)
         if (
@@ -812,11 +957,24 @@ export async function auditFamilyPromotion(
         proofInventory.evidence.engineCampaign.executableSha256 !== engineReceipt.engineSha256 ||
         !sameStringSet(proofInventory.evidence.engineCampaign.nnueSha256, engineReceipt.nnueSha256)
       ) throw new Error('Puzzle proof inventory uses a different Stockfish executable or NNUE campaign')
+      if (!verifiedCampaignSources ||
+        proofInventory.evidence.engineCampaign.releaseCommit !== verifiedCampaignSources.stockfish.releaseCommit ||
+        proofInventory.evidence.engineCampaign.sourceManifestSha256 !== verifiedCampaignSources.stockfish.sourceManifestSha256 ||
+        proofInventory.evidence.engineCampaign.sourceReceiptSha256 !== verifiedCampaignSources.stockfish.provisionReceiptSha256 ||
+        proofInventory.evidence.engineCampaign.executableSha256 !== verifiedCampaignSources.stockfish.executableSha256 ||
+        !sameStringSet(proofInventory.evidence.engineCampaign.nnueSha256, verifiedCampaignSources.stockfish.nnueSha256)
+      ) throw new Error('Puzzle proofs differ from independently reopened Stockfish source bytes')
       if (proofInventory.evidence.puzzleSource.sha256 !== puzzleReceipt.sourceSha256) {
         throw new Error('Puzzle promotion source digest differs from its verified proof inventory')
       }
       const promotedShards = [...promotedPuzzleShards].map(([sha256, shard]) => {
-        validatePromotedPuzzleShardAgainstInventory({ shardSha256: sha256, shard, inventory: proofInventory })
+        const shardBytes = promotedPuzzleShardBytes.get(sha256)
+        validatePromotedPuzzleShardAgainstInventory({
+          shardSha256: sha256,
+          shard,
+          inventory: proofInventory,
+          ...(shardBytes === undefined ? {} : { shardBytes }),
+        })
         return { sha256, shard }
       })
       const derived = derivePuzzlePromotionReceipt({

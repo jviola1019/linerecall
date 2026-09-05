@@ -4,7 +4,10 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { DatabaseSync, type SQLInputValue, type StatementSync } from 'node:sqlite'
 import { z } from 'zod'
 import { FamilyIdSchema, FamilyReleaseIdSchema, TaxonomyLineIdSchema } from '../../src/domain/opening-family.ts'
-import { StockfishManifestSchema } from '../verification/lib/manifest.ts'
+import {
+  StockfishManifestSchema,
+  assertStockfishProvisionMatchesManifest,
+} from '../verification/lib/manifest.ts'
 import { auditCompactV3Foundation } from './audit-data-foundation.ts'
 import { CompactArchiveCheckpointSchema } from './compact-v3-contracts.ts'
 import { receiptDigest } from './compact-v3-foundation.ts'
@@ -25,15 +28,6 @@ import type { PuzzleSourceBinding } from './puzzle-contracts.ts'
 
 const MAX_JSON_BYTES = 4 * 1024 * 1024
 const MAX_ASSOCIATION_DATABASE_BYTES = 256 * 1024 * 1024 * 1024
-
-const ProvisionReceiptSchema = z.object({
-  schemaVersion: z.literal(1),
-  releaseTag: z.literal('sf_18'),
-  releaseCommit: z.string().regex(/^[a-f0-9]{40}$/u),
-  executable: z.object({
-    sha256: z.string().regex(/^[a-f0-9]{64}$/u),
-  }).passthrough(),
-}).passthrough()
 
 type PuzzleAssociation = {
   confidence: 'exact-position' | 'opening-family' | 'unlinked'
@@ -435,7 +429,10 @@ export async function loadPuzzleV3Prerequisites(
     label: 'Stockfish provision receipt',
     maximumBytes: MAX_JSON_BYTES,
   })
-  const provision = ProvisionReceiptSchema.parse(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(provisionBytes)) as unknown)
+  const provision = assertStockfishProvisionMatchesManifest(
+    stockfish,
+    JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(provisionBytes)) as unknown,
+  )
   if (
     provision.releaseCommit !== campaign.engine.releaseCommit ||
     provision.executable.sha256 !== campaign.engine.executableSha256

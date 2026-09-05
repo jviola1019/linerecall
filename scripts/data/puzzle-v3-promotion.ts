@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto'
+import { gzipSync } from 'node:zlib'
 import { z } from 'zod'
 import {
   FamilyIdSchema,
@@ -70,6 +72,12 @@ export function puzzleEngineProofRef(proof: PuzzleEngineProof): string {
 
 function sameStringSet(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value) => right.includes(value))
+}
+
+/** Exact bytes used by the v3 puzzle shard content-addressing contract. */
+export function puzzleShardCompressedBytes(input: unknown): Buffer {
+  const shard = TacticalPuzzleShardPayloadV1Schema.parse(input)
+  return gzipSync(`${JSON.stringify(shard, null, 2)}\n`)
 }
 
 export function tacticalPuzzleFromVerifiedEnvelope(
@@ -152,9 +160,15 @@ export function validatePromotedPuzzleShardAgainstInventory(options: {
   shardSha256: string
   shard: unknown
   inventory: unknown
+  /** Raw stored bytes from the immutable shard receipt, when available. */
+  shardBytes?: Uint8Array
 }): TacticalPuzzleShardPayloadV1 {
   const inventory = validatePuzzlePromotionProofInventory(options.inventory)
   const shard = TacticalPuzzleShardPayloadV1Schema.parse(options.shard)
+  if (options.shardBytes !== undefined) {
+    const actualDigest = createHash('sha256').update(options.shardBytes).digest('hex')
+    if (actualDigest !== options.shardSha256) throw new Error('Promoted puzzle shard receipt digest differs from its proof inventory')
+  }
   const proofShard = inventory.shards.find(({ shardSha256 }) => shardSha256 === options.shardSha256)
   if (!proofShard) throw new Error('Promoted puzzle shard has no content-addressed proof inventory')
   if (shard.releaseId !== inventory.releaseId || !sameStringSet(shard.familyIds, proofShard.familyIds)) {

@@ -9,6 +9,7 @@ import {
   MemoryFamilyTrainingJournalRepository,
   countUniqueCompletedFamilyPaths,
   latestFamilyCoverageGeneration,
+  reconcileFamilyCursorCompletions,
   supportsFamilyTrainingJournalTransfer,
   type FamilyCoverageEventV1,
   type FamilyCoverageCycleEventV1,
@@ -67,6 +68,81 @@ function cycleEvent(
   })
 }
 
+test('durable completion replay repairs an interrupted cursor without changing due ownership or mastery', () => {
+  const before = cursor({ completedPathIds: [], pendingPathIds: [PATH_A, PATH_B] })
+  const event = coverageEvent()
+  const repaired = reconcileFamilyCursorCompletions(before, [event, structuredClone(event)])
+  assert.deepEqual(repaired.completedPathIds, [PATH_A])
+  assert.deepEqual(repaired.pendingPathIds, [PATH_B])
+  assert.deepEqual(repaired.authoritativeDueCardIds, before.authoritativeDueCardIds)
+  assert.deepEqual(repaired.reviewedCardIds, before.reviewedCardIds)
+  assert.deepEqual(before.completedPathIds, [])
+  assert.deepEqual(reconcileFamilyCursorCompletions(repaired, [event]), repaired)
+  for (const unrelated of [
+    coverageEvent({ releaseId: 'another-release' }),
+    coverageEvent({ familyId: 'sicilian-defence' }),
+    coverageEvent({ coverageCycleId: 'caro_kann_black::coverage:1' }),
+    coverageEvent({ packId: 'other_pack', coverageCycleId: 'other_pack::coverage:0' }),
+  ]) assert.deepEqual(reconcileFamilyCursorCompletions(before, [unrelated]), before)
+  assert.throws(() => reconcileFamilyCursorCompletions(cursor(), []), /missing its append-only event/u)
+  assert.throws(() => reconcileFamilyCursorCompletions(before, [coverageEvent({ pathId: 'path_00000000000000000003' })]), /outside the selected/u)
+})
+
+test('portable journals reject duplicate IDs, logical records, and cursor scopes', () => {
+  const empty = { schemaVersion: 1, coverageEvents: [], cycleEvents: [], latestCursors: [] }
+  for (const invalid of [
+    { coverageEvents: [coverageEvent(), coverageEvent({ pathId: PATH_B })] },
+    { cycleEvents: [cycleEvent(), cycleEvent()] },
+    { cycleEvents: [cycleEvent(), cycleEvent({ eventId: '20000000-0000-4000-8000-000000000099' })] },
+    { latestCursors: [cursor(), cursor({ batchIndex: 1 })] },
+  ]) assert.equal(FamilyTrainingJournalSnapshotV1Schema.safeParse({ ...empty, ...invalid }).success, false)
+  assert.equal(FamilyCoverageCycleEventV1Schema.safeParse({
+    ...cycleEvent(), kind: 'pack_bound', packId: 'caro_kann_black', packCoverageCycleId: 'other_pack::coverage:0',
+  }).success, false)
+})
+
+test('journal lookup rejects invalid sides and generation replay rejects contradictory bindings', async () => {
+  const repository = new MemoryFamilyTrainingJournalRepository()
+  const scope = { releaseId: cursor().releaseId, familyId: 'caro-kann', packId: 'caro_kann_black', side: 'invalid' as never }
+  await assert.rejects(repository.loadLatestCursor(scope), /side must be/u)
+  await assert.rejects(repository.listCycleEvents(scope), /side must be/u)
+  assert.equal(latestFamilyCoverageGeneration([]), null)
+  const start = cycleEvent()
+  const bound = cycleEvent({ kind: 'pack_bound', packId: 'caro_kann_black', packCoverageCycleId: 'caro_kann_black::coverage:0' })
+  for (const changed of [
+    { releaseId: 'another-release' }, { familyId: 'sicilian-defence' }, { side: 'white' }, { generationOrdinal: 1 },
+  ]) assert.throws(() => latestFamilyCoverageGeneration([start, cycleEvent({ ...bound, ...changed })]), /conflicts with its generation/u)
+  assert.throws(() => latestFamilyCoverageGeneration([
+    start, bound, cycleEvent({ ...bound, packCoverageCycleId: 'caro_kann_black::coverage:1' }),
+  ]), /multiple cycles/u)
+  assert.throws(() => latestFamilyCoverageGeneration([
+    start, cycleEvent({ generationId: '20000000-0000-4000-8000-000000000099' }),
+  ]), /conflicting identities/u)
+})
+
+test('concurrent cursor flushes share a write and retain non-Error failures for retry', async () => {
+  let finish!: () => void
+  let fail = false
+  const pending = new Promise<void>((resolve) => { finish = resolve })
+  const queue = new FamilyTrainingCursorWriteQueue({ appendCursor: async () => {
+    await pending
+    if (fail) throw 'unstructured adapter failure'
+    return 'appended'
+  } })
+  const initial = queue.enqueue(cursor())
+  assert.equal(queue.flush(), initial)
+  assert.equal(queue.enqueue(cursor()), initial)
+  assert.equal(queue.pendingCount, 1)
+  finish()
+  assert.equal((await initial).savedCount, 1)
+  fail = true
+  const rejected = await queue.enqueue(cursor({ batchIndex: 1 }))
+  assert.match(rejected.error?.message ?? '', /could not be saved/u)
+  assert.equal(rejected.pendingCount, 1)
+  fail = false
+  assert.equal((await queue.flush()).pendingCount, 0)
+})
+
 test('family coverage and cursor contracts reject duplicate or inconsistent state', () => {
   assert.equal(FamilyCoverageEventV1Schema.safeParse(coverageEvent()).success, true)
   assert.equal(FamilyCoverageEventV1Schema.safeParse({
@@ -123,6 +199,19 @@ test('coverage events append idempotently by event and logical path completion',
   assert.deepEqual(
     await repository.listCoverageEvents({ releaseId: 'another-release', familyId: original.familyId }),
     [],
+  )
+})
+
+test('coverage-cycle event IDs cannot be reused with different canonical content', async () => {
+  const repository = new MemoryFamilyTrainingJournalRepository()
+  const original = cycleEvent()
+  assert.equal(await repository.appendCycleEvent(original), 'appended')
+  await assert.rejects(
+    () => repository.appendCycleEvent({
+      ...original,
+      occurredAt: '2026-07-28T12:01:00.000Z',
+    }),
+    /event ID was reused with different content/u,
   )
 })
 
@@ -275,6 +364,36 @@ test('same-side graph packs keep independent latest cursors', async () => {
     packId: secondaryPackId,
     side: 'black',
   }), secondary)
+})
+
+test('loadCursor returns the exact cycle cursor and rejects a mismatched requested pack', async () => {
+  const repository = new MemoryFamilyTrainingJournalRepository()
+  const saved = cursor()
+  await repository.appendCursor(saved)
+  assert.deepEqual(await repository.loadCursor({
+    releaseId: saved.releaseId,
+    familyId: saved.familyId,
+    side: saved.side,
+    packId: 'caro_kann_black',
+    coverageCycleId: saved.coverageCycleId,
+  }), saved)
+  assert.equal(await repository.loadCursor({
+    releaseId: saved.releaseId,
+    familyId: saved.familyId,
+    side: saved.side,
+    packId: 'caro_kann_black',
+    coverageCycleId: 'caro_kann_black::coverage:9',
+  }), null)
+  await assert.rejects(
+    () => repository.loadCursor({
+      releaseId: saved.releaseId,
+      familyId: saved.familyId,
+      side: saved.side,
+      packId: 'another_pack',
+      coverageCycleId: saved.coverageCycleId,
+    }),
+    /belongs to another graph pack/u,
+  )
 })
 
 test('cursor writer retains failed snapshots in order and retries without losing updates', async () => {

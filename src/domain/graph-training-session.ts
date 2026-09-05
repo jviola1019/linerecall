@@ -64,6 +64,7 @@ export type GraphTrainingPhase =
 export type GraphMoveClassification =
   | 'book'
   | 'playable'
+  | 'inaccuracy'
   | 'exploratory'
   | 'quarantined'
   | 'unverified'
@@ -86,6 +87,7 @@ export interface GraphTrainingMoveFeedback {
   reason:
     | 'eligible_book_edge'
     | 'accepted_playable_continuation'
+    | 'engine_inaccuracy'
     | 'insufficient_sample'
     | 'quarantined_evidence'
     | 'unsupported_move'
@@ -133,6 +135,7 @@ export interface GraphTrainingSessionState {
   repeatCardIds: string[]
   phase: GraphTrainingPhase
   usedHint: boolean
+  revealedAnswer: boolean
   incorrectAttempts: number
   lastFeedback: GraphTrainingMoveFeedback | null
   lastTransition: GraphTrainingTransition | null
@@ -822,6 +825,7 @@ export function createGraphTrainingSession(options: {
     repeatCardIds: [],
     phase: phaseForNode(options.adapter, activePath, 0),
     usedHint: false,
+    revealedAnswer: false,
     incorrectAttempts: 0,
     lastFeedback: null,
     lastTransition: null,
@@ -911,6 +915,12 @@ export function markGraphTrainingHint(adapter: GraphTrainingAdapter, state: Grap
   assertCurrentState(adapter, state)
   if (state.phase !== 'awaiting_learner_move' && state.phase !== 'correction_required') return state
   return { ...state, usedHint: true }
+}
+
+export function markGraphTrainingReveal(adapter: GraphTrainingAdapter, state: GraphTrainingSessionState): GraphTrainingSessionState {
+  assertCurrentState(adapter, state)
+  if (state.phase !== 'awaiting_learner_move' && state.phase !== 'correction_required') return state
+  return { ...state, phase: 'correction_required', usedHint: true, revealedAnswer: true }
 }
 
 /** Confirm or change an inferred review before Manual Pacing persists it. */
@@ -1064,6 +1074,7 @@ function settleAfterTransition(options: {
     repeatCardIds: options.repeatCardIds ?? options.state.repeatCardIds,
     phase,
     usedHint: false,
+    revealedAnswer: false,
     incorrectAttempts: 0,
     lastFeedback: options.feedback,
     lastTransition: {
@@ -1105,6 +1116,9 @@ export function submitGraphTrainingMove(options: {
   } else if (edge?.role === 'exploratory') {
     classification = 'exploratory'
     reason = 'insufficient_sample'
+  } else if (edge?.role === 'inaccuracy') {
+    classification = 'inaccuracy'
+    reason = 'engine_inaccuracy'
   } else if (edge?.eligibleForDrill) {
     classification = 'book'
     reason = 'eligible_book_edge'
@@ -1146,7 +1160,7 @@ export function submitGraphTrainingMove(options: {
   const due = state.dueCardIds.includes(cardId)
   const repeat = state.repeatCardIds.includes(cardId)
   const warmup = !due && !repeat
-  const grade = defaultReviewGrade({
+  const grade = state.revealedAnswer ? 'again' : defaultReviewGrade({
     incorrectAttempts: state.incorrectAttempts,
     usedHint: state.usedHint,
     playedPlayableAlternative: classification === 'playable',
@@ -1265,6 +1279,7 @@ export function continueGraphTrainingSession(
     pendingPathIds: pendingPathId ? unfinishedPendingPathIds.slice(1) : unfinishedPendingPathIds,
     phase: phaseForNode(adapter, nextPath, 0),
     usedHint: false,
+    revealedAnswer: false,
     incorrectAttempts: 0,
     lastFeedback: null,
     lastTransition: null,
@@ -1305,6 +1320,7 @@ export function skipCurrentGraphTrainingPath(
     pendingPathIds: [...unfinishedPendingPathIds.slice(1), state.activePathId],
     phase: phaseForNode(adapter, nextPath, 0),
     usedHint: false,
+    revealedAnswer: false,
     incorrectAttempts: 0,
     lastFeedback: null,
     lastTransition: null,

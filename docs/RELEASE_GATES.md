@@ -33,6 +33,10 @@ runtime. `--report-only` deliberately records all automated checks as
    content-addressed family/pack/puzzle references, and the complete
    Caro–Kann, Sicilian Defence, and Ruy Lopez ECO regression ranges. The
    149-family review catalog alone cannot pass this gate.
+   Its deterministic editorial audit also cannot pass the gate: it is review
+   triage only. Promotion requires an approved decision, rationale, named
+   reviewer, and independent chess evidence for all 149 candidates and exact
+   ownership of all 3,790 rows.
    `npm run release:family-promotion` additionally requires the bounded
    promotion index and exact receipts for the catalog, every family manifest
    and provenance document, every referenced pack graph and eligible-source-
@@ -68,18 +72,32 @@ without dated evidence references, an identified reviewer, and the exact SHA-256
 of `build/candidate/linerecall.html`. Evidence for older candidate bytes is a
 hard failure and cannot be reused. Every `evidence[]` entry must be an existing
 workspace-relative, immutable content-addressed receipt with its own SHA-256.
+For a template that declares `requiredReview`, `requiredEnvironments`, or
+`requiredChecks`, a completed record must preserve those arrays exactly and
+include one ordered `requirementResults` entry per item. Every passing result
+must point to at least one receipt already present in the record. The trusted
+release signature is the reviewer-identity trust boundary; these structural
+checks do not establish a reviewer's qualifications by themselves.
 The release runner verifies the receipt bytes, rejects duplicate paths, and
 rejects missing files, digest mismatches, absolute paths, parent traversal, and
 paths outside the workspace, so a mutable report or narrative assertion cannot
 stand in for retained evidence. `sourcePath` is traceability metadata; the
 content-addressed `path` and digest are the release inputs.
+
+The zero-cost dependency integration gate described in
+[`ZERO_COST_STAGING_AND_MANUAL_EVIDENCE.md`](ZERO_COST_STAGING_AND_MANUAL_EVIDENCE.md)
+is an automated prerequisite only. Its ephemeral PostgreSQL/Redis containers
+cannot satisfy the `connected-staging` evidence record.
 A recorded `fail` is likewise dated, reviewed, candidate-bound, and backed by
 retained evidence. A `not_run` record keeps its completion, reviewer, and hash
 fields null and its `evidence[]` empty; planning fields do not count as results.
 
-Before manual review, run `npm run build:candidate`, `npm run artifact:harden`,
-and `npm run artifact:audit`, then record the resulting hardened-candidate hash
-in every evidence file. After the exact reports are final and reviewed,
+Before production manual review, run `npm run build:production-candidate`,
+`npm run artifact:harden`, `npm run artifact:audit`, and
+`npm run release:candidate-binding`, then record the resulting hardened-
+candidate hash in every evidence file. `npm run build:candidate` remains a
+review-data build and can never satisfy a production gate. After the exact
+reports are final and reviewed,
 `npm run release:evidence-receipts -- --write` copies them into SHA-256-addressed
 receipt directories and upgrades/validates the records; the command refuses to
 refresh completed evidence for different candidate bytes. A dry run without

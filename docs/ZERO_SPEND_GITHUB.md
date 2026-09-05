@@ -59,3 +59,8 @@ committed source and bounded data, so the secret/license scan and source review
 must pass before every push. No Pages environment is enabled while the current
 production data, accessibility, localization, security, and legal gates remain
 open.
+
+The separate [zero-cost connected-staging and manual-evidence runbook](ZERO_COST_STAGING_AND_MANUAL_EVIDENCE.md)
+defines what public CI, Codespaces, temporary device tunnels, a separate free
+PostgreSQL project, and static hosting can and cannot prove. None of those paths
+silently converts an ephemeral or synthetic check into production evidence.

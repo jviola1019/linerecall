@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react'
 import { viteSingleFile } from 'vite-plugin-singlefile'
 import { readFileSync } from 'node:fs'
 
-function embeddedSnapshotHtml(): import('vite').Plugin {
+function embeddedSnapshotHtml(snapshotPath: string): import('vite').Plugin {
   return {
     name: 'linerecall-embedded-snapshot',
     transformIndexHtml: {
@@ -13,7 +13,7 @@ function embeddedSnapshotHtml(): import('vite').Plugin {
         if (html.split(marker).length !== 2) {
           throw new Error('The HTML must contain exactly one embedded-snapshot marker')
         }
-        const rawSnapshot = readFileSync('src/generated/embedded-snapshot.json', 'utf8').trim()
+        const rawSnapshot = readFileSync(snapshotPath, 'utf8').trim()
         JSON.parse(rawSnapshot) as unknown
         const snapshot = rawSnapshot
           // A script element is a raw-text context even when its type is inert.
@@ -68,19 +68,25 @@ function placeApplicationModuleAfterPrebootShell(): import('vite').Plugin {
   }
 }
 
-export default defineConfig({
-  plugins: [embeddedSnapshotHtml(), react(), viteSingleFile(), placeApplicationModuleAfterPrebootShell()],
-  publicDir: false,
-  build: {
-    target: 'es2022',
-    modulePreload: false,
-    outDir: 'build/candidate',
-    emptyOutDir: true,
-    sourcemap: false,
-    cssCodeSplit: false,
-    assetsInlineLimit: 100_000_000,
-    rollupOptions: {
-      input: 'linerecall.html',
+export function createLineRecallViteConfig(
+  snapshotPath = 'src/generated/embedded-snapshot.json',
+) {
+  return defineConfig({
+    plugins: [embeddedSnapshotHtml(snapshotPath), react(), viteSingleFile(), placeApplicationModuleAfterPrebootShell()],
+    publicDir: false,
+    build: {
+      target: 'es2022',
+      modulePreload: false,
+      outDir: 'build/candidate',
+      emptyOutDir: true,
+      sourcemap: false,
+      cssCodeSplit: false,
+      assetsInlineLimit: 100_000_000,
+      rollupOptions: {
+        input: 'linerecall.html',
+      },
     },
-  },
-})
+  })
+}
+
+export default createLineRecallViteConfig()

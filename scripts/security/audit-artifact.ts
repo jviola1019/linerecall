@@ -1,4 +1,7 @@
-import { EmbeddedSnapshotPayloadSchema } from '../../src/data/embedded-contract.ts'
+import {
+  EmbeddedProductionSnapshotPayloadV3Schema,
+  EmbeddedSnapshotPayloadSchema,
+} from '../../src/data/embedded-contract.ts'
 import { readHandleBoundRegularFile } from '../lib/handle-bound-file.ts'
 import { verifyCsp } from './lib/csp.ts'
 import { isExecutedDirectly, option, sha256Bytes } from './lib/files.ts'
@@ -219,7 +222,12 @@ export async function auditArtifact(path: string): Promise<readonly CheckResult[
     try {
       const { content } = rawTextContent(parsed, snapshotScript)
       if (content.includes('<')) snapshotFindings.push({ rule: 'embedded-snapshot-raw-html-delimiter' })
-      EmbeddedSnapshotPayloadSchema.parse(JSON.parse(content) as unknown)
+      const value = JSON.parse(content) as unknown
+      const review = EmbeddedSnapshotPayloadSchema.safeParse(value)
+      const production = EmbeddedProductionSnapshotPayloadV3Schema.safeParse(value)
+      if (!review.success && !production.success) {
+        throw new Error('Embedded snapshot is neither a review-v2 nor production-v3 payload')
+      }
     } catch {
       snapshotFindings.push({ rule: 'embedded-snapshot-json-or-shape' })
     }

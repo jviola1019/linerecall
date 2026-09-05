@@ -124,6 +124,8 @@ for (const requirement of config.evidence) {
     candidate?.sha256 ?? null,
     workspaceRoot,
     requirement.sourceSnapshot,
+    undefined,
+    requirement.template,
   ))
 }
 

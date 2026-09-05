@@ -5,12 +5,13 @@
   "marker": "dist/SHIPPABLE.json",
   "report": "audit/generated/release-gate.json",
   "automated": [
-    { "id": "candidate-build", "command": "npm", "args": ["run", "build:candidate"] },
+    { "id": "candidate-build", "command": "npm", "args": ["run", "build:production-candidate"] },
     { "id": "typecheck", "command": "npm", "args": ["run", "typecheck"] },
     { "id": "critical-domain-tests-with-coverage", "command": "npm", "args": ["run", "test:coverage:domain"] },
     { "id": "unit-component-tests-with-coverage", "command": "npm", "args": ["run", "test:coverage"] },
     { "id": "data-tests", "command": "npm", "args": ["run", "test:data"] },
     { "id": "connected-data-foundation", "command": "npm", "args": ["run", "data:foundation-gate"] },
+    { "id": "compact-v31-production-receipts", "command": "npm", "args": ["run", "data:evidence-v31-production-audit"] },
     { "id": "evidence-complete-v3-production-data", "command": "npm", "args": ["run", "release:production-data"] },
     { "id": "domain-tests", "command": "npm", "args": ["run", "test:domain"] },
     { "id": "security-tests", "command": "npm", "args": ["run", "test:security"] },
@@ -38,25 +39,26 @@
     { "id": "license-audit", "command": "npm", "args": ["run", "security:licenses"] },
     { "id": "sbom", "command": "npm", "args": ["run", "security:sbom"] },
     { "id": "coverage-thresholds", "command": "npm", "args": ["run", "release:coverage"] },
-    { "id": "artifact-offline-security", "command": "npm", "args": ["run", "artifact:audit"] }
+    { "id": "artifact-offline-security", "command": "npm", "args": ["run", "artifact:audit"] },
+    { "id": "production-candidate-binding", "command": "npm", "args": ["run", "release:candidate-binding"] }
   ],
   "evidence": [
     { "id": "browser-e2e", "path": "audit/evidence/browser-e2e.json", "template": "audit/templates/evidence/browser-e2e.json" },
     { "id": "accessibility-manual", "path": "audit/evidence/manual-accessibility.json", "template": "audit/templates/evidence/accessibility-manual.json" },
-    { "id": "performance", "path": "audit/evidence/performance.json", "template": "audit/templates/evidence/performance.json" },
-    { "id": "persistence", "path": "audit/evidence/persistence.json", "template": "audit/templates/evidence/persistence.json" },
+    { "id": "performance", "path": "audit/evidence/performance.json", "template": "audit/templates/evidence/performance.json", "sourceSnapshot": "audit/generated/connected-source-snapshot.json" },
+    { "id": "persistence", "path": "audit/evidence/persistence.json", "template": "audit/templates/evidence/persistence.json", "sourceSnapshot": "audit/generated/connected-source-snapshot.json" },
     { "id": "security-manual", "path": "audit/evidence/security-review.json", "template": "audit/templates/evidence/security-manual.json", "sourceSnapshot": "audit/generated/connected-source-snapshot.json" },
     { "id": "editorial-human", "path": "audit/evidence/editorial-human.json", "template": "audit/templates/evidence/editorial-human.json", "sourceSnapshot": "audit/generated/connected-source-snapshot.json" },
     { "id": "localization-human", "path": "audit/evidence/localization-human.json", "template": "audit/templates/evidence/localization-human.json", "sourceSnapshot": "audit/generated/connected-source-snapshot.json" },
     { "id": "visual-human", "path": "audit/evidence/visual-human.json", "template": "audit/templates/evidence/visual-human.json", "sourceSnapshot": "audit/generated/connected-source-snapshot.json" },
-    { "id": "legal-trademark", "path": "audit/evidence/legal-trademark.json", "template": "audit/templates/evidence/legal-trademark.json" },
+    { "id": "legal-trademark", "path": "audit/evidence/legal-trademark.json", "template": "audit/templates/evidence/legal-trademark.json", "sourceSnapshot": "audit/generated/connected-source-snapshot.json" },
     { "id": "connected-staging", "path": "audit/evidence/connected-staging.json", "template": "audit/templates/evidence/connected-staging.json", "sourceSnapshot": "audit/generated/connected-source-snapshot.json" },
     { "id": "release-signing", "path": "audit/evidence/release-signing.json", "template": "audit/templates/evidence/release-signing.json", "sourceSnapshot": "audit/generated/connected-source-snapshot.json" }
   ],
   "releaseBindings": {
     "sourceSnapshot": "audit/generated/connected-source-snapshot.json",
     "productionReadiness": "data/generated/v3/production-data-readiness.json",
-    "appSnapshotManifest": "data/generated/app-snapshot/manifest.json"
+    "appSnapshotManifest": "data/generated/v3/app-snapshot-manifest.json"
   },
   "signing": {
     "evidenceId": "release-signing",

@@ -437,3 +437,140 @@ test('pack ownership and branch summaries use the manifest instead of graph disp
       && /another release/u.test(error.message),
   )
 })
+
+test('family manifests reject broken branch, membership, and content ownership independently', async () => {
+  const { manifests } = await registryFixture()
+  const baseline = manifests[0]!
+  const mutations: Array<[string, (manifest: OpeningFamilyManifestV1) => void]> = [
+    ['branch family', (m) => { m.branches[0]!.familyId = 'other-family' }],
+    ['missing parent', (m) => { m.branches[0]!.parentId = 'missing-parent' }],
+    ['self parent', (m) => { m.branches[0]!.parentId = m.branches[0]!.id }],
+    ['missing primary branch', (m) => { m.pathMemberships[0]!.primaryBranchId = 'missing-branch' }],
+    ['missing secondary branch', (m) => { m.pathMemberships[0]!.secondaryBranchIds = ['missing-branch'] }],
+    ['primary repeated as secondary', (m) => { m.pathMemberships[0]!.secondaryBranchIds = ['main-line'] }],
+    ['missing pack', (m) => { m.pathMemberships[0]!.packId = 'other_pack' }],
+    ['duplicate pack', (m) => { m.packRefs.push(structuredClone(m.packRefs[0]!)) }],
+    ['duplicate path', (m) => { m.pathMemberships.push(structuredClone(m.pathMemberships[0]!)) }],
+    ['duplicate branch', (m) => { m.branches.push(structuredClone(m.branches[0]!)) }],
+    ['duplicate taxonomy row', (m) => { m.taxonomyLineIds.push(m.taxonomyLineIds[0]!) }],
+    ['duplicate ECO', (m) => { m.ecoCodes.push(m.ecoCodes[0]!) }],
+    ['foreign provenance', (m) => { m.provenanceRef.releaseId = 'other-release' }],
+    ['duplicate puzzle shard', (m) => { m.puzzleShardRefs = [ref(55, 'puzzles/a.json.gz'), ref(55, 'puzzles/a.json.gz')] }],
+  ]
+  for (const [label, mutate] of mutations) {
+    const value = structuredClone(baseline)
+    mutate(value)
+    assert.equal(OpeningFamilyManifestV1Schema.safeParse(value).success, false, label)
+  }
+  assert.throws(() => validateRequiredOpeningFamilyRegressions(manifests.slice(1)), /must appear exactly once/u)
+})
+
+test('registry rejects incomplete inventories and contradictory catalog summaries', async () => {
+  const fixture = await registryFixture()
+  type Input = Parameters<typeof validateOpeningFamilyRegistry>[0]
+  const base: Input = {
+    catalog: fixture.catalog,
+    manifests: fixture.manifests,
+    repertoireGraphs: fixture.graphs,
+    expectedTaxonomyLineIds: Object.values(TAXONOMY_IDS),
+  }
+  const cases: Array<[string, (input: Input) => void, RegExp]> = [
+    ['duplicate expected row', (i) => { i.expectedTaxonomyLineIds = [TAXONOMY_IDS.caro, TAXONOMY_IDS.caro, TAXONOMY_IDS.ruy] }, /Expected taxonomy line IDs must be unique/u],
+    ['missing expected row', (i) => { i.expectedTaxonomyLineIds = [TAXONOMY_IDS.caro] }, /taxonomy total does not match/u],
+    ['unexpected row', (i) => { i.expectedTaxonomyLineIds = [TAXONOMY_IDS.caro, TAXONOMY_IDS.sicilian, `tax_${'d'.repeat(24)}`] }, /has no primary family.*unexpected taxonomy/u],
+    ['missing manifest', (i) => { i.manifests = i.manifests.slice(1) }, /has no manifest/u],
+    ['duplicate manifest', (i) => { i.manifests = [...i.manifests, i.manifests[0]] }, /manifest IDs must be unique/u],
+    ['duplicate graph', (i) => { i.repertoireGraphs = [...i.repertoireGraphs, i.repertoireGraphs[0]] }, /pack IDs must be globally unique/u],
+    ['missing graph', (i) => { i.repertoireGraphs = i.repertoireGraphs.slice(1) }, /missing graph pack/u],
+    ['name', (i) => { (i.catalog as OpeningFamilyCatalogV1).families[0]!.canonicalName = 'Different opening' }, /summary.*does not match/u],
+    ['aliases', (i) => { (i.catalog as OpeningFamilyCatalogV1).families[0]!.aliases = [] }, /summary.*does not match/u],
+    ['ECO', (i) => { (i.catalog as OpeningFamilyCatalogV1).families[0]!.ecoCodes = ['B10'] }, /summary.*does not match/u],
+    ['line count', (i) => { (i.catalog as OpeningFamilyCatalogV1).families[0]!.taxonomyLineCount = 2 }, /summary.*does not match/u],
+    ['pack count', (i) => { (i.catalog as OpeningFamilyCatalogV1).families[0]!.packCount = 2 }, /summary.*does not match/u],
+    ['sides', (i) => { (i.catalog as OpeningFamilyCatalogV1).families[0]!.availableSides = ['black'] }, /Catalog sides/u],
+    ['cards', (i) => { (i.catalog as OpeningFamilyCatalogV1).families[0]!.cardCount = 2 }, /Catalog card count/u],
+    ['pack side', (i) => { (i.manifests[0] as OpeningFamilyManifestV1).packRefs[0]!.side = 'black' }, /side does not match/u],
+    ['pack root', (i) => { (i.manifests[0] as OpeningFamilyManifestV1).packRefs[0]!.rootNodeId = fixture.graphs[0]!.nodes[1]!.id }, /root does not match/u],
+    ['graph reference reuse', (i) => {
+      const manifests = i.manifests as OpeningFamilyManifestV1[]
+      manifests[1]!.packRefs[0]!.graphShardRef = structuredClone(manifests[0]!.packRefs[0]!.graphShardRef)
+    }, /assigned to multiple packs/u],
+    ['manifest absent from catalog', (i) => {
+      const catalog = i.catalog as OpeningFamilyCatalogV1
+      catalog.families = catalog.families.slice(1)
+      catalog.familyCount = catalog.families.length
+    }, /manifest is absent from the catalog/u],
+    ['unreferenced graph', (i) => {
+      const manifest = i.manifests[0] as OpeningFamilyManifestV1
+      manifest.packRefs = []
+      manifest.pathMemberships = []
+    }, /not referenced by a family/u],
+    ['missing puzzle shard', (i) => {
+      (i.manifests[0] as OpeningFamilyManifestV1).puzzleShardRefs = [ref(55, 'puzzles/expected.json.gz')]
+      i.puzzleShards = []
+    }, /Referenced puzzle shard.*was not loaded/u],
+  ]
+  for (const [label, mutate, expected] of cases) {
+    const input = structuredClone(base)
+    mutate(input)
+    await assert.rejects(validateOpeningFamilyRegistry(input), (error: unknown) =>
+      error instanceof OpeningFamilyRegistryError && expected.test(error.message), label)
+  }
+})
+
+test('pack boundary and branch syllabus reject mismatched identities without inferring ownership', async () => {
+  const { manifests, graphs } = await registryFixture()
+  const manifest = manifests[0]!
+  const baseline = graphs[0]!
+  assert.throws(() => validateFamilyPackGraphOwnership({ manifest, graph: baseline, packId: 'unknown_pack' }), /not owned/u)
+  for (const [change, expected] of [
+    [{ id: 'other_pack' }, /another pack identity/u],
+    [{ side: 'black' }, /another learner side/u],
+    [{ rootNodeId: baseline.nodes[1]!.id }, /another root position/u],
+    [{ ecoCodes: ['A00'] }, /ECO code outside/u],
+    [{ pathIds: ['path_ffffffffffffffffffff'] }, /do not exactly cover/u],
+  ] as const) {
+    assert.throws(() => validateFamilyPackGraphOwnership({
+      manifest, packId: baseline.pack.id, graph: { ...baseline, pack: { ...baseline.pack, ...change } },
+    }), expected)
+  }
+  const fact = {
+    packId: baseline.pack.id, pathId: baseline.paths[0]!.id,
+    learnerDecisionCount: 1, terminalStatus: 'evidence_terminal' as const,
+  }
+  for (const [paths, expected] of [
+    [[fact, fact], /more than once/u],
+    [[{ ...fact, packId: 'other_pack' }], /another learner side/u],
+    [[], /do not exactly cover/u],
+    [[{ ...fact, pathId: 'path_ffffffffffffffffffff' }], /do not exactly cover/u],
+  ] as const) assert.throws(() => summarizeFamilyBranchRoutes({ manifest, side: 'white', paths }), expected)
+  assert.deepEqual(summarizeFamilyBranchRoutes({ manifest, side: 'black', paths: [] }), [])
+})
+
+test('syllabus preserves hierarchy, aliases, secondary names, depths, and distinct routes', async () => {
+  const { manifests, graphs } = await registryFixture()
+  const manifest = structuredClone(manifests[0]!)
+  const first = manifest.branches[0]!
+  first.parentId = 'parent'
+  first.aliases = ['Historical line', 'Alternate name']
+  manifest.branches.push(
+    { ...first, id: 'same-name', aliases: [], parentId: 'parent' },
+    { ...first, id: 'parent', canonicalName: 'Parent family', aliases: [], parentId: undefined },
+    { ...first, id: 'secondary', canonicalName: 'Related line', aliases: [], parentId: undefined },
+  )
+  manifest.pathMemberships[0]!.secondaryBranchIds = ['secondary']
+  const original = manifest.pathMemberships[0]!
+  const secondId = 'path_ffffffffffffffffffff'
+  manifest.pathMemberships.push({ ...original, pathId: secondId, primaryBranchId: 'same-name', secondaryBranchIds: [] })
+  const summaries = summarizeFamilyBranchRoutes({ manifest, side: 'white', paths: [
+    { packId: graphs[0]!.pack.id, pathId: original.pathId, learnerDecisionCount: 10, terminalStatus: 'depth_capped' },
+    { packId: graphs[0]!.pack.id, pathId: secondId, learnerDecisionCount: 4, terminalStatus: 'insufficient_sample' },
+  ] })
+  assert.equal(summaries.length, 1)
+  assert.equal(summaries[0]!.canonicalName, 'Parent family / Main line')
+  assert.equal(summaries[0]!.routeCount, 2)
+  assert.deepEqual([summaries[0]!.minimumDepth, summaries[0]!.maximumDepth], [4, 10])
+  assert.deepEqual(summaries[0]!.aliases, ['Alternate name', 'Historical line'])
+  assert.deepEqual(summaries[0]!.terminalStatuses, ['depth_capped', 'insufficient_sample'])
+  assert.match(summaries[0]!.searchText, /related line/u)
+})

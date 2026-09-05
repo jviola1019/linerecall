@@ -3,9 +3,74 @@ import { ProductionWireAppManifestV3Schema } from '../../../src/data/production-
 
 const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/u)
 const SafeReleaseIdSchema = z.string().regex(/^[a-z0-9][a-z0-9._-]{2,159}$/u)
+const FamilyIdSchema = z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u)
+const FamilySideSchema = z.enum(['white', 'black'])
+
+const FamilyCoverageEntrySchema = z.object({
+  familyId: FamilyIdSchema,
+  trainable: z.boolean(),
+  evidenceEligibleSides: z.array(FamilySideSchema).max(2),
+  emittedSides: z.array(FamilySideSchema).max(2),
+  nonTrainableReason: z.enum(['insufficient-sample', 'quarantined', 'no-legal-continuation']).nullable(),
+}).strict().superRefine((entry, context) => {
+  const checkSides = (sides: readonly string[], path: ['evidenceEligibleSides'] | ['emittedSides']): void => {
+    if (new Set(sides).size !== sides.length || (sides.length === 2 && sides[0] !== 'black')) {
+      context.addIssue({ code: 'custom', path, message: 'Family sides must be unique and canonically ordered' })
+    }
+  }
+  checkSides(entry.evidenceEligibleSides, ['evidenceEligibleSides'])
+  checkSides(entry.emittedSides, ['emittedSides'])
+  if (entry.evidenceEligibleSides.some((side) => !entry.emittedSides.includes(side))) {
+    context.addIssue({ code: 'custom', path: ['emittedSides'], message: 'Every evidence-eligible family side must be emitted' })
+  }
+  if (entry.trainable !== (entry.emittedSides.length > 0)) {
+    context.addIssue({ code: 'custom', path: ['trainable'], message: 'Trainable status must equal emitted family-side presence' })
+  }
+  if ((entry.trainable && entry.nonTrainableReason !== null) || (!entry.trainable && entry.nonTrainableReason === null)) {
+    context.addIssue({ code: 'custom', path: ['nonTrainableReason'], message: 'Every non-trainable family requires an explicit evidence-derived reason' })
+  }
+})
+
+const FamilyCoverageSchema = z.object({
+  /** Proposal review remains the fixed 149-family denominator. */
+  reviewedProposalFamilyCount: z.literal(149),
+  /** Canonical family count is the approved ledger's post-merge/split count. */
+  reviewedCanonicalFamilyCount: z.number().int().positive().max(3_790),
+  minimumTrainableFamilyCount: z.number().int().positive().max(3_790),
+  trainableFamilyCount: z.number().int().positive().max(3_790),
+  evidenceEligibleFamilySideCount: z.number().int().nonnegative(),
+  emittedFamilySideCount: z.number().int().nonnegative(),
+  allEvidenceEligibleFamilySidesEmitted: z.literal(true),
+  families: z.array(FamilyCoverageEntrySchema).min(1).max(3_790),
+}).strict().superRefine((coverage, context) => {
+  const ids = coverage.families.map(({ familyId }) => familyId)
+  if (new Set(ids).size !== ids.length || ids.length !== coverage.reviewedCanonicalFamilyCount || ids.some((id, index) => index > 0 && ids[index - 1]! >= id)) {
+    context.addIssue({ code: 'custom', path: ['families'], message: 'Reviewed family coverage must contain every unique canonical family in order' })
+  }
+  const expectedMinimum = Math.floor(coverage.reviewedCanonicalFamilyCount / 2) + 1
+  if (coverage.minimumTrainableFamilyCount !== expectedMinimum) {
+    context.addIssue({ code: 'custom', path: ['minimumTrainableFamilyCount'], message: 'Trainable-family majority must be strict over the canonical family count' })
+  }
+  const trainableCount = coverage.families.filter(({ trainable }) => trainable).length
+  if (trainableCount !== coverage.trainableFamilyCount || trainableCount < expectedMinimum) {
+    context.addIssue({ code: 'custom', path: ['trainableFamilyCount'], message: 'Trainable family count does not reconcile to reviewed family entries' })
+  }
+  const eligibleSideCount = coverage.families.reduce((sum, family) => sum + family.evidenceEligibleSides.length, 0)
+  const emittedSideCount = coverage.families.reduce((sum, family) => sum + family.emittedSides.length, 0)
+  if (eligibleSideCount !== coverage.evidenceEligibleFamilySideCount) {
+    context.addIssue({ code: 'custom', path: ['evidenceEligibleFamilySideCount'], message: 'Evidence-eligible family-side count does not reconcile' })
+  }
+  if (emittedSideCount !== coverage.emittedFamilySideCount) {
+    context.addIssue({ code: 'custom', path: ['emittedFamilySideCount'], message: 'Emitted family-side count does not reconcile' })
+  }
+})
 
 const CompleteCorpusSchema = z.object({
   manifestSha256: Sha256Schema,
+  corpusReceiptSha256: Sha256Schema,
+  exactMergeReceiptSha256: Sha256Schema,
+  sourceEdgeInventorySha256: Sha256Schema,
+  eligibleSourceEdges: z.number().int().positive(),
   archiveCount: z.number().int().positive(),
   archivesComplete: z.literal(true),
   digestsVerified: z.literal(true),
@@ -21,8 +86,22 @@ export const ProductionDataReadinessSchema = z.object({
   status: z.literal('pass'),
   releaseId: SafeReleaseIdSchema,
   auditedAt: z.string().datetime({ offset: true }),
-  storageModel: z.literal('bounded-two-pass-content-addressed-v3'),
+  storageModel: z.literal('log-structured-external-merge-v3.1'),
   appSnapshotManifestSha256: Sha256Schema,
+  taxonomy: z.object({
+    sourceCommit: z.literal('17ee660257de02870636f36248e919f2e01d8e85'),
+    sourceManifestSha256: Sha256Schema,
+    inventorySha256: Sha256Schema,
+    sourceFileCount: z.literal(5),
+    taxonomyLineCount: z.literal(3_790),
+    ecoCodeCount: z.literal(500),
+    proposedFamilyCount: z.literal(149),
+    exactOwnershipClosure: z.literal(true),
+  }).strict(),
+  // Family coverage is part of the production proof for every release,
+  // including fixture releases.  A release id must never downgrade this
+  // requirement.
+  familyCoverage: FamilyCoverageSchema,
   corpora: z.object({
     broadcasts: CompleteCorpusSchema.extend({
       archiveCount: z.literal(78),
@@ -138,6 +217,15 @@ export function evaluateProductionDataReadiness(
       rule: 'app-snapshot-readiness-digest-mismatch',
       expected: readiness.data.appSnapshotManifestSha256,
       actual: appManifestSha256,
+    })
+  }
+  const suppliedReadiness = readinessValue !== null && typeof readinessValue === 'object'
+    ? readinessValue as { familyCoverage?: unknown }
+    : null
+  if (suppliedReadiness !== null && suppliedReadiness.familyCoverage === undefined) {
+    findings.push({
+      rule: 'production-family-coverage-missing',
+      summary: 'Production readiness must include the source-derived 149-proposal review proof, canonical-family majority, and emitted-side closure.',
     })
   }
   if (readiness.success && appManifest.success && readiness.data.releaseId !== appManifest.data.releaseId) {

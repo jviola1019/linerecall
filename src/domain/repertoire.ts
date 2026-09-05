@@ -476,7 +476,7 @@ export const RepertoireEdgeSchema = z.object({
   toNodeId: PositionIdSchema,
   uci: UciMoveSchema,
   san: z.string().min(1).max(32),
-  role: z.enum(['book', 'playable', 'exploratory']),
+  role: z.enum(['book', 'playable', 'inaccuracy', 'exploratory']),
   eligibleForDrill: z.boolean(),
   acceptedBookTransposition: z.boolean(),
   evidence: RepertoireBranchEvidenceSchema,
@@ -521,6 +521,21 @@ export const RepertoireEdgeSchema = z.object({
       code: 'custom',
       path: ['role'],
       message: 'Playable edges require N>=100 and verified loss of at most 50cp, and are not book drills',
+    })
+  }
+  if (edge.role === 'inaccuracy' && (
+    edge.eligibleForDrill
+    || maximumCohortN < 500
+    || engine.status !== 'verified'
+    || engine.centipawnLoss === null
+    || engine.centipawnLoss < 51
+    || engine.centipawnLoss > 99
+    || engine.forcedMateAgainstLearner
+  )) {
+    context.addIssue({
+      code: 'custom',
+      path: ['role'],
+      message: 'Inaccuracy edges require N>=500 and an exact verified 51-99cp loss, and cannot be drilled',
     })
   }
   if (edge.role === 'exploratory' && (
@@ -688,6 +703,77 @@ export type EligibleSourceEdgeInventoryV1 = z.infer<typeof EligibleSourceEdgeInv
 export type CoverageCycleState = z.infer<typeof CoverageCycleStateSchema>
 export type SessionPathSelection = z.infer<typeof SessionPathSelectionSchema>
 export type TrainingValueSummary = z.infer<typeof TrainingValueSummarySchema>
+
+const PRIMARY_RANKING_MAXIMUM_PLY = 30
+
+/**
+ * Produce the auditable value tuple used to order a practice path. This never
+ * changes path eligibility: it only decides which already-eligible path is
+ * offered first. Opponent moves contribute to path coverage, while soundness,
+ * sample size, and score confidence are taken only from learner decisions.
+ */
+export function trainingValueSummaryForPath(
+  graph: RepertoireGraphDocument,
+  path: RepertoirePath,
+): TrainingValueSummary {
+  const nodeById = new Map(graph.nodes.map((node) => [node.id, node]))
+  const edgeById = new Map(graph.edges.map((edge) => [edge.id, edge]))
+  const learnerEvidence = path.edgeIds.flatMap((edgeId, index) => {
+    const edge = edgeById.get(edgeId)
+    const source = nodeById.get(path.nodeIds[index] ?? '')
+    if (!edge || !source?.learnerTurn) return []
+    const cohort = edge.evidence.cohorts.find(({ cohortId }) =>
+      cohortId === edge.evidence.selectionCohortId)
+    if (!cohort) throw new Error(`Path ${path.id} has no selected evidence cohort for ${edge.id}`)
+    return [{ edge, cohort }]
+  })
+  const soundnessTier = learnerEvidence.length > 0 && learnerEvidence.every(({ edge }) =>
+    edge.evidence.engine.centipawnLoss !== null
+      && edge.evidence.engine.centipawnLoss <= 20
+      && !edge.evidence.engine.forcedMateAgainstLearner)
+    ? 1
+    : 2
+  const usage = learnerEvidence.length === 0
+    ? 0
+    : Math.min(...learnerEvidence.map(({ cohort }) => cohort.aggregate.moveN))
+  const scoreLowerBound = learnerEvidence.length === 0
+    ? 0
+    : Math.min(...learnerEvidence.map(({ cohort }) => cohort.aggregate.scoreInterval?.low ?? 0))
+  return TrainingValueSummarySchema.parse({
+    schemaVersion: REPERTOIRE_SCHEMA_VERSION,
+    soundnessTier,
+    empiricalDepth: Math.max(
+      0,
+      Math.min(path.terminalPly, PRIMARY_RANKING_MAXIMUM_PLY) - graph.pack.rootPly,
+    ),
+    coverage: path.conditionalUsage,
+    usage,
+    scoreLowerBound,
+  })
+}
+
+/**
+ * Locked lexicographic recommendation order. Stable identities are the final
+ * tie-break only; no branch is removed by this comparator.
+ */
+export function compareTrainingValueSummaries(
+  left: TrainingValueSummary,
+  right: TrainingValueSummary,
+  leftStableIdentity: string,
+  rightStableIdentity: string,
+): number {
+  const leftValue = TrainingValueSummarySchema.parse(left)
+  const rightValue = TrainingValueSummarySchema.parse(right)
+  const coverageAdjustedDepth =
+    (rightValue.empiricalDepth * rightValue.coverage) - (leftValue.empiricalDepth * leftValue.coverage)
+  return leftValue.soundnessTier - rightValue.soundnessTier
+    || coverageAdjustedDepth
+    || rightValue.empiricalDepth - leftValue.empiricalDepth
+    || rightValue.coverage - leftValue.coverage
+    || rightValue.usage - leftValue.usage
+    || rightValue.scoreLowerBound - leftValue.scoreLowerBound
+    || leftStableIdentity.localeCompare(rightStableIdentity, 'en')
+}
 
 async function sha256Hex(value: string): Promise<string> {
   const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
@@ -1032,10 +1118,14 @@ export function validateEligibleSourceEdgeInventory(
   return inventory
 }
 
-function orderedCoverageCycle(paths: readonly RepertoirePath[], ordinal: number): RepertoirePath[] {
-  const ranked = [...paths].sort((left, right) =>
-    right.conditionalUsage - left.conditionalUsage || left.id.localeCompare(right.id, 'en'),
-  )
+function orderedCoverageCycle(graph: RepertoireGraphDocument, ordinal: number): RepertoirePath[] {
+  const summaries = new Map(graph.paths.map((path) => [path.id, trainingValueSummaryForPath(graph, path)]))
+  const ranked = [...graph.paths].sort((left, right) => compareTrainingValueSummaries(
+    summaries.get(left.id)!,
+    summaries.get(right.id)!,
+    left.id,
+    right.id,
+  ))
   let primaryCount = 0
   let coverage = 0
   while (primaryCount < ranked.length && coverage < DEFAULT_PRIMARY_COVERAGE) {
@@ -1086,7 +1176,7 @@ export function selectSessionPaths(options: SelectSessionPathsOptions): SessionP
   const ordinal = prior?.ordinal ?? 0
   const remaining = prior && prior.remainingPathIds.length > 0
     ? prior.remainingPathIds.map((id) => pathById.get(id)!)
-    : orderedCoverageCycle(graph.paths, ordinal)
+    : orderedCoverageCycle(graph, ordinal)
   const dueNodeIds = new Set(suppliedDue.map((cardId) => cardId.slice(cardId.indexOf('::') + 2)))
   const duePaths = remaining.filter((path) => path.nodeIds.some((nodeId) => dueNodeIds.has(nodeId)))
   const nonDuePaths = remaining.filter((path) => !duePaths.includes(path))

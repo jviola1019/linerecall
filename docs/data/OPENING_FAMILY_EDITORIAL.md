@@ -24,3 +24,23 @@ checked whenever those families are part of the promoted catalog.
 
 Synthetic approved ledgers used by tests are labeled fixture-only. They prove
 fail-closed schema and promotion behavior and are never editorial evidence.
+
+## Proposal denominator and canonical readiness boundary
+
+The pinned taxonomy inventory is the proposal universe: its `proposedFamilies`
+array contains exactly 149 unique proposal IDs and assigns all 3,790 taxonomy
+rows exactly once. Approved keep/merge/split/nest decisions may produce a
+different canonical family count. Promotion must bind every final canonical
+family and its two learner-side dispositions to the approved result IDs; it
+must not use a ranked subset, a sample, or a display-only catalog.
+
+The checked-in editorial output therefore reports all 149 candidate families
+while retaining `pending` decisions and `promotionEligible: false`. The
+production readiness gate requires a strict majority of the final canonical
+families, but it must retain the fixed 149-proposal review denominator. Each
+family-side supported by exact
+evidence must be emitted, and each family without a trainable side must retain
+its exact taxonomy ownership plus `study-only` readiness and an explicit
+evidence-derived reason such as insufficient sample or quarantine. No readiness
+count or reason may be supplied by human editorial inference while the ledger
+remains pending.

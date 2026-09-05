@@ -25,6 +25,7 @@ import {
   graphTrainingPathLearningProgress,
   listGraphTrainingPaths,
   markGraphTrainingHint,
+  markGraphTrainingReveal,
   nextNonemptyGraphTrainingBatch,
   overrideLastGraphTrainingReviewGrade,
   prepareGraphTrainingAdapter,
@@ -43,6 +44,7 @@ import {
 import type { ReviewGrade } from '../../domain/progress.ts'
 import {
   FamilyTrainingCursorWriteQueue,
+  reconcileFamilyCursorCompletions,
   type FamilyTrainingJournalRepository,
 } from '../../domain/family-training-journal.ts'
 import type { BoardAnnotation, BoardAnnotationTone } from '../../domain/board-annotations.ts'
@@ -162,6 +164,16 @@ function feedbackLabel(value: string): string {
     unsupported_move: 'Outside this opening course',
   }
   return labels[value] ?? value.replaceAll('_', ' ').replace(/^./u, (character) => character.toUpperCase())
+}
+
+function edgeRoleLabel(role: 'book' | 'playable' | 'inaccuracy' | 'exploratory'): string {
+  return role === 'book'
+    ? 'Book'
+    : role === 'playable'
+      ? 'Playable'
+      : role === 'inaccuracy'
+        ? 'Inaccuracy'
+        : 'Exploratory'
 }
 
 function terminalLabel(value: string): string {
@@ -402,7 +414,11 @@ function GraphTrainingWorkspace({
           coverageCycleId: expectedCoverageCycleId,
         })
       : journalRepository.loadLatestCursor(cursorScope)
-    void cursorRequest.then((cursor) => {
+    void cursorRequest.then(async (savedCursor) => {
+      if (!active) return
+      const cursor = savedCursor && onPathCompleted
+        ? reconcileFamilyCursorCompletions(savedCursor, await journalRepository.listCoverageEvents(cursorScope))
+        : savedCursor
       if (!active) return
       if (expectedCoverageCycleId === null) {
         if (cursor) {
@@ -411,8 +427,8 @@ function GraphTrainingWorkspace({
         }
         setRestorePending(false)
         announce(cursor
-          ? 'An older course-section checkpoint was left untouched; this practice run will start a new section.'
-          : 'This course section is ready to join the active opening run.')
+          ? 'Your saved round stays intact; this starts a new practice round.'
+          : 'Ready to practice.')
         return
       }
       if (!cursor) {
@@ -471,6 +487,18 @@ function GraphTrainingWorkspace({
       || !autonomousPlan
       || pendingManualReview
     ) return
+    // A completed path event is the source of truth for the family-level
+    // journal. Do not let a cursor snapshot race ahead of that event: on a
+    // crash, restoring a "complete" cursor before its path event is durable
+    // can make the parent reject the otherwise valid completion. The
+    // completion writer bumps completionCommitRevision after the append has
+    // succeeded, which re-runs this effect and permits the snapshot.
+    if (onPathCompleted) {
+      for (const pathId of session.completedPathIds) {
+        const key = `${session.releaseId}\0${session.packId}\0${session.selection.coverageCycleId}\0${pathId}`
+        if (!reportedCompletionKeys.current.has(key)) return
+      }
+    }
     try {
       const cursor = createFamilyTrainingCursorSnapshot({
         adapter,
@@ -501,9 +529,11 @@ function GraphTrainingWorkspace({
     completedBeforeBatch,
     cursorWriter,
     familyId,
+    onPathCompleted,
     restorePending,
     session,
     pendingManualReview,
+    completionCommitRevision,
   ])
 
   useEffect(() => {
@@ -686,8 +716,8 @@ function GraphTrainingWorkspace({
     }
   }
 
-  const startAll = (): void => {
-    if (startPending) return
+  const startAll = async (): Promise<boolean> => {
+    if (startPending) return false
     try {
       const cycleOrdinal = nextCoverageCycleOrdinal
       const plan = createAutonomousGraphTrainingPlan({
@@ -719,28 +749,31 @@ function GraphTrainingWorkspace({
       }
       if (!onCoverageCycleStarted && !replacesBoundCycle) {
         begin()
-        return
+        return true
       }
       setStartPending(true)
       const restartGeneration = replacesBoundCycle
         ? Promise.resolve(onRestartFullCoverage?.({ autoStart: false }))
         : Promise.resolve()
-      void restartGeneration.then(() =>
-        onCoverageCycleStarted?.({
+      try {
+        await restartGeneration
+        await onCoverageCycleStarted?.({
           packId: adapter.graph.pack.id,
           coverageCycleId: selection.coverageCycleId,
-        }),
-      ).then(() => {
+        })
         setPersistenceError(null)
         begin()
-      }).catch((error: unknown) => {
+        return true
+      } catch (error: unknown) {
         setPersistenceError(`Family practice could not start: ${message(error)}`)
         announce('Practice did not start because progress could not be saved.')
-      }).finally(() => {
+        return false
+      } finally {
         setStartPending(false)
-      })
+      }
     } catch (error) {
       announce(message(error))
+      return false
     }
   }
 
@@ -751,8 +784,14 @@ function GraphTrainingWorkspace({
     }
     if (restorePending || generationRestoreBlocked || autoStartHandled.current) return
     autoStartHandled.current = true
-    if (!session || session.phase === 'session_complete') startAll()
-    onAutoStartConsumed?.()
+    if (!session || session.phase === 'session_complete') {
+      void startAll().then((started) => {
+        if (started) onAutoStartConsumed?.()
+        else autoStartHandled.current = false
+      })
+    } else {
+      onAutoStartConsumed?.()
+    }
   }, [autoStartFull, generationRestoreBlocked, onAutoStartConsumed, restorePending, session])
 
   useEffect(() => {
@@ -1196,7 +1235,8 @@ function GraphTrainingWorkspace({
   const pathLearning = graphTrainingPathLearningProgress(adapter, session)
   const expected = expectedGraphTrainingMoves(adapter, session)
   const currentNode = adapter.nodesById.get(session.currentNodeId)!
-  const lineRevealed = session.usedHint || revealedNodeId === session.currentNodeId
+  const waitingForLearner = session.phase === 'awaiting_learner_move' || session.phase === 'correction_required'
+  const lineRevealed = waitingForLearner && (session.usedHint || revealedNodeId === session.currentNodeId)
   const currentEdges = currentNode.outgoingEdgeIds
     .map((edgeId) => adapter.edgesById.get(edgeId))
     .filter((edge) => edge !== undefined)
@@ -1205,7 +1245,6 @@ function GraphTrainingWorkspace({
     .map((edgeId) => adapter.edgesById.get(edgeId))
     .filter((edge) => edge !== undefined)
   const fen = graphTrainingFen(adapter, session)
-  const waitingForLearner = session.phase === 'awaiting_learner_move' || session.phase === 'correction_required'
   const moveStatus = acceptedMoveStatus(session)
   const statusText = session.phase === 'correction_required'
     ? 'Correction needed'
@@ -1218,7 +1257,7 @@ function GraphTrainingWorkspace({
           : session.repeatCardIds.includes(`${session.packId}::${session.currentNodeId}`)
             ? 'Repeat card'
             : session.dueCardIds.includes(`${session.packId}::${session.currentNodeId}`)
-              ? 'Due card'
+              ? 'Move to review'
               : 'Practice position'
   const activePathOrdinal = Math.max(0, runPathIds.indexOf(path.id)) + 1
   const canSkipPath = session.pendingPathIds.some((pathId) =>
@@ -1274,9 +1313,9 @@ function GraphTrainingWorkspace({
   }
 
   const revealCurrentLine = (): void => {
-    setSession(markGraphTrainingHint(adapter, session))
+    setSession(markGraphTrainingReveal(adapter, session))
     setRevealedNodeId(session.currentNodeId)
-    announce(expected.length > 0 ? 'Current line revealed. This move will be graded Hard.' : 'No continuation is available.')
+    announce(expected.length > 0 ? 'Line revealed. Play the move to continue; it will return for review.' : 'No continuation is available.')
   }
 
   return (
@@ -1288,13 +1327,9 @@ function GraphTrainingWorkspace({
           <p className="eyebrow">{pathDisplayName(path, pathDisplayNameById)}</p>
           <h2 id="graph-training-title">Opening practice</h2>
           <p>
-            Variation {activePathOrdinal} of {coverage.totalPathCount} · {statusText} ·{' '}
-            {pathLearning.completedLearnerDecisions} of {pathLearning.totalLearnerDecisions} moves recalled this run
-            {pathLearning.currentLearnerDecision === null
-              ? ''
-              : ` · decision ${pathLearning.currentLearnerDecision} next`}
+            Variation {activePathOrdinal} of {coverage.totalPathCount} ·{' '}
+            {pathLearning.completedLearnerDecisions} of {pathLearning.totalLearnerDecisions} moves played · {statusText}
           </p>
-          <p className="field-help">This line has {pathLearning.totalLearnerDecisions} moves to recall.</p>
           <progress
             className="family-coverage-progress"
             max={Math.max(1, coverage.totalPathCount)}
@@ -1512,17 +1547,17 @@ function GraphTrainingWorkspace({
           {analysisTab === 'line' ? (
             <>
               <h4>Current continuation</h4>
-              {!lineRevealed && waitingForLearner ? (
+              {!lineRevealed ? (
                 <div className="graph-answer-gate">
                   <p>The next moves stay hidden during recall.</p>
-                  <button type="button" className="secondary-button" onClick={revealCurrentLine}>Reveal line</button>
+                  <button type="button" className="secondary-button" disabled={!waitingForLearner} onClick={revealCurrentLine}>Reveal line</button>
                 </div>
               ) : continuationEdges.length > 0 ? (
                 <ol className="graph-continuation-line">
                   {continuationEdges.map((edge) => (
                     <li key={edge.id}>
                       <code>{edge.san}</code>
-                      <span>{edge.role === 'book' ? 'Book' : edge.role === 'playable' ? 'Playable' : 'Exploratory'}</span>
+                      <span>{edgeRoleLabel(edge.role)}</span>
                     </li>
                   ))}
                 </ol>
@@ -1534,10 +1569,10 @@ function GraphTrainingWorkspace({
           ) : analysisTab === 'alternatives' ? (
             <>
               <h4>Known moves from this position</h4>
-              {!lineRevealed && waitingForLearner ? (
+              {!lineRevealed ? (
                 <div className="graph-answer-gate">
                   <p>Alternatives stay hidden until you request help.</p>
-                  <button type="button" className="secondary-button" onClick={revealCurrentLine}>Reveal moves</button>
+                  <button type="button" className="secondary-button" disabled={!waitingForLearner} onClick={revealCurrentLine}>Reveal moves</button>
                 </div>
               ) : currentEdges.length > 0 ? (
                 <ul className="graph-alternative-list">
@@ -1547,7 +1582,7 @@ function GraphTrainingWorkspace({
                     )
                     return (
                       <li key={edge.id}>
-                        <span><code>{edge.san}</code> · {edge.role === 'book' ? 'Book' : edge.role === 'playable' ? 'Playable' : 'Exploratory'}</span>
+                        <span><code>{edge.san}</code> · {edgeRoleLabel(edge.role)}</span>
                         <span>
                           {Math.round(edge.evidence.conditionalUsage * 100)}% usage
                           {cohort ? ` · ${cohort.aggregate.moveN.toLocaleString('en-US')} games` : ''}
@@ -1561,10 +1596,10 @@ function GraphTrainingWorkspace({
           ) : (
             <>
               <h4>Move evidence</h4>
-              {!lineRevealed && waitingForLearner ? (
+              {!lineRevealed ? (
                 <div className="graph-answer-gate">
                   <p>Move evidence stays hidden until you reveal this position.</p>
-                  <button type="button" className="secondary-button" onClick={revealCurrentLine}>Reveal evidence</button>
+                  <button type="button" className="secondary-button" disabled={!waitingForLearner} onClick={revealCurrentLine}>Reveal evidence</button>
                 </div>
               ) : currentEdges.length > 0 ? (
                 <div className="graph-evidence-scroll" tabIndex={0} aria-label="Move evidence table">
@@ -1587,7 +1622,7 @@ function GraphTrainingWorkspace({
                         )
                         return <tr key={edge.id}>
                           <th scope="row"><code>{edge.san}</code></th>
-                          <td>{edge.role === 'book' ? 'Book' : edge.role === 'playable' ? 'Playable' : 'Exploratory'}</td>
+                          <td>{edgeRoleLabel(edge.role)}</td>
                           <td>
                             {selectedCohort ? selectedCohort.aggregate.moveN.toLocaleString('en-US') : 'Unavailable'}
                             {selectedCohort && selectedCohort.aggregate.moveN < 500
@@ -1728,7 +1763,7 @@ function GraphTrainingWorkspace({
           <div><dt>Total variations</dt><dd>{coverage.totalPathCount}</dd></div>
           <div><dt>Practiced</dt><dd>{coverage.completedPathCount}</dd></div>
           <div><dt>Remaining</dt><dd>{coverage.remainingPathCount}</dd></div>
-          <div><dt>This run</dt><dd>{pathLearning.completedLearnerDecisions} of {pathLearning.totalLearnerDecisions} moves recalled</dd></div>
+          <div><dt>This run</dt><dd>{pathLearning.completedLearnerDecisions} of {pathLearning.totalLearnerDecisions} moves played</dd></div>
           <div><dt>Moves in line</dt><dd>{pathLearning.totalLearnerDecisions}</dd></div>
           <div><dt>Line status</dt><dd>{terminalLabel(pathLearning.terminalStatus)}</dd></div>
           <div><dt>Moves due</dt><dd>{session.dueCardIds.length}</dd></div>

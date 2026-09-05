@@ -2,7 +2,8 @@
 
 import { Blob as NodeBlob } from 'node:buffer'
 import { webcrypto } from 'node:crypto'
-import { DecompressionStream as NodeDecompressionStream } from 'node:stream/web'
+import { CompressionStream as NodeCompressionStream, DecompressionStream as NodeDecompressionStream } from 'node:stream/web'
+import { StrictMode } from 'react'
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { userEvent } from '@testing-library/user-event'
@@ -22,10 +23,12 @@ import { latestFamilyCoverageGeneration } from '../../src/domain/family-training
 import embeddedSnapshot from '../../src/generated/embedded-snapshot.json' with { type: 'json' }
 import reviewFamilyCatalog from '../../src/generated/review-family-catalog.json' with { type: 'json' }
 import { createSyntheticFamilyPromotion } from '../fixtures/synthetic-family-promotion.ts'
+import { createReviewFixtureDataSource } from '../review-harness/review-fixture-data.ts'
 
 Object.defineProperty(globalThis, 'crypto', { value: webcrypto, configurable: true })
 Object.defineProperty(globalThis, 'Blob', { value: NodeBlob, configurable: true })
 Object.defineProperty(globalThis, 'DecompressionStream', { value: NodeDecompressionStream, configurable: true })
+Object.defineProperty(globalThis, 'CompressionStream', { value: NodeCompressionStream, configurable: true })
 Object.defineProperty(HTMLElement.prototype, 'setPointerCapture', { value: vi.fn(), configurable: true })
 
 const catalog = validateReviewOpeningFamilyCatalog(reviewFamilyCatalog)
@@ -133,6 +136,34 @@ describe('canonical opening-family repertoire', () => {
     expect(card).toHaveTextContent(`${referenceOnly.taxonomyLineIds.length} reference lines`)
     expect(card).toHaveTextContent('Study only')
     expect(card).not.toHaveTextContent(/Train (?:White|Black|unavailable)/u)
+    expect(screen.queryByRole('group', { name: `${referenceOnly.canonicalName} practice` })).not.toBeInTheDocument()
+  })
+
+  test('starts full-family practice directly from a ready catalog row and blocks stale readiness', async () => {
+    const family = catalog.families.find(({ id }) => id === 'caro-kann')!
+    const promotion = await createSyntheticFamilyPromotion(family)
+    const props = { ...catalogProps(), families: [family], graphResources: { [family.id]: promotion.resources } }
+    const { rerender } = render(<OpeningFamilyView {...props} />)
+    const action = screen.getByRole('button', { name: 'Practice all Caro–Kann variations as White' })
+    fireEvent.click(action)
+    expect(props.onStartTraining).toHaveBeenCalledExactlyOnceWith(family.id, 'white', 'full')
+    expect(props.onSelectFamily).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Black' }))
+    expect(screen.queryByRole('button', { name: /Practice all Caro/u })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Any side' }))
+    rerender(<OpeningFamilyView {...props} familySummaries={[{
+      releaseId: promotion.manifest.releaseId,
+      familyId: family.id,
+      canonicalName: family.canonicalName,
+      ecoCodes: family.ecoCodes,
+      readiness: 'corrupt',
+      readySides: [],
+      totalPaths: 0,
+      completedPaths: 0,
+      dueCards: 0,
+    }]} />)
+    expect(screen.getByText('Unavailable', { exact: true })).toBeVisible()
+    expect(screen.queryByRole('button', { name: /Practice all Caro/u })).not.toBeInTheDocument()
   })
 
   test('keeps both learner sides inside one family detail and changes side without duplicating the page', async () => {
@@ -226,6 +257,53 @@ describe('canonical opening-family repertoire', () => {
     expect(screen.getByText(/no grade screen between normal moves/u)).toBeVisible()
   })
 
+  test('practices every route in one duplicate-label group across packs and restores it', async () => {
+    const user = userEvent.setup()
+    const family = catalog.families.find(({ id }) => id === 'caro-kann')
+    if (!family) throw new Error('Caro–Kann regression family is missing')
+    const promotion = await createSyntheticFamilyPromotion(family, {
+      packCount: 2,
+      branchLabel: 'Shared variation',
+    })
+    const repository = new MemoryFamilyTrainingJournalRepository()
+    window.history.replaceState(null, '', '#/repertoire/caro-kann')
+    render(
+      <App
+        dataSource={appDataSource()}
+        familyGraphResources={{ [family.id]: promotion.resources }}
+        familyTrainingJournal={repository}
+      />,
+    )
+    await user.click(await screen.findByRole('button', { name: 'Practice Shared variation' }))
+    await waitFor(() => expect(window.location.hash).toBe('#/train/caro-kann/white'))
+    expect(await screen.findByText('0 of 4 routes practiced in Shared variation.')).toBeVisible()
+
+    const play = async (uci: string): Promise<void> => {
+      const picker = await screen.findByRole('combobox', { name: 'Legal move picker' })
+      await waitFor(() => expect(picker).toBeEnabled())
+      await user.selectOptions(picker, uci)
+      await user.click(screen.getByRole('button', { name: 'Play move' }))
+    }
+    for (let route = 0; route < 4; route += 1) {
+      await play(route % 2 === 0 ? 'g1f3' : 'g2g3')
+      await play(route % 2 === 0 ? 'g2g3' : 'g1f3')
+      await play('f1g2')
+      if (route < 3) {
+        await waitFor(() => expect(screen.getByRole('heading', { name: 'Opening practice' })).toBeVisible())
+      }
+    }
+    expect(await screen.findByText('4 of 4 routes practiced in Shared variation.')).toBeVisible()
+    cleanup()
+    render(
+      <App
+        dataSource={appDataSource()}
+        familyGraphResources={{ [family.id]: promotion.resources }}
+        familyTrainingJournal={repository}
+      />,
+    )
+    expect(await screen.findByText('4 of 4 variations practiced this round.')).toBeVisible()
+  }, 45_000)
+
   test('exposes and trains every signed pack on the selected side', async () => {
     const user = userEvent.setup()
     const family = catalog.families.find(({ id }) => id === 'caro-kann')
@@ -296,6 +374,11 @@ describe('canonical opening-family repertoire', () => {
     const firstPackId = promotion.graphs[0]!.pack.id
     const firstPackMemberships = manifest.pathMemberships.filter(({ packId }) => packId === firstPackId)
     const sharedBranchId = firstPackMemberships[0]!.primaryBranchId
+    // This test exercises a specific named branch, not the separate
+    // duplicate-label grouping regression above.
+    for (const branch of manifest.branches) {
+      if (branch.id !== sharedBranchId) branch.canonicalName = `Other ${branch.id}`
+    }
     const secondPackId = promotion.graphs[1]!.pack.id
     const secondPackMembership = manifest.pathMemberships.find(({ packId }) => packId === secondPackId)!
     secondPackMembership.secondaryBranchIds = [sharedBranchId]
@@ -324,18 +407,18 @@ describe('canonical opening-family repertoire', () => {
       await user.click(screen.getByRole('button', { name: 'Play move' }))
     }
     await play('g1f3')
-    await waitFor(() => expect(screen.getByText(/1 of 3 moves recalled this run · decision 2 next/u)).toBeVisible())
+    await waitFor(() => expect(screen.getByText(/1 of 3 moves played ·/u)).toBeVisible())
     await play('g2g3')
-    await waitFor(() => expect(screen.getByText(/2 of 3 moves recalled this run · decision 3 next/u)).toBeVisible())
+    await waitFor(() => expect(screen.getByText(/2 of 3 moves played ·/u)).toBeVisible())
     await play('f1g2')
     const packButtons = courseSectionButtons()
     await waitFor(() => expect(packButtons[1]).toHaveAttribute('aria-pressed', 'true'))
     expect(await screen.findByRole('heading', { name: 'Opening practice' })).toBeVisible()
     expect(screen.getByText('1 of 2 routes practiced in Manifest variation.')).toBeVisible()
     await play('g1f3')
-    await waitFor(() => expect(screen.getByText(/1 of 3 moves recalled this run · decision 2 next/u)).toBeVisible())
+    await waitFor(() => expect(screen.getByText(/1 of 3 moves played ·/u)).toBeVisible())
     await play('g2g3')
-    await waitFor(() => expect(screen.getByText(/2 of 3 moves recalled this run · decision 3 next/u)).toBeVisible())
+    await waitFor(() => expect(screen.getByText(/2 of 3 moves played ·/u)).toBeVisible())
     await play('f1g2')
 
     expect(await screen.findByRole('heading', { name: 'Every selected variation is complete.' })).toBeVisible()
@@ -468,9 +551,9 @@ describe('canonical opening-family repertoire', () => {
       await user.click(screen.getByRole('button', { name: 'Play move' }))
     }
     await play('g1f3')
-    await waitFor(() => expect(screen.getByText(/1 of 3 moves recalled this run · decision 2 next/u)).toBeVisible())
+    await waitFor(() => expect(screen.getByText(/1 of 3 moves played ·/u)).toBeVisible())
     await play('g2g3')
-    await waitFor(() => expect(screen.getByText(/2 of 3 moves recalled this run · decision 3 next/u)).toBeVisible())
+    await waitFor(() => expect(screen.getByText(/2 of 3 moves played ·/u)).toBeVisible())
     await play('f1g2')
     expect(await screen.findByText('2 of 2 routes practiced in Manifest variation.')).toBeVisible()
     await waitFor(async () => {
@@ -855,15 +938,15 @@ describe('canonical opening-family repertoire', () => {
     }
 
     await play('g1f3')
-    await waitFor(() => expect(screen.getByText(/1 of 3 moves recalled this run · decision 2 next/u)).toBeVisible())
+    await waitFor(() => expect(screen.getByText(/1 of 3 moves played ·/u)).toBeVisible())
     await play('g2g3')
-    await waitFor(() => expect(screen.getByText(/2 of 3 moves recalled this run · decision 3 next/u)).toBeVisible())
+    await waitFor(() => expect(screen.getByText(/2 of 3 moves played ·/u)).toBeVisible())
     await play('f1g2')
     await waitFor(() => expect(screen.getByText(/Variation 2 of 2/u)).toBeVisible())
     await play('g2g3')
-    await waitFor(() => expect(screen.getByText(/1 of 3 moves recalled this run · decision 2 next/u)).toBeVisible())
+    await waitFor(() => expect(screen.getByText(/1 of 3 moves played ·/u)).toBeVisible())
     await play('g1f3')
-    await waitFor(() => expect(screen.getByText(/2 of 3 moves recalled this run · decision 3 next/u)).toBeVisible())
+    await waitFor(() => expect(screen.getByText(/2 of 3 moves played ·/u)).toBeVisible())
     await play('f1g2')
 
     const alert = await screen.findByRole('alert')
@@ -937,6 +1020,66 @@ describe('canonical opening-family repertoire', () => {
 })
 
 describe('family hash routing and tactical-route isolation', () => {
+  test('shows a failed graph load and starts the retained practice request after retry', async () => {
+    const user = userEvent.setup()
+    const family = catalog.families.find(({ id }) => id === 'caro-kann')
+    if (!family) throw new Error('Required family is missing')
+    const dataSource = await createReviewFixtureDataSource(appDataSource(), family)
+    vi.spyOn(dataSource, 'loadRepertoirePack').mockRejectedValueOnce(new Error('Fixture graph transport failed'))
+    window.history.replaceState(null, '', '#/repertoire')
+    render(<StrictMode><App dataSource={dataSource} /></StrictMode>)
+    await user.type(await screen.findByRole('searchbox', { name: 'Find an opening' }), 'Caro')
+    await user.click(await screen.findByRole('button', { name: /Practice all Caro.*variations as White/u }))
+    expect(await screen.findByRole('heading', { name: 'Opening practice unavailable' })).toBeVisible()
+    expect(screen.getByText('Fixture graph transport failed')).toBeVisible()
+    await user.click(await screen.findByRole('button', { name: 'Retry family data' }))
+    expect(await screen.findByRole('grid', { name: /Chessboard/u })).toBeVisible()
+    expect(window.location.hash).toBe('#/train/caro-kann/white')
+  }, 30_000)
+
+  test('retains a catalog practice request while checksum-validated graphs load under StrictMode', async () => {
+    const user = userEvent.setup()
+    const family = catalog.families.find(({ id }) => id === 'caro-kann')
+    if (!family) throw new Error('Required family is missing')
+    const dataSource = await createReviewFixtureDataSource(appDataSource(), family)
+    const loadGraph = dataSource.loadRepertoirePack.bind(dataSource)
+    let allowGraph!: () => void
+    const graphPending = new Promise<void>((resolve) => { allowGraph = resolve })
+    vi.spyOn(dataSource, 'loadRepertoirePack').mockImplementation(async (...args) => {
+      await graphPending
+      return loadGraph(...args)
+    })
+    window.history.replaceState(null, '', '#/repertoire')
+    render(<StrictMode><App dataSource={dataSource} /></StrictMode>)
+    await user.type(await screen.findByRole('searchbox', { name: 'Find an opening' }), 'Caro')
+    await user.click(await screen.findByRole('button', { name: /Practice all Caro.*variations as White/u }))
+    await waitFor(() => expect(dataSource.loadRepertoirePack).toHaveBeenCalled())
+    expect(window.location.hash).toBe('#/train/caro-kann/white')
+    expect(screen.queryByRole('button', { name: 'Start full opening' })).toBeNull()
+    expect(screen.queryByRole('grid', { name: /Chessboard/u })).toBeNull()
+    await act(async () => { allowGraph(); await graphPending })
+    expect(await screen.findByRole('grid', { name: /Chessboard/u })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Start full opening' })).toBeNull()
+  }, 30_000)
+
+  test('starts full-family practice from the catalog action without a second start click', async () => {
+    const user = userEvent.setup()
+    const family = catalog.families.find(({ id }) => id === 'caro-kann')
+    if (!family) throw new Error('Required family is missing')
+    const promotion = await createSyntheticFamilyPromotion(family, { packCount: 1 })
+    window.history.replaceState(null, '', '#/repertoire')
+    render(
+      <App
+        dataSource={appDataSource()}
+        familyGraphResources={{ 'caro-kann': promotion.resources }}
+      />,
+    )
+    await user.type(await screen.findByRole('searchbox', { name: 'Find an opening' }), 'Caro')
+    await user.click(await screen.findByRole('button', { name: /Practice all Caro.*variations as White/u }))
+    await waitFor(() => expect(window.location.hash).toBe('#/train/caro-kann/white'))
+    expect(await screen.findByRole('grid', { name: /Chessboard/u })).toBeVisible()
+  }, 30_000)
+
   test('opens family detail and training deep links with Repertoire marked current', async () => {
     window.history.replaceState(null, '', '#/repertoire/caro-kann')
     const detail = render(<App dataSource={appDataSource()} />)

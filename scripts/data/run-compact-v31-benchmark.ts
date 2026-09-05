@@ -12,7 +12,7 @@ import { createHash } from 'node:crypto'
 import { assessCompactV31WorkDirectory } from './preflight-compact-v31.ts'
 import { readBoundedRegularFile } from './compact-v3-orchestrator.ts'
 import { runCompactV31BenchmarkOnce } from './compact-v31-executor.ts'
-import { createSourceSnapshot } from '../release/lib/source-snapshot.ts'
+import { createIngestionSourceSnapshot } from './ingestion-source-snapshot.ts'
 
 const MAXIMUM_PLAN_BYTES = 2 * 1024 * 1024
 
@@ -109,9 +109,9 @@ async function readPlans(directory: string) {
 async function main(): Promise<void> {
   const args = argumentsFor(process.argv.slice(2))
   const { plans, review, reviewSha256 } = await readPlans(args.plansDirectory)
-  const current = await createSourceSnapshot(resolve('.'))
+  const current = await createIngestionSourceSnapshot(resolve('.'))
   if (current.treeSha256 !== plans[0]!.sourceSnapshotSha256) {
-    throw new Error(`Source snapshot is stale; current tree SHA-256 is ${current.treeSha256}`)
+    throw new Error(`Ingestion source snapshot is stale; current pipeline SHA-256 is ${current.treeSha256}`)
   }
   const preflight = await assessCompactV31WorkDirectory(plans[0], args.workDirectory)
   if (!preflight.safeToStart) {

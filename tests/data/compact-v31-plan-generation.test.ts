@@ -10,12 +10,12 @@ import {
   writeCompactV31BenchmarkPlanBundle,
 } from '../../scripts/data/generate-compact-v31-benchmark-plans.ts'
 
-const proposalPath = 'build/data-readiness/broadcast-proposal-191600fe.json'
-const observationPath = 'build/data-readiness/broadcast-observation-191600fe.json'
+const proposalPath = 'data/manifests/compact-v31/bootstrap/broadcast-proposal-c598a637c729be22a61583345b33589f462f1fb07294ef53678f0ecc85e857d5.json'
+const observationPath = 'data/manifests/compact-v31/bootstrap/broadcast-observation-043b06dfd1fdf6adee65b1e1d29e18a561c0a046c4d6a5dd124aeb138465d56c.json'
 
-test('exact authorized observation produces 78 release-ineligible log-structured plans', {
-  skip: !existsSync(proposalPath) || !existsSync(observationPath),
-}, async () => {
+test('exact authorized observation produces 78 release-ineligible log-structured plans', async () => {
+  assert.equal(existsSync(proposalPath), true)
+  assert.equal(existsSync(observationPath), true)
   const bundle = generateCompactV31BenchmarkPlanBundle({
     proposalBytes: await readFile(proposalPath),
     observationBytes: await readFile(observationPath),
@@ -38,9 +38,7 @@ test('exact authorized observation produces 78 release-ineligible log-structured
   assert.equal(bundle.plans.reduce((sum, plan) => sum + plan.archive.compressedBytes, 0), 670_155_109)
 })
 
-test('plan generation rejects a one-byte proposal or authorization change', {
-  skip: !existsSync(proposalPath) || !existsSync(observationPath),
-}, async () => {
+test('plan generation rejects a one-byte proposal or authorization change', async () => {
   const proposal = await readFile(proposalPath)
   const authorization = JSON.parse(
     await readFile('data/manifests/compact-v31-benchmark.authorization.json', 'utf8'),
@@ -60,9 +58,7 @@ test('plan generation rejects a one-byte proposal or authorization change', {
   }), /does not bind/iu)
 })
 
-test('plan bundle publication is immutable and leaves no late-failure staging directory', {
-  skip: !existsSync(proposalPath) || !existsSync(observationPath),
-}, async () => {
+test('plan bundle publication is immutable and leaves no late-failure staging directory', async () => {
   const root = await mkdtemp(join(tmpdir(), 'linerecall-v31-plan-bundle-'))
   const bundle = generateCompactV31BenchmarkPlanBundle({
     proposalBytes: await readFile(proposalPath),

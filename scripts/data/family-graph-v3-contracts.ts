@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { MAXIMUM_AUDITED_FAMILY_PACKS } from './family-engine-v3-contracts.ts'
 import { ImmutableJsonReceiptV1Schema } from '../release/lib/immutable-json-receipt.ts'
 import {
   FamilyIdSchema,
@@ -165,7 +166,7 @@ export const FamilyGraphPackBuildSpecV1Schema = z.object({
 export const FamilyGraphBuildRequestV1Schema = z.object({
   schemaVersion: z.literal(FAMILY_GRAPH_BUILD_SCHEMA_VERSION),
   handoff: ImmutableJsonReceiptV1Schema,
-  packSpecs: z.array(ImmutableJsonReceiptV1Schema).min(1).max(128),
+  packSpecs: z.array(ImmutableJsonReceiptV1Schema).min(1).max(MAXIMUM_AUDITED_FAMILY_PACKS),
 }).strict().superRefine((request, context) => {
   const paths = [request.handoff.path, ...request.packSpecs.map(({ path }) => path)]
   if (new Set(paths).size !== paths.length) {
@@ -191,7 +192,7 @@ export const FamilyGraphBuildOutputV1Schema = z.object({
     graph: ImmutableJsonReceiptV1Schema,
     eligibleInventory: ImmutableJsonReceiptV1Schema,
     sourceExactStateSha256s: z.array(Sha256Schema).length(2),
-  }).strict()).min(1).max(128),
+  }).strict()).min(1).max(MAXIMUM_AUDITED_FAMILY_PACKS),
 }).strict().superRefine((output, context) => {
   if (new Set(output.packs.map(({ packId }) => packId)).size !== output.packs.length) {
     context.addIssue({ code: 'custom', path: ['packs'], message: 'Output pack IDs must be unique' })

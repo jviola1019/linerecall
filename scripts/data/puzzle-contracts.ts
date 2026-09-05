@@ -241,6 +241,64 @@ function validateCandidateReplay(
 
 export const PuzzleCandidateSchema = PuzzleCandidateBaseSchema.superRefine(validateCandidateReplay)
 
+const PuzzleEngineScoreSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('centipawn'), value: z.number().int().min(-100_000).max(100_000) }).strict(),
+  z.object({ kind: z.literal('mate'), value: z.number().int().min(-1_000).max(1_000).refine((value) => value !== 0) }).strict(),
+])
+
+export const PuzzleEngineSearchObservationSchema = z.object({
+  multipv: z.number().int().min(1).max(5),
+  depth: z.number().int().nonnegative().nullable(),
+  selectiveDepth: z.number().int().nonnegative().nullable(),
+  nodes: z.number().int().min(PUZZLE_ENGINE_SETTINGS.nodes),
+  score: PuzzleEngineScoreSchema,
+  bound: z.literal('exact'),
+  movesUci: z.array(UciMoveSchema).min(1).max(100),
+}).strict()
+
+const PuzzleExpectedMoveObservationSchema = z.object({
+  searchMode: z.enum(['root-multipv', 'forced-search']),
+  variation: PuzzleEngineSearchObservationSchema,
+}).strict()
+
+function scoreOrderingValue(score: z.infer<typeof PuzzleEngineScoreSchema>): number {
+  if (score.kind === 'centipawn') return score.value
+  if (score.value > 0) return 1_000_000 - Math.min(score.value, 999) * 1_000
+  return -1_000_000 + Math.min(Math.abs(score.value), 999) * 1_000
+}
+
+function derivePuzzleEngineComparison(
+  best: z.infer<typeof PuzzleEngineScoreSchema>,
+  candidate: z.infer<typeof PuzzleEngineScoreSchema>,
+): { centipawnLoss: number | null; mateConsistent: boolean; status: 'pass' | 'fail' } {
+  const candidateLosesByMate = candidate.kind === 'mate' && candidate.value < 0
+  const mateConsistent = !candidateLosesByMate && (
+    best.kind === 'centipawn'
+      ? candidate.kind === 'centipawn' || (candidate.kind === 'mate' && candidate.value > 0)
+      : best.value > 0 && candidate.kind === 'mate' && candidate.value > 0
+  )
+  const centipawnLoss = best.kind === 'centipawn' && candidate.kind === 'centipawn'
+    ? Math.max(0, best.value - candidate.value)
+    : best.kind === 'mate' && candidate.kind === 'mate' && best.value > 0 && candidate.value > 0
+      ? 0
+      : null
+  return {
+    centipawnLoss,
+    mateConsistent,
+    status: mateConsistent && (centipawnLoss === null || centipawnLoss <= 50) ? 'pass' : 'fail',
+  }
+}
+
+function principalVariationIsLegal(epd: string, moves: readonly string[]): boolean {
+  try {
+    const chess = new Chess(`${epd} 0 1`)
+    for (const uci of moves) chess.move(moveInput(uci))
+    return true
+  } catch {
+    return false
+  }
+}
+
 export const PuzzleEngineProofSchema = z.object({
   learnerIndex: z.number().int().min(0).max(4),
   positionEpd: EpdSchema,
@@ -259,15 +317,66 @@ export const PuzzleEngineProofSchema = z.object({
     multiPv: z.literal(5),
     nodes: z.literal(250_000),
   }).strict(),
+  rootVariations: z.array(PuzzleEngineSearchObservationSchema).min(1).max(5),
+  expectedMoveObservation: PuzzleExpectedMoveObservationSchema,
   principalVariationUci: z.array(UciMoveSchema).min(1).max(100),
   analyzedAt: z.string().datetime({ offset: true }),
 }).strict().superRefine((proof, context) => {
-  const passingEvidence = proof.mateConsistent && (proof.centipawnLoss === null || proof.centipawnLoss <= 50)
-  if ((proof.status === 'pass') !== passingEvidence) {
-    context.addIssue({ code: 'custom', path: ['status'], message: 'Engine proof status does not match its mate and centipawn evidence' })
+  let legalMoveCount: number | null = null
+  try {
+    legalMoveCount = new Chess(`${proof.positionEpd} 0 1`).moves().length
+  } catch {
+    context.addIssue({ code: 'custom', path: ['positionEpd'], message: 'Engine proof EPD is not a legal Standard chess position' })
   }
-  if (proof.principalVariationUci[0] !== proof.engineBestMoveUci) {
-    context.addIssue({ code: 'custom', path: ['principalVariationUci'], message: 'Engine PV must begin with the reported best move' })
+  if (legalMoveCount !== null && proof.rootVariations.length !== Math.min(5, legalMoveCount)) {
+    context.addIssue({ code: 'custom', path: ['rootVariations'], message: 'Root observations must retain every required MultiPV line' })
+  }
+  if (proof.rootVariations.some(({ multipv }, index) => multipv !== index + 1)) {
+    context.addIssue({ code: 'custom', path: ['rootVariations'], message: 'Root MultiPV observations must be contiguous and sorted from one' })
+  }
+  const rootMoves = proof.rootVariations.map(({ movesUci }) => movesUci[0])
+  if (new Set(rootMoves).size !== rootMoves.length) {
+    context.addIssue({ code: 'custom', path: ['rootVariations'], message: 'Root MultiPV observations must begin with distinct moves' })
+  }
+  for (const [index, variation] of proof.rootVariations.entries()) {
+    if (!principalVariationIsLegal(proof.positionEpd, variation.movesUci)) {
+      context.addIssue({ code: 'custom', path: ['rootVariations', index, 'movesUci'], message: 'Root engine PV does not replay legally from the learner position' })
+    }
+    const prior = proof.rootVariations[index - 1]
+    if (prior && scoreOrderingValue(variation.score) > scoreOrderingValue(prior.score)) {
+      context.addIssue({ code: 'custom', path: ['rootVariations', index, 'score'], message: 'Root MultiPV scores are not ordered best-first' })
+    }
+  }
+  const best = proof.rootVariations[0]
+  const expected = proof.expectedMoveObservation.variation
+  if (!best) return
+  if (best.movesUci[0] !== proof.engineBestMoveUci) {
+    context.addIssue({ code: 'custom', path: ['engineBestMoveUci'], message: 'Engine best move must be derived from exact MultiPV 1' })
+  }
+  if (expected.movesUci[0] !== proof.expectedMoveUci || !principalVariationIsLegal(proof.positionEpd, expected.movesUci)) {
+    context.addIssue({ code: 'custom', path: ['expectedMoveObservation'], message: 'Expected-move observation must begin with the expected move and replay legally' })
+  }
+  const matchingRoot = proof.rootVariations.find(({ movesUci }) => movesUci[0] === proof.expectedMoveUci)
+  if (proof.expectedMoveObservation.searchMode === 'root-multipv') {
+    if (!matchingRoot || JSON.stringify(matchingRoot) !== JSON.stringify(expected)) {
+      context.addIssue({ code: 'custom', path: ['expectedMoveObservation'], message: 'Root expected-move evidence must be the exact matching MultiPV observation' })
+    }
+  } else if (matchingRoot || expected.multipv !== 1) {
+    context.addIssue({ code: 'custom', path: ['expectedMoveObservation'], message: 'Forced expected-move evidence must be an independent MultiPV-1 search for a move absent from the root lines' })
+  }
+  if (scoreOrderingValue(expected.score) > scoreOrderingValue(best.score)) {
+    context.addIssue({ code: 'custom', path: ['expectedMoveObservation', 'variation', 'score'], message: 'Expected-move evaluation cannot outrank the reported engine best move' })
+  }
+  const derived = derivePuzzleEngineComparison(best.score, expected.score)
+  if (
+    proof.centipawnLoss !== derived.centipawnLoss
+    || proof.mateConsistent !== derived.mateConsistent
+    || proof.status !== derived.status
+  ) {
+    context.addIssue({ code: 'custom', path: ['status'], message: 'Engine result fields must be the exact projection of recorded search observations' })
+  }
+  if (JSON.stringify(proof.principalVariationUci) !== JSON.stringify(best.movesUci)) {
+    context.addIssue({ code: 'custom', path: ['principalVariationUci'], message: 'Engine PV must equal the exact MultiPV-1 observation' })
   }
   if (proof.settingsSha256 !== PUZZLE_ENGINE_SETTINGS_SHA256) {
     context.addIssue({ code: 'custom', path: ['settingsSha256'], message: 'Engine settings hash does not match the fixed puzzle policy' })

@@ -27,6 +27,7 @@ import {
   validatePuzzlePromotionProofInventory,
 } from '../../scripts/data/puzzle-v3-promotion.ts'
 import { openValidatedPuzzleFamilyAssociation } from '../../scripts/data/puzzle-v3-prerequisites.ts'
+import { createSyntheticPuzzleEngineProof } from '../fixtures/synthetic-puzzle-engine-proof.ts'
 
 const RELEASE = 'release-2026.08.06'
 const SNAPSHOT = '9'.repeat(64)
@@ -133,22 +134,14 @@ function verifiedEnvelope() {
     taxonomyLineIdsForTag: () => [],
   })
   const { engineStatus: _engineStatus, releaseEligible: _releaseEligible, ...base } = candidate
-  const proof = {
+  const proof = createSyntheticPuzzleEngineProof({
     learnerIndex: candidate.learnerNodes[0]!.learnerIndex,
     positionEpd: candidate.learnerNodes[0]!.epd,
     expectedMoveUci: candidate.learnerNodes[0]!.expectedMoveUci,
-    engineBestMoveUci: candidate.learnerNodes[0]!.expectedMoveUci,
-    centipawnLoss: 0,
-    mateConsistent: true,
-    status: 'pass' as const,
-    engine: 'Stockfish 18' as const,
     engineSha256: ENGINE,
     nnueSha256: NNUE,
-    settingsSha256: PUZZLE_ENGINE_SETTINGS_SHA256,
-    settings: { threads: 1 as const, hashMb: 128 as const, multiPv: 5 as const, nodes: 250_000 as const },
-    principalVariationUci: [candidate.learnerNodes[0]!.expectedMoveUci],
     analyzedAt: '2026-08-06T12:00:00.000Z',
-  }
+  })
   const bound = evidence()
   return PuzzleV3VerifiedEnvelopeV1Schema.parse({
     schemaVersion: 1,

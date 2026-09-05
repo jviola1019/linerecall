@@ -1,5 +1,8 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { resolve } from 'node:path'
+import { createSourceSnapshot } from '../release/lib/source-snapshot.ts'
+import { writeJsonAtomic } from '../security/lib/files.ts'
+import { captureReviewBuild, REVIEW_BUILD_BINDING_PATH, verifyReviewBuild } from './review-build-binding.ts'
 
 const workspace = process.cwd()
 const viteCli = resolve(workspace, 'node_modules/vite/bin/vite.js')
@@ -57,6 +60,7 @@ async function stopServer(server: ChildProcess): Promise<void> {
   if (server.exitCode === null) server.kill('SIGKILL')
 }
 
+const sourceBeforeBuild = await createSourceSnapshot()
 const buildCode = await run(process.execPath, [
   viteCli,
   'build',
@@ -64,6 +68,9 @@ const buildCode = await run(process.execPath, [
   'vite.review-harness.config.ts',
 ])
 if (buildCode !== 0) process.exit(buildCode)
+const binding = await captureReviewBuild(sourceBeforeBuild.treeSha256)
+await verifyReviewBuild(binding)
+await writeJsonAtomic(REVIEW_BUILD_BINDING_PATH, binding)
 if (await isReady()) throw new Error(`Review port ${port} is already in use`)
 
 const server = spawn(process.execPath, [
@@ -101,4 +108,5 @@ try {
 } finally {
   await stopServer(server)
 }
+await verifyReviewBuild(binding)
 process.exit(exitCode)

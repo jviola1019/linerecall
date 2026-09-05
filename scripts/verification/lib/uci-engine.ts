@@ -6,6 +6,10 @@ import type { EnginePrincipalVariation, UciScore } from '../../../src/data/verif
 import { sha256File } from './files.ts';
 
 const UCI_MOVE = /^[a-h][1-8][a-h][1-8][qrbn]?$/u;
+export const UCI_INDEPENDENT_ROOT_RESET_COMMANDS = Object.freeze([
+  'setoption name Clear Hash',
+  'ucinewgame',
+] as const);
 
 interface PendingRequest {
   lines: string[];
@@ -167,6 +171,12 @@ export class UciEngine {
 
   setMultiPv(value: 1 | 5): void {
     this.#send(`setoption name MultiPV value ${value}`);
+  }
+
+  /** Clear all position-dependent state before an independent root search. */
+  async resetForPosition(timeoutMs = 30_000): Promise<void> {
+    for (const command of UCI_INDEPENDENT_ROOT_RESET_COMMANDS) this.#send(command);
+    await this.#request('isready', (line) => line === 'readyok', timeoutMs);
   }
 
   async analyze(options: {

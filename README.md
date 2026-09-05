@@ -16,6 +16,9 @@ Public source: <https://github.com/jviola1019/linerecall>
 
 ## Release status
 
+See the [implementation checkpoint](docs/IMPLEMENTATION_CHECKPOINT_2026_09_04.md)
+for the current engineering boundary, remaining data work, and audit commands.
+
 This repository is under active release-gated development. Any self-contained
 HTML under `build/candidate` is a **review candidate**, not a production
 release. Exact-byte audit evidence applies only when its recorded SHA-256 and
@@ -62,6 +65,12 @@ Runtime code validates those assignments; it does not infer families by
 splitting display names. Production promotion also requires a human-reviewed
 decision for every proposed family and all 3,790 primary assignments. The
 checked-in editorial worksheet is entirely pending and cannot promote data.
+The companion deterministic audit reconciles all 149 candidates and 3,790
+assignments, exposes compound-name, umbrella, ECO-scope, orthography, sparse,
+and broad-family review prompts, and provides source-reference slots. It does
+not make chess-editorial decisions: all 149 candidates still require a named
+human reviewer and an independent chess reference. See
+[`docs/OPENING_FAMILY_ARCHITECTURE.md`](docs/OPENING_FAMILY_ARCHITECTURE.md#editorial-review-controls).
 
 For a promoted v3 family graph, the runtime requires every manifest-owned pack
 for the selected side, aggregates totals across those packs, and autonomously
@@ -140,10 +149,12 @@ npm run artifact:harden
 npm run artifact:audit
 ```
 
-`npm run build:candidate` is different: it regenerates the embedded payload
-from a locally produced, checksum-verified app snapshot. It will fail in a
-fresh checkout until the reproducible data pipeline has produced that input.
-This is intentional.
+`npm run build:candidate` regenerates a schema-v2 review candidate from the
+locally produced browse snapshot. It remains review-only. A production audit
+uses `npm run build:production-candidate`, which accepts only the receipt-bound
+schema-v3 app manifest and embeds its exact family, graph, and puzzle bytes.
+That command fails in a fresh checkout until the complete production pipeline
+has produced every required input; this is intentional.
 
 Run `npm run release:audit -- --report-only` to produce an honest blocker
 report without attempting production promotion. A nonzero exit is expected

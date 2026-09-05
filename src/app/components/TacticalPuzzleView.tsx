@@ -377,7 +377,7 @@ function TacticalPuzzleSession({
             disabled={state.phase !== 'learner' || transitionLocked || saving}
             reducedMotion={reducedMotion}
             hintUci={state.usedHint ? expectedMove : null}
-            lastMove={lastMoveUci ? { uci: lastMoveUci, status: 'book' } : null}
+            lastMove={lastMoveUci ? { uci: lastMoveUci, status: 'solution' } : null}
             boardControls={(
               <div className="tactical-thumb-dock" role="group" aria-label="Puzzle actions">
                 <button
@@ -499,7 +499,7 @@ export function TacticalPuzzleView(props: TacticalPuzzleViewProps): React.JSX.El
         <span className="state-icon" aria-hidden="true">◇</span>
         <div>
           <h2 id="puzzle-unavailable-title">Verified puzzles aren’t included in this build yet.</h2>
-          <p>Opening practice and the full reference library are still available.</p>
+          <p>You can still browse the opening reference library.</p>
           <details>
             <summary>Data status</summary>
             <p>{resource.reason}</p>

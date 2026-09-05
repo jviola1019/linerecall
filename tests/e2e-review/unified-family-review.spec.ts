@@ -1,9 +1,8 @@
 import { expect, test, type Page } from '@playwright/test'
+import { attachReviewScreenshot } from './evidence.ts'
 import {
   assertNoPageOverflow,
   assertNoSeriousOrCriticalAxe,
-  startAnyDrill,
-  waitForReadyApp,
 } from '../e2e/helpers.ts'
 
 const HARNESS_PATH = '/index.html'
@@ -21,10 +20,23 @@ async function expectCompletedPaths(page: Page, count: number): Promise<void> {
 }
 
 test.describe('review-only unified-family fixture', () => {
-  test('enters training through the canonical family catalog', async ({ page }) => {
-    await page.goto(HARNESS_PATH, { waitUntil: 'domcontentloaded' })
-    await waitForReadyApp(page)
-    await startAnyDrill(page)
+  test('starts full-family practice directly from its single catalog entry', async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 320, height: 800 })
+    await page.goto(`${HARNESS_PATH}#/repertoire`, { waitUntil: 'domcontentloaded' })
+    await expect(page.getByRole('heading', { name: 'Repertoire', level: 1 })).toBeVisible()
+    await page.getByRole('searchbox', { name: 'Find an opening' }).fill('Caro')
+    await expect(page.locator('.family-card')).toHaveCount(1)
+    const practice = page.getByRole('button', { name: 'Practice all Caro–Kann variations as White' })
+    await expect(practice).toBeInViewport({ ratio: 1 })
+    const actionBox = await practice.boundingBox()
+    const navigationBox = await page.getByRole('navigation', { name: 'Primary navigation' }).boundingBox()
+    if (!actionBox || !navigationBox) throw new Error('Family action and mobile navigation must render')
+    expect(actionBox.y + actionBox.height).toBeLessThanOrEqual(navigationBox.y)
+    await assertNoPageOverflow(page, 'direct family practice at 320px')
+    await attachReviewScreenshot(page, testInfo, 'review-family-catalog-320.png', {
+      path: 'audit/generated/review-family-catalog-320.png',
+    })
+    await practice.click()
     await expect(page).toHaveURL(/#\/train\/caro-kann\/white$/u)
     await expect(page.getByRole('grid', { name: /Chessboard/u })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Start spaced-repetition drill' })).toHaveCount(0)
@@ -39,29 +51,26 @@ test.describe('review-only unified-family fixture', () => {
     await expect(page.getByRole('button', { name: /^(Again|Hard|Good|Easy)$/u })).toHaveCount(0)
 
     await playMove(page, 'g1f3')
-    await expect(page.getByText(/Variation 1 of 2.*1 of 3 moves recalled/u)).toBeVisible()
+    await expect(page.getByText(/Variation 1 of 2.*1 of 3 moves played/u)).toBeVisible()
     await playMove(page, 'g2g3')
-    await expect(page.getByText(/Variation 1 of 2.*2 of 3 moves recalled/u)).toBeVisible()
+    await expect(page.getByText(/Variation 1 of 2.*2 of 3 moves played/u)).toBeVisible()
     await playMove(page, 'f1g2')
     await expect(page.getByText(/Variation 2 of 2/u)).toBeVisible()
     await expectCompletedPaths(page, 1)
 
     await playMove(page, 'g2g3')
-    await expect(page.getByText(/Variation 2 of 2.*1 of 3 moves recalled/u)).toBeVisible()
+    await expect(page.getByText(/Variation 2 of 2.*1 of 3 moves played/u)).toBeVisible()
     await playMove(page, 'g1f3')
-    await expect(page.getByText(/Variation 2 of 2.*2 of 3 moves recalled/u)).toBeVisible()
+    await expect(page.getByText(/Variation 2 of 2.*2 of 3 moves played/u)).toBeVisible()
     await playMove(page, 'f1g2')
 
     await expect(page.getByRole('heading', { name: 'Every selected variation is complete.' })).toBeVisible()
     await expect(page.locator('.family-training-progress')).toHaveText('2 of 2 variations practiced this round.')
     await expect(page.getByRole('button', { name: /^(Again|Hard|Good|Easy)$/u })).toHaveCount(0)
     await expect(page.getByRole('note')).toBeVisible()
-    await testInfo.attach('review-fixture-family-complete.png', {
-      body: await page.screenshot({
-        animations: 'disabled',
-        path: 'audit/generated/review-fixture-family-complete.png',
-      }),
-      contentType: 'image/png',
+    await attachReviewScreenshot(page, testInfo, 'review-fixture-family-complete.png', {
+      animations: 'disabled',
+      path: 'audit/generated/review-fixture-family-complete.png',
     })
     await assertNoSeriousOrCriticalAxe(page, testInfo, 'review-fixture-family-training')
   })
@@ -89,12 +98,9 @@ test.describe('review-only unified-family fixture', () => {
     await expect(puzzleRow).toContainText('1')
     await expect(page.getByText(/Puzzle attempts never change opening recall or variations practiced/u)).toBeVisible()
     await expect(page.getByRole('note')).toBeVisible()
-    await testInfo.attach('review-fixture-puzzle-progress.png', {
-      body: await page.screenshot({
-        animations: 'disabled',
-        path: 'audit/generated/review-fixture-puzzle-progress.png',
-      }),
-      contentType: 'image/png',
+    await attachReviewScreenshot(page, testInfo, 'review-fixture-puzzle-progress.png', {
+      animations: 'disabled',
+      path: 'audit/generated/review-fixture-puzzle-progress.png',
     })
     await assertNoSeriousOrCriticalAxe(page, testInfo, 'review-fixture-independent-progress')
   })
@@ -147,12 +153,9 @@ test.describe('review-only unified-family fixture', () => {
       return { width: rect.width, height: rect.height, label: element.getAttribute('aria-label') ?? element.textContent?.trim() }
     }))
     expect(targets.filter(({ width, height }) => width < 44 || height < 44)).toEqual([])
-    await testInfo.attach('review-fixture-mobile-family-training.png', {
-      body: await page.screenshot({
-        animations: 'disabled',
-        path: 'audit/generated/review-fixture-mobile-family-training.png',
-      }),
-      contentType: 'image/png',
+    await attachReviewScreenshot(page, testInfo, 'review-fixture-mobile-family-training.png', {
+      animations: 'disabled',
+      path: 'audit/generated/review-fixture-mobile-family-training.png',
     })
     await assertNoSeriousOrCriticalAxe(page, testInfo, 'review-fixture-mobile-family-training')
   })

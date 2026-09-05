@@ -64,7 +64,7 @@ const PROMOTION_NAMES: Readonly<Record<PieceSymbol, string>> = Object.freeze({
   q: 'Queen', r: 'Rook', b: 'Bishop', n: 'Knight', p: 'Pawn', k: 'King',
 })
 
-export type BoardMoveStatus = MoveEvidence['classification'] | 'illegal'
+export type BoardMoveStatus = MoveEvidence['classification'] | 'illegal' | 'solution'
 
 export interface ChessBoardProps {
   fen: string
@@ -569,6 +569,7 @@ export function ChessBoard({
     const bracketArm = 1.8
     const guideMarkerLabels: Readonly<Record<string, string>> = {
       'guide-book': 'B',
+      'guide-solution': '✓',
       'guide-playable': 'A',
       'guide-inaccuracy': '!',
       'guide-mistake': '×',
@@ -851,6 +852,7 @@ export function ChessBoard({
 export function moveStatusPresentation(status: BoardMoveStatus): { icon: string; label: string } {
   switch (status) {
     case 'book': return { icon: '✓', label: 'Book move' }
+    case 'solution': return { icon: '✓', label: 'Solution move' }
     case 'playable': return { icon: '≈', label: 'Playable alternative' }
     case 'inaccuracy': return { icon: '!', label: 'Inaccuracy' }
     case 'mistake': return { icon: '×', label: 'Mistake' }

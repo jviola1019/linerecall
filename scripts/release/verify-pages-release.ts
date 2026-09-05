@@ -185,6 +185,7 @@ export async function verifyPagesRelease(options: {
       options.root,
       requirement.sourceSnapshot,
       options.sourceRoots,
+      requirement.template,
     )
     if (fresh.status !== 'pass') throw new Error(`Evidence no longer passes: ${requirement.id}: ${fresh.summary}`)
     for (const key of ['evidenceRecord', 'evidenceReceipts', 'sourceSnapshot'] as const) {

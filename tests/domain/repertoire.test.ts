@@ -19,11 +19,13 @@ import {
   assertCaroKannFamilyRegression,
   classifyBookTerminalStatus,
   classifyRepertoireTier,
+  compareTrainingValueSummaries,
   selectSessionPaths,
   stableRepertoireCardId,
   stableRepertoireEdgeId,
   stableRepertoirePathId,
   stableRepertoirePositionId,
+  trainingValueSummaryForPath,
   validateRepertoireGraphDocument,
   validateEligibleSourceEdgeInventory,
   type BookTerminalStatus,
@@ -327,6 +329,10 @@ test('public schemas fail closed at evidence, identity, path, and cycle-state bo
     [{ ...baseEdge, role: 'playable', eligibleForDrill: false }, true],
     [{ ...baseEdge, role: 'playable', eligibleForDrill: false, evidence: lowSample }, false],
     [{ ...baseEdge, role: 'playable', eligibleForDrill: false, evidence: unsound }, false],
+    [{ ...baseEdge, role: 'inaccuracy', eligibleForDrill: false, evidence: unsound }, true],
+    [{ ...baseEdge, role: 'inaccuracy', eligibleForDrill: false }, false],
+    [{ ...baseEdge, role: 'inaccuracy', eligibleForDrill: false, evidence: exploratorySample }, false],
+    [{ ...baseEdge, role: 'inaccuracy', evidence: unsound }, false],
     [{ ...baseEdge, role: 'exploratory', eligibleForDrill: false, evidence: exploratorySample }, true],
     [{ ...baseEdge, role: 'exploratory', eligibleForDrill: false, evidence: lowSample }, false],
     [{ ...baseEdge, role: 'exploratory', evidence: exploratorySample }, false],
@@ -534,6 +540,39 @@ test('all eligible branches remain selectable across a starvation-free coverage 
   assert.deepEqual(new Set(seen), new Set(graph.paths.map(({ id }) => id)))
   assert.equal(cycle.ordinal, 1)
   assert.deepEqual(cycle.remainingPathIds, [])
+})
+
+test('practice order uses the full soundness-depth-coverage-sample-confidence tuple without hiding paths', async () => {
+  const graph = await syntheticGraph({
+    id: 'ranked_training_value',
+    side: 'white',
+    root: new Chess(),
+    rootPly: 0,
+    lines: [
+      { moves: ['e2e4', 'e7e5', 'g1f3'], family: 'Sound route', usage: 0.35 },
+      { moves: ['d2d4', 'd7d5', 'c2c4', 'e7e6', 'b1c3'], family: 'Popular route', usage: 0.65 },
+    ],
+  })
+  const popularFirstEdge = graph.edges.find(({ uci }) => uci === 'd2d4')!
+  popularFirstEdge.evidence = createSyntheticRepertoireEvidence({
+    uci: popularFirstEdge.uci,
+    trainedSide: 'white',
+    centipawnLoss: 30,
+    moveN: 2_000,
+    reachN: 2_500,
+  })
+  const soundPath = graph.paths.find(({ familyTags }) => familyTags.includes('Sound route'))!
+  const popularPath = graph.paths.find(({ familyTags }) => familyTags.includes('Popular route'))!
+  const soundValue = trainingValueSummaryForPath(graph, soundPath)
+  const popularValue = trainingValueSummaryForPath(graph, popularPath)
+  assert.equal(soundValue.soundnessTier, 1)
+  assert.equal(popularValue.soundnessTier, 2)
+  assert.ok(compareTrainingValueSummaries(soundValue, popularValue, soundPath.id, popularPath.id) < 0)
+
+  const first = selectSessionPaths({ graph, dueCardIds: [], previousCycle: null, maximumPaths: 1 })
+  assert.deepEqual(first.selection.includedPathIds, [soundPath.id])
+  const second = selectSessionPaths({ graph, dueCardIds: [], previousCycle: first.nextCycle, maximumPaths: 1 })
+  assert.deepEqual(second.selection.includedPathIds, [popularPath.id])
 })
 
 test('due cards are prioritized while path prefixes are marked as warm-ups', async () => {
